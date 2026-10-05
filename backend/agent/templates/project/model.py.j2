@@ -1,0 +1,16 @@
+from datetime import datetime  # noqa: F401
+
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text  # noqa: F401
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.database import Base
+
+
+class {{ e.name }}(Base):
+    __tablename__ = "{{ e.table }}"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+{% for f in e.fields %}
+    {{ f.name }}: Mapped[{{ py_type(f) }}{% if not f.required %} | None{% endif %}] = mapped_column({{ sa_type(f) }}{% if f.references %}, ForeignKey("{{ table_of(f.references) }}.id"), index=True{% endif %}{% if f.unique %}, unique=True{% endif %}, nullable={{ (not f.required) | string }})
+{% endfor %}
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

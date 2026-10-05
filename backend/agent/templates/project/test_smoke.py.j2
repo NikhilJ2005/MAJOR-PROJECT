@@ -1,0 +1,82 @@
+"""Smoke tests derived from the project spec (not from the generated code).
+
+They define the contract every generated router must satisfy:
+POST / -> 201, GET / -> list, GET /{id}, PATCH /{id}, DELETE /{id} -> 204.
+"""
+
+import pytest
+
+ENTITIES = {{ entities_json }}
+AUTH = {{ spec.auth | string }}
+
+state: dict = {"ids": {}, "headers": {}}
+
+
+def test_health(client):
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok"
+
+
+def test_openapi(client):
+    r = client.get("/openapi.json")
+    assert r.status_code == 200
+
+
+@pytest.mark.skipif(not AUTH, reason="auth disabled in spec")
+def test_auth_flow(client):
+    creds = {"email": "smoke@example.com", "password": "s3cret-pass"}
+    r = client.post("/auth/register", json=creds)
+    assert r.status_code == 201, r.text
+    r = client.post("/auth/login", json=creds)
+    assert r.status_code == 200, r.text
+    state["headers"] = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    r = client.get("/auth/me", headers=state["headers"])
+    assert r.status_code == 200, r.text
+    state["ids"]["User"] = r.json()["id"]
+    assert client.get("/auth/me").status_code == 401
+
+
+def _resolve(payload: dict) -> dict:
+    out = {}
+    for key, value in payload.items():
+        if isinstance(value, str) and value.startswith("@ref:"):
+            out[key] = state["ids"][value[5:]]
+        else:
+            out[key] = value
+    return out
+
+
+@pytest.mark.parametrize("entity", ENTITIES, ids=[e["name"] for e in ENTITIES])
+def test_crud(client, entity):
+    base = f"/{entity['table']}"
+    headers = state["headers"]
+    r = client.post(f"{base}/", json=_resolve(entity["payload"]), headers=headers)
+    assert r.status_code == 201, r.text
+    item = r.json()
+    assert "id" in item
+    state["ids"][entity["name"]] = item["id"]
+
+    r = client.get(f"{base}/{item['id']}")
+    assert r.status_code == 200, r.text
+
+    r = client.get(f"{base}/")
+    assert r.status_code == 200, r.text
+    assert any(row["id"] == item["id"] for row in r.json())
+
+    r = client.patch(f"{base}/{item['id']}", json=entity["update"], headers=headers)
+    assert r.status_code == 200, r.text
+    for key, value in entity["update"].items():
+        assert r.json()[key] == value
+
+    assert client.get(f"{base}/999999").status_code == 404
+
+
+def test_delete_all(client):
+    for entity in reversed(ENTITIES):
+        item_id = state["ids"].get(entity["name"])
+        if item_id is None:
+            continue
+        r = client.delete(f"/{entity['table']}/{item_id}", headers=state["headers"])
+        assert r.status_code == 204, r.text
+        assert client.get(f"/{entity['table']}/{item_id}").status_code == 404

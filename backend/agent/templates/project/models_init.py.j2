@@ -1,0 +1,8 @@
+{% if spec.auth %}
+from app.models.user import User
+{% endif %}
+{% for e in spec.entities %}
+from app.models.{{ e.module }} import {{ e.name }}
+{% endfor %}
+
+__all__ = [{% if spec.auth %}"User", {% endif %}{% for e in spec.entities %}"{{ e.name }}"{% if not loop.last %}, {% endif %}{% endfor %}]

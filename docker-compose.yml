@@ -1,0 +1,13 @@
+# Self-hosted / local track: the same image Railway runs.
+#   cp .env.example .env   # add OPENROUTER_API_KEY (or set FAKE_LLM=1)
+#   docker compose up --build   ->  http://localhost:8000
+services:
+  vibestack:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      - vibestack-data:/data
+volumes:
+  vibestack-data:

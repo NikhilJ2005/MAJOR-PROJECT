@@ -1,0 +1,33 @@
+from datetime import datetime  # noqa: F401
+
+from pydantic import BaseModel, ConfigDict
+
+
+class {{ e.name }}Base(BaseModel):
+{% for f in e.fields %}
+    {{ f.name }}: {{ py_type(f) }}{% if not f.required %} | None = None{% endif %}
+
+{% endfor %}
+{% if not e.fields %}
+    pass
+{% endif %}
+
+
+class {{ e.name }}Create({{ e.name }}Base):
+    pass
+
+
+class {{ e.name }}Update(BaseModel):
+{% for f in e.fields %}
+    {{ f.name }}: {{ py_type(f) }} | None = None
+{% endfor %}
+{% if not e.fields %}
+    pass
+{% endif %}
+
+
+class {{ e.name }}Read({{ e.name }}Base):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    created_at: datetime

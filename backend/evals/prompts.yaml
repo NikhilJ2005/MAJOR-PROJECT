@@ -1,0 +1,86 @@
+# Benchmark suite. `spec` is the reference spec used by --offline runs (no LLM);
+# online runs ignore it and let the Spec Architect derive the spec from `prompt`.
+- id: todo
+  prompt: A todo app where users sign up, log in, and manage their own tasks with a title, notes, due date and done flag.
+  spec:
+    project_name: todo_api
+    auth: true
+    entities:
+      - {name: Task, fields: [{name: title}, {name: notes, type: text, required: false}, {name: due_at, type: datetime, required: false}, {name: done, type: bool}, {name: owner_id, references: User}]}
+- id: blog
+  prompt: Blog API with authors, posts with tags, and comments on posts. Readers can search posts by title.
+  spec:
+    project_name: blog_api
+    features: [search]
+    entities:
+      - {name: Author, fields: [{name: name}, {name: bio, type: text, required: false}]}
+      - {name: Post, fields: [{name: title}, {name: body, type: text}, {name: tags, required: false}, {name: author_id, references: Author}]}
+      - {name: Comment, fields: [{name: body, type: text}, {name: post_id, references: Post}]}
+- id: library
+  prompt: Library system tracking books, members and loans with due dates and a returned flag.
+  spec:
+    project_name: library
+    entities:
+      - {name: Book, fields: [{name: title}, {name: isbn, unique: true}, {name: copies, type: int}]}
+      - {name: Member, fields: [{name: full_name}, {name: email, unique: true}]}
+      - {name: Loan, fields: [{name: book_id, references: Book}, {name: member_id, references: Member}, {name: due_at, type: datetime}, {name: returned, type: bool}]}
+- id: ecommerce
+  prompt: Small e-commerce backend with products, customers, orders and order items. Products have price and stock.
+  spec:
+    project_name: shop
+    entities:
+      - {name: Product, fields: [{name: name}, {name: price, type: float}, {name: stock, type: int}]}
+      - {name: Customer, fields: [{name: email, unique: true}, {name: name}]}
+      - {name: Order, fields: [{name: customer_id, references: Customer}, {name: status}]}
+      - {name: OrderItem, fields: [{name: order_id, references: Order}, {name: product_id, references: Product}, {name: quantity, type: int}]}
+- id: clinic
+  prompt: Clinic appointment booking with doctors, patients and appointments. Staff must log in to change data.
+  spec:
+    project_name: clinic
+    auth: true
+    entities:
+      - {name: Doctor, fields: [{name: name}, {name: specialty}]}
+      - {name: Patient, fields: [{name: name}, {name: phone}]}
+      - {name: Appointment, fields: [{name: doctor_id, references: Doctor}, {name: patient_id, references: Patient}, {name: starts_at, type: datetime}, {name: notes, type: text, required: false}]}
+- id: events
+  prompt: Event ticketing with venues, events and tickets; tickets have a price and a seat label.
+  spec:
+    project_name: ticketing
+    entities:
+      - {name: Venue, fields: [{name: name}, {name: city}, {name: capacity, type: int}]}
+      - {name: Event, fields: [{name: title}, {name: venue_id, references: Venue}, {name: starts_at, type: datetime}]}
+      - {name: Ticket, fields: [{name: event_id, references: Event}, {name: seat}, {name: price, type: float}]}
+- id: fitness
+  prompt: Fitness tracker where logged-in users record workouts and exercises within each workout.
+  spec:
+    project_name: fitness
+    auth: true
+    entities:
+      - {name: Workout, fields: [{name: user_id, references: User}, {name: performed_at, type: datetime}, {name: notes, type: text, required: false}]}
+      - {name: Exercise, fields: [{name: workout_id, references: Workout}, {name: name}, {name: sets, type: int}, {name: reps, type: int}, {name: weight_kg, type: float, required: false}]}
+- id: helpdesk
+  prompt: Helpdesk ticketing with agents, support tickets with priority and status, and replies.
+  spec:
+    project_name: helpdesk
+    entities:
+      - {name: Agent, fields: [{name: name}, {name: email, unique: true}]}
+      - {name: SupportTicket, fields: [{name: subject}, {name: priority}, {name: status}, {name: agent_id, references: Agent}]}
+      - {name: Reply, fields: [{name: ticket_id, references: SupportTicket}, {name: body, type: text}]}
+- id: recipes
+  prompt: Recipe sharing site with recipes, ingredients per recipe and user ratings. Searchable by recipe title.
+  spec:
+    project_name: recipes
+    auth: true
+    features: [search]
+    entities:
+      - {name: Recipe, fields: [{name: title}, {name: instructions, type: text}, {name: author_id, references: User}]}
+      - {name: Ingredient, fields: [{name: recipe_id, references: Recipe}, {name: name}, {name: quantity}]}
+      - {name: Rating, fields: [{name: recipe_id, references: Recipe}, {name: user_id, references: User}, {name: score, type: int}]}
+- id: fleet
+  prompt: Fleet management for vehicles, drivers and trips with distance and fuel used.
+  spec:
+    project_name: fleet
+    entities:
+      - {name: Vehicle, fields: [{name: plate, unique: true}, {name: model}, {name: active, type: bool}]}
+      - {name: Driver, fields: [{name: name}, {name: license_no, unique: true}]}
+      - {name: Trip, fields: [{name: vehicle_id, references: Vehicle}, {name: driver_id, references: Driver}, {name: distance_km, type: float}, {name: fuel_l, type: float}]}
