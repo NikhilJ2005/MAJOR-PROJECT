@@ -49,6 +49,9 @@ def list_{{ e.table }}(
 {% if search_field %}
     q: str | None = Query(None, description="Search in {{ search_field }}"),
 {% endif %}
+{% for fk in e.foreign_keys %}
+    {{ fk.name }}: int | None = Query(None, description="Only items with this {{ fk.name }}"),
+{% endfor %}
     db: Session = Depends(get_db),
 ):
     stmt = select({{ e.name }})
@@ -56,6 +59,10 @@ def list_{{ e.table }}(
     if q:
         stmt = stmt.where({{ e.name }}.{{ search_field }}.ilike(f"%{q}%"))
 {% endif %}
+{% for fk in e.foreign_keys %}
+    if {{ fk.name }} is not None:
+        stmt = stmt.where({{ e.name }}.{{ fk.name }} == {{ fk.name }})
+{% endfor %}
     return db.scalars(stmt.order_by({{ e.name }}.id).offset(skip).limit(limit)).all()
 
 

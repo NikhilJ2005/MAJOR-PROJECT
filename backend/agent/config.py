@@ -36,7 +36,7 @@ class Settings:
     sandbox_user: str = field(default_factory=lambda: os.environ.get("SANDBOX_USER", "sandbox"))
 
     max_heal_iterations: int = field(default_factory=lambda: _env_int("MAX_HEAL_ITERATIONS", 3))
-    max_tokens_per_run: int = field(default_factory=lambda: _env_int("MAX_TOKENS_PER_RUN", 60000))
+    max_tokens_per_run: int = field(default_factory=lambda: _env_int("MAX_TOKENS_PER_RUN", 150000))
     max_concurrent_runs: int = field(default_factory=lambda: _env_int("MAX_CONCURRENT_RUNS", 2))
     gate_timeout_s: int = field(default_factory=lambda: _env_int("GATE_TIMEOUT_S", 60))
 

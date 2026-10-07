@@ -78,5 +78,10 @@ def test_live_preview_runs_generated_app_behind_proxy(fake_llm):
             r = client.post(f"{base}/posts/", json={"title": "Hello", "body": "World", "author_id": me["id"]}, headers=auth)
             assert r.status_code == 201, r.text
             assert [p["title"] for p in client.get(f"{base}/posts/?q=Hell").json()] == ["Hello"]
+            post_id = r.json()["id"]
+            r = client.post(f"{base}/comments/", json={"content": "Nice", "post_id": post_id}, headers=auth)
+            assert r.status_code == 201, r.text
+            assert len(client.get(f"{base}/comments/?post_id={post_id}").json()) == 1
+            assert client.get(f"{base}/comments/?post_id=999").json() == []  # foreign-key filter
         finally:
             previews.stop_all()
