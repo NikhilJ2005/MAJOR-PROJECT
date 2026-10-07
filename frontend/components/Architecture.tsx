@@ -2,7 +2,7 @@ import type { Snapshot, Spec } from "@/lib/api";
 
 type Entity = Spec["entities"][number];
 
-const table = (name: string) => {
+export const table = (name: string) => {
   const snake = name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
   if (/[^aeiou]y$/.test(snake)) return snake.slice(0, -1) + "ies";
   if (/(s|x|z|ch|sh)$/.test(snake)) return snake + "es";

@@ -25,12 +25,13 @@ Human approval and the review council were cut; they're on the roadmap slide.
 
 ## Demo script (about 5 minutes)
 1. **Problem (30 s):** AI app builders are JS-only, cloud-locked, and don't check that what they generate actually runs.
-2. **Live run (2.5 min):** use the "blog + auth" example with "Inject a bug" ticked, then press **Generate application**.
-   - **Architecture tab:** the Architect turned the sentence into a data model, endpoints and a file plan.
-   - The graph animates. The validator fails, the classifier names the file, the reflector patches it, and the validator passes.
-   - **Self-healing tab:** the bug, the diagnosis and the fix, with no human involved.
-   - **Tests tab:** imports ✓, server boots ✓, API tests ✓, with each test listed as PASSED.
-   - **Code tab:** a generated router. Then **Download .zip**: a complete project with Dockerfile and docker-compose.
+2. **Live run (3 min):** pick the **E-commerce** or **Blog + auth** example and set "Demo: plant a bug" to **Wrong HTTP status**, then press **Generate application**.
+   - Point at the **"now running" banner** and the pipeline cards: each agent lights up, with the model it used and its time.
+   - **Architecture tab:** the Architect turned one paragraph into a data model, endpoints and a file plan.
+   - The Validator fails at the API-tests gate. The Error Classifier names it a `contract` error in `app/routers/...`. The Reflector patches it, and the Validator passes. The **activity feed** on the right logs every step.
+   - **Self-healing tab:** the planted bug and the fix as a red/green code diff, with no human involved.
+   - **▶ Live app tab** (it opens by itself): the generated app is *running*. Click **Sign up**, create a record, create a related record using the dropdown (foreign key), delete one, then **Open API docs ↗** for the live Swagger.
+   - Optionally run again with **Broken import** to show a different failure caught at a different gate.
 3. **Engineering (1.5 min):**
    - The LangGraph state machine with checkpointing.
    - Tiered models: Sonnet builds; Qwen Coder repairs first, then escalation and the circuit breaker.

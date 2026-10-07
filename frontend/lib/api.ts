@@ -7,6 +7,8 @@ export type LedgerEntry = {
   files?: string[];
   tokens?: number;
   iteration?: number;
+  model?: string;
+  diff?: Record<string, string>;
 };
 
 export type Field = { name: string; type: string; required?: boolean; unique?: boolean; references?: string | null };
@@ -32,6 +34,7 @@ export type Snapshot = {
 
 export type ServerConfig = {
   llm_enabled: boolean;
+  fake_llm?: boolean;
   codegen_mode: string;
   sandbox: string;
   access_required: boolean;
@@ -41,14 +44,20 @@ export type ServerConfig = {
 
 export type RunEvent = {
   seq: number;
+  ts: number;
   type: "node" | "status" | "error";
   node?: string;
   status?: string;
   message?: string;
   ledger?: LedgerEntry[];
   validation?: Validation | null;
+  error_class?: string | null;
   iteration?: number | null;
 };
+
+export type Fault = "none" | "import" | "status";
+
+export type PreviewInfo = { running: boolean; base: string; docs: string };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API}${path}`, init);
@@ -68,13 +77,17 @@ const headers = (code: string) => ({ "Content-Type": "application/json", ...(cod
 export const api = {
   config: () => request<ServerConfig>("/api/config"),
   snapshot: (id: string) => request<Snapshot>(`/api/runs/${id}`),
-  start: (body: { prompt: string; inject_fault: boolean; codegen_mode?: string }, code: string) =>
+  start: (body: { prompt: string; fault: Fault; codegen_mode?: string }, code: string) =>
     request<{ run_id: string }>("/api/runs", { method: "POST", headers: headers(code), body: JSON.stringify(body) }),
   file: async (id: string, path: string) => {
     const res = await fetch(`${API}/api/runs/${id}/files/${path}`);
     if (!res.ok) throw new Error(`${res.status}`);
     return res.text();
   },
+  previewStatus: (id: string) => request<PreviewInfo>(`/api/runs/${id}/preview`),
+  startPreview: (id: string, code: string) =>
+    request<PreviewInfo>(`/api/runs/${id}/preview`, { method: "POST", headers: headers(code) }),
+  previewBase: (id: string) => `${API}/preview/${id}`,
   eventsUrl: (id: string, after: number) => `${API}/api/runs/${id}/events?after=${after}`,
   downloadUrl: (id: string) => `${API}/api/runs/${id}/download`,
 };

@@ -26,6 +26,7 @@ VibeStack is not a single prompt. It is a LangGraph state machine: an Architect 
 | Heal | **Classifier → Reflector** | A regex taxonomy (syntax, import, dependency, orm, validation, runtime, contract, timeout) plus traceback fault localisation. The repair gets only the failing file and its siblings (delta context), and escalates cheap model → strong model → verified templates. |
 | Stop | **Circuit breaker** | After `MAX_HEAL_ITERATIONS`, stops and writes a diagnostic report. |
 | Deliver | **Packager** | Zip containing `app/`, tests, `pyproject.toml`, `Dockerfile`, `docker-compose.yml` (Postgres) and `VIBESTACK_LEDGER.md`. |
+| Run | **Live preview** | Like Lovable's preview: the validated app is started as a real process (same isolation as the sandbox) and reverse-proxied at `/preview/<run_id>/`. The UI builds a working front end for it from the architecture: sign up/log in, create/list/delete records, FK dropdowns, plus live Swagger docs. |
 
 Engineering details worth asking about:
 - **State and durability.** A typed `AgentState` with reducers (files are merged, ledger entries appended, token usage summed). A SQLite checkpointer persists every step, so finished runs survive a server restart.
