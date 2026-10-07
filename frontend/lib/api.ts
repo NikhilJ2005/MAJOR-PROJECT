@@ -9,8 +9,6 @@ export type LedgerEntry = {
   iteration?: number;
 };
 
-export type Finding = { severity: "high" | "medium" | "low" | "info"; file: string; issue: string; source?: string };
-
 export type Field = { name: string; type: string; required?: boolean; unique?: boolean; references?: string | null };
 export type Entity = { name: string; fields: Field[] };
 export type Spec = { project_name: string; description?: string; auth?: boolean; features?: string[]; entities: Entity[] };
@@ -22,9 +20,9 @@ export type Snapshot = {
   prompt?: string;
   status: string;
   spec?: Spec;
+  file_plan?: { path: string; owner: string; purpose: string }[];
   files?: string[];
   ledger?: LedgerEntry[];
-  review?: Finding[];
   validation?: Validation | null;
   iteration?: number;
   usage?: { total_tokens?: number; cost_usd?: number; llm_calls?: number };
@@ -43,7 +41,7 @@ export type ServerConfig = {
 
 export type RunEvent = {
   seq: number;
-  type: "node" | "interrupt" | "status" | "error";
+  type: "node" | "status" | "error";
   node?: string;
   status?: string;
   message?: string;
@@ -72,8 +70,6 @@ export const api = {
   snapshot: (id: string) => request<Snapshot>(`/api/runs/${id}`),
   start: (body: { prompt: string; inject_fault: boolean; codegen_mode?: string }, code: string) =>
     request<{ run_id: string }>("/api/runs", { method: "POST", headers: headers(code), body: JSON.stringify(body) }),
-  approve: (id: string, body: { approved: boolean; spec?: Spec; reason?: string }, code: string) =>
-    request<{ status: string }>(`/api/runs/${id}/approve`, { method: "POST", headers: headers(code), body: JSON.stringify(body) }),
   file: async (id: string, path: string) => {
     const res = await fetch(`${API}/api/runs/${id}/files/${path}`);
     if (!res.ok) throw new Error(`${res.status}`);

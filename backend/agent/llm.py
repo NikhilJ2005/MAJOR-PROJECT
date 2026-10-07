@@ -28,9 +28,10 @@ T = TypeVar("T", bound=BaseModel)
 
 # Rough USD per 1M tokens (input, output), only used when OpenRouter does not report cost.
 _PRICE_TABLE: dict[str, tuple[float, float]] = {
-    "anthropic/claude-sonnet-4.5": (3.0, 15.0),
+    "anthropic/claude-sonnet-4.6": (3.0, 15.0),
+    "qwen/qwen3-coder": (0.22, 0.95),
+    "deepseek/deepseek-chat-v3.1": (0.20, 0.80),
     "openai/gpt-4o-mini": (0.15, 0.60),
-    "deepseek/deepseek-chat": (0.28, 1.10),
 }
 
 

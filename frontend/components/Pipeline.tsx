@@ -3,11 +3,9 @@
 export type NodeState = "idle" | "active" | "waiting" | "done" | "failed";
 
 export const NODE_META: Record<string, { label: string; role: string }> = {
-  parse_spec: { label: "Spec Architect", role: "NL → validated ProjectSpec" },
-  approve_spec: { label: "Human Approval", role: "interrupt() · edit or approve" },
+  parse_spec: { label: "Architect", role: "prompt → data model + API design" },
   plan: { label: "Planner", role: "dependency-ordered file plan" },
-  generate: { label: "API Engineer", role: "models · schemas · routers" },
-  review: { label: "Review Council", role: "security + architecture" },
+  generate: { label: "Code Generator", role: "models · schemas · routers" },
   validate: { label: "Sandbox Validator", role: "import → boot → tests" },
   classify: { label: "Error Classifier", role: "taxonomy + fault localisation" },
   reflect: { label: "Reflector", role: "targeted patch (delta context)" },
@@ -15,7 +13,7 @@ export const NODE_META: Record<string, { label: string; role: string }> = {
   failure_report: { label: "Circuit Breaker", role: "stop + diagnostic report" },
 };
 
-const MAIN = ["parse_spec", "approve_spec", "plan", "generate", "review", "validate"];
+const MAIN = ["parse_spec", "plan", "generate", "validate"];
 
 const dot: Record<NodeState, string> = {
   idle: "bg-zinc-700",
@@ -73,7 +71,7 @@ export function Pipeline({
         ))}
         <Node id={end} state={s(end)} />
       </div>
-      <div className="flex flex-col justify-end pb-[3.6rem]">
+      <div className="flex flex-col justify-end pb-[3.4rem]">
         <div
           className={`rounded-xl border border-dashed p-2 transition-colors ${
             loopActive ? "border-amber-500/60 bg-amber-500/5" : "border-zinc-800"

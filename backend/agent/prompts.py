@@ -1,6 +1,6 @@
 """Prompt templates. Kept in one place so they can be versioned and evaluated."""
 
-SPEC_SYSTEM = """You are the Spec Architect of VibeStack, a backend generator.
+SPEC_SYSTEM = """You are the Architect of VibeStack, a backend generator.
 Turn the user's description of a backend into a precise data model.
 
 Rules:
@@ -48,18 +48,6 @@ Entity to implement: {name}
 
 Reference implementation:
 {reference}"""
-
-REVIEW_SYSTEM = """You are the Security & Architecture Reviewer on VibeStack's review council.
-Review the generated FastAPI code for: missing authorization on write endpoints, injection risks,
-unbounded queries, secrets in code, data exposure (e.g. password hashes in responses), and
-inconsistencies with the spec. Be concise and concrete; report at most 6 findings.
-Severity is one of: high, medium, low, info."""
-
-REVIEW_USER = """Spec:
-{spec}
-
-Files:
-{files}"""
 
 REFLECT_SYSTEM = """You are the Reflector in VibeStack's self-healing loop.
 A generated FastAPI project failed validation. Diagnose the root cause from the log, then fix it.

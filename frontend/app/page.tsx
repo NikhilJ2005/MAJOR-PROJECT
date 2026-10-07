@@ -2,11 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Files } from "@/components/Files";
-import { Empty, Ledger } from "@/components/Ledger";
+import { Architecture } from "@/components/Architecture";
+import { Empty, SelfHealing } from "@/components/Ledger";
 import { NODE_META, Pipeline, type NodeState } from "@/components/Pipeline";
-import { Review, ValidationLog } from "@/components/Review";
-import { SpecCard } from "@/components/SpecCard";
-import { api, type RunEvent, type ServerConfig, type Snapshot, type Spec } from "@/lib/api";
+import { Tests } from "@/components/Tests";
+import { api, type RunEvent, type ServerConfig, type Snapshot } from "@/lib/api";
 
 const EXAMPLES = [
   "A blog API with posts and comments. Users sign up and log in; only logged-in users can write. Posts are searchable by title.",
@@ -14,17 +14,13 @@ const EXAMPLES = [
   "Clinic appointment booking with doctors, patients and appointments. Staff must log in to change data.",
 ];
 
-const TABS = ["spec", "ledger", "files", "review", "sandbox"] as const;
+const TABS = ["architecture", "code", "self-healing", "tests"] as const;
 type Tab = (typeof TABS)[number];
 
 const NEXT: Record<string, string> = {
-  parse_spec: "approve_spec",
-  approve_spec: "plan",
+  parse_spec: "plan",
   plan: "generate",
-  generate: "review",
-  review: "validate",
-  classify: "reflect",
-  reflect: "validate",
+  generate: "validate",
 };
 
 function reduceStates(events: RunEvent[]): { states: Record<string, NodeState>; iteration: number } {
@@ -36,17 +32,12 @@ function reduceStates(events: RunEvent[]): { states: Record<string, NodeState>; 
       started = true;
       if (!Object.keys(states).length) states.parse_spec = "active";
     }
-    if (ev.type === "interrupt") states.approve_spec = "waiting";
     if (ev.type === "error") {
       for (const k of Object.keys(states)) if (states[k] === "active") states[k] = "failed";
     }
     if (ev.type !== "node" || !ev.node) continue;
     const node = ev.node;
     if (typeof ev.iteration === "number") iteration = ev.iteration;
-    if (node === "approve_spec" && ev.status === "rejected") {
-      states.approve_spec = "failed";
-      continue;
-    }
     if (node === "validate") {
       const ok = ev.validation?.ok;
       states.validate = ok ? "done" : "failed";
@@ -62,7 +53,7 @@ function reduceStates(events: RunEvent[]): { states: Record<string, NodeState>; 
     if (node === "reflect") states.validate = "active";
     states[node] = "done";
     const next = NEXT[node];
-    if (next && node !== "classify" && node !== "reflect") states[next] = next === "approve_spec" ? "active" : "active";
+    if (next) states[next] = "active";
     if (node === "failure_report") {
       states.classify = states.classify === "active" ? "idle" : states.classify;
       states.failure_report = "failed";
@@ -86,9 +77,10 @@ export default function Home() {
   const [runId, setRunId] = useState<string | null>(null);
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
-  const [tab, setTab] = useState<Tab>("spec");
+  const [tab, setTab] = useState<Tab>("architecture");
   const [error, setError] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [endedAt, setEndedAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const lastSeq = useRef(-1);
   const source = useRef<EventSource | null>(null);
@@ -116,17 +108,16 @@ export default function Home() {
         if (ev.seq <= lastSeq.current) return;
         lastSeq.current = ev.seq;
         setEvents((prev) => [...prev, ev]);
-        if (ev.type === "node" || ev.type === "interrupt" || ev.type === "error") refresh(id);
-        if (ev.type === "interrupt") setTab("spec");
-        if (ev.type === "node" && ev.node === "reflect") setTab("ledger");
+        if (ev.type === "node" || ev.type === "error") refresh(id);
+        if (ev.type === "node" && ev.node === "classify") setTab("self-healing");
         if (ev.type === "status" && ev.status && ev.status !== "running") {
           es.close();
+          setEndedAt(Date.now());
           refresh(id);
-          if (ev.status === "succeeded") setTab("files");
-          if (ev.status === "failed") setTab("sandbox");
+          if (ev.status === "succeeded" || ev.status === "failed") setTab("tests");
         }
       };
-      for (const t of ["node", "interrupt", "status", "error"]) es.addEventListener(t, onEvent as EventListener);
+      for (const t of ["node", "status", "error"]) es.addEventListener(t, onEvent as EventListener);
       es.onerror = () => {
         // The server closes the stream when the run goes idle; EventSource would retry forever.
         es.close();
@@ -154,24 +145,17 @@ export default function Home() {
       const { run_id } = await api.start({ prompt, inject_fault: fault, codegen_mode: mode }, accessCode);
       window.history.replaceState(null, "", `?run=${run_id}`);
       setSnap(null);
-      setTab("spec");
+      setTab("architecture");
       setStartedAt(Date.now());
+      setEndedAt(null);
       await attach(run_id);
     } catch (e) {
       setError((e as Error).message);
     }
   }
 
-  async function decide(approved: boolean, edited?: Spec) {
-    if (!runId) return;
-    await api.approve(runId, { approved, spec: edited }, accessCode);
-    setTab("ledger");
-    connect(runId);
-  }
-
   const status = snap?.status ?? (runId ? "running" : "idle");
   const running = status === "running";
-  const awaiting = status === "awaiting_approval";
 
   useEffect(() => {
     if (!running) return;
@@ -182,7 +166,7 @@ export default function Home() {
   const { states, iteration } = reduceStates(events);
   const lastNodeEvent = [...events].reverse().find((e) => e.type === "node");
   const errorEvent = events.find((e) => e.type === "error");
-  const elapsed = startedAt ? ((running ? now : Date.now()) - startedAt) / 1000 : null;
+  const elapsed = startedAt ? ((endedAt ?? now) - startedAt) / 1000 : null;
 
   return (
     <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
@@ -193,7 +177,7 @@ export default function Home() {
           </div>
           <div>
             <h1 className="text-lg font-semibold leading-tight">VibeStack</h1>
-            <p className="text-xs text-zinc-500">natural language → validated, self-healed FastAPI backend</p>
+            <p className="text-xs text-zinc-500">prompt → architecture → working, self-healed FastAPI app</p>
           </div>
         </div>
         {config && (
@@ -210,7 +194,7 @@ export default function Home() {
       <div className="grid gap-6 lg:grid-cols-[380px_minmax(0,1fr)]">
         <section className="space-y-5">
           <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-            <label className="mb-2 block text-xs uppercase tracking-wider text-zinc-500">Describe your backend</label>
+            <label className="mb-2 block text-xs uppercase tracking-wider text-zinc-500">Describe your application</label>
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
@@ -249,10 +233,10 @@ export default function Home() {
             </div>
             <button
               onClick={start}
-              disabled={running || awaiting || prompt.trim().length < 10}
+              disabled={running || prompt.trim().length < 10}
               className="mt-4 w-full rounded-lg bg-sky-500 py-2 text-sm font-semibold text-zinc-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {running ? "Agents working…" : awaiting ? "Waiting for approval" : "Generate backend"}
+              {running ? "Agents working…" : "Generate application"}
             </button>
             {error && <p className="mt-2 text-xs text-rose-400">{error}</p>}
           </div>
@@ -287,9 +271,9 @@ export default function Home() {
                   onClick={() => setTab(t)}
                   className={`-mb-px border-b-2 px-3 py-2.5 text-sm capitalize ${tab === t ? "border-sky-400 text-zinc-100" : "border-transparent text-zinc-500 hover:text-zinc-300"}`}
                 >
-                  {t}
-                  {t === "ledger" && snap?.ledger?.length ? <span className="ml-1 text-xs text-zinc-500">{snap.ledger.length}</span> : null}
-                  {t === "review" && snap?.review?.length ? <span className="ml-1 text-xs text-zinc-500">{snap.review.length}</span> : null}
+                  {t.replace("-", " ")}
+                  {t === "code" && snap?.files?.length ? <span className="ml-1 text-xs text-zinc-500">{snap.files.length}</span> : null}
+                  {t === "self-healing" && (snap?.iteration ?? 0) > 0 ? <span className="ml-1 text-xs text-amber-400">{snap?.iteration}</span> : null}
                 </button>
               ))}
               {snap?.has_artifact && runId && (
@@ -299,17 +283,16 @@ export default function Home() {
               )}
             </div>
             <div className="p-4">
-              {tab === "spec" &&
+              {tab === "architecture" &&
                 (snap?.spec ? (
-                  <SpecCard key={`${runId}-${awaiting}`} spec={snap.spec} awaiting={awaiting} onDecision={decide} />
+                  <Architecture spec={snap.spec} plan={snap.file_plan} />
                 ) : (
-                  <Empty text={running ? "Spec Architect is designing the data model…" : "Describe a backend and press Generate."} />
+                  <Empty text={running ? "The Architect is designing the data model and API…" : "Describe an application and press Generate."} />
                 ))}
-              {tab === "ledger" && <Ledger entries={snap?.ledger ?? []} />}
-              {tab === "files" && runId && <Files runId={runId} files={snap?.files ?? []} version={snap?.ledger?.length ?? 0} />}
-              {tab === "files" && !runId && <Empty text="Generated files appear here." />}
-              {tab === "review" && <Review findings={snap?.review ?? []} />}
-              {tab === "sandbox" && <ValidationLog validation={snap?.validation} report={snap?.report} />}
+              {tab === "code" && runId && <Files runId={runId} files={snap?.files ?? []} version={snap?.ledger?.length ?? 0} />}
+              {tab === "code" && !runId && <Empty text="Generated source files appear here." />}
+              {tab === "self-healing" && <SelfHealing entries={snap?.ledger ?? []} done={!running && !!snap?.validation} />}
+              {tab === "tests" && <Tests validation={snap?.validation} report={snap?.report} />}
             </div>
           </div>
         </section>
@@ -339,10 +322,8 @@ function StatusPill({ status }: { status: string }) {
   const map: Record<string, string> = {
     idle: "bg-zinc-800 text-zinc-400",
     running: "bg-sky-500/15 text-sky-300",
-    awaiting_approval: "bg-amber-500/15 text-amber-300",
     succeeded: "bg-emerald-500/15 text-emerald-300",
     failed: "bg-rose-500/15 text-rose-300",
-    rejected: "bg-zinc-700 text-zinc-300",
     error: "bg-rose-500/15 text-rose-300",
   };
   return <span className={`rounded-full px-2 py-0.5 text-[11px] ${map[status] ?? map.running}`}>{status.replace("_", " ")}</span>;

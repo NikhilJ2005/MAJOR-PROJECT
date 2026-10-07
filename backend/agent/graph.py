@@ -1,6 +1,6 @@
 """The VibeStack harness as a LangGraph state machine.
 
-    parse_spec -> approve_spec (interrupt) -> plan -> generate -> review -> validate
+    parse_spec (architect) -> plan -> generate -> validate
     validate --ok--------------------------------> package -> END
     validate --fail, attempts left--> classify -> reflect -> validate
     validate --fail, budget spent---> failure_report -> END
@@ -28,10 +28,8 @@ from .state import AgentState
 
 NODE_ORDER = [
     "parse_spec",
-    "approve_spec",
     "plan",
     "generate",
-    "review",
     "validate",
     "classify",
     "reflect",
@@ -46,11 +44,9 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
         g.add_node(name, getattr(nodes, name))
 
     g.add_edge(START, "parse_spec")
-    g.add_edge("parse_spec", "approve_spec")
-    g.add_conditional_edges("approve_spec", nodes.route_after_approval, {"plan": "plan", "end": END})
+    g.add_edge("parse_spec", "plan")
     g.add_edge("plan", "generate")
-    g.add_edge("generate", "review")
-    g.add_edge("review", "validate")
+    g.add_edge("generate", "validate")
     g.add_conditional_edges(
         "validate",
         nodes.route_after_validate,
@@ -96,7 +92,6 @@ def main(argv: list[str] | None = None) -> int:
 
     spec = json.loads(open(args.spec).read()) if args.spec else None
     options = {
-        "auto_approve": True,
         "inject_fault": args.fault,
         "codegen_mode": "template" if args.template else settings.codegen_mode,
     }

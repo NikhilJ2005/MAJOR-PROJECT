@@ -1,4 +1,4 @@
-"""VibeStack HTTP API: start runs, stream progress (SSE), approve specs, download output."""
+"""VibeStack HTTP API: start runs, stream progress (SSE), browse files, download output."""
 
 from __future__ import annotations
 
@@ -14,10 +14,9 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from agent.config import settings
-from agent.state import ProjectSpec
 
 from .runs import TERMINAL, RunManager
 
@@ -36,15 +35,8 @@ manager = RunManager()
 
 class RunRequest(BaseModel):
     prompt: str = Field(min_length=10, max_length=2000)
-    inject_fault: bool = False
-    auto_approve: bool = False
+    inject_fault: bool = True
     codegen_mode: str | None = Field(default=None, pattern="^(llm|template)$")
-
-
-class ApproveRequest(BaseModel):
-    approved: bool = True
-    spec: dict[str, Any] | None = None
-    reason: str = ""
 
 
 def _check_access(code: str | None) -> None:
@@ -77,7 +69,6 @@ def create_run(body: RunRequest, x_access_code: str | None = Header(default=None
         raise HTTPException(status_code=503, detail="OPENROUTER_API_KEY is not configured on the server")
     options = {
         "inject_fault": body.inject_fault,
-        "auto_approve": body.auto_approve,
         "codegen_mode": body.codegen_mode or settings.codegen_mode,
     }
     try:
@@ -99,23 +90,6 @@ def get_run(run_id: str) -> dict[str, Any]:
     if snap is None:
         raise HTTPException(status_code=404, detail="run not found")
     return snap
-
-
-@app.post("/api/runs/{run_id}/approve")
-def approve(run_id: str, body: ApproveRequest, x_access_code: str | None = Header(default=None)) -> dict[str, str]:
-    _check_access(x_access_code)
-    if body.approved and body.spec is not None:
-        try:
-            ProjectSpec.model_validate(body.spec)
-        except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=f"invalid spec: {exc.errors()[0]['msg']}") from exc
-    try:
-        manager.resume(run_id, body.model_dump())
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="run not found") from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"status": "resumed"}
 
 
 @app.get("/api/runs/{run_id}/events")
@@ -142,8 +116,8 @@ async def events(
             for ev in batch:
                 yield f"id: {ev['seq']}\nevent: {ev['type']}\ndata: {json.dumps(ev, default=str)}\n\n"
                 seq = ev["seq"] + 1
-            # Stop once the run is idle (finished, or paused for approval) and fully flushed.
-            if not run.active and not batch and (run.status in TERMINAL or run.status == "awaiting_approval"):
+            # Stop once the run has finished and every event is flushed.
+            if not run.active and not batch and run.status in TERMINAL:
                 return
             if time.monotonic() - last_beat > 15:
                 yield ": heartbeat\n\n"  # keeps proxies (e.g. Railway's edge) from closing the stream

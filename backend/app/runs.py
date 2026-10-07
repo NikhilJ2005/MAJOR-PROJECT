@@ -2,8 +2,8 @@
 
 Runs are decoupled from HTTP connections: a client can disconnect and
 reconnect to the event stream (Last-Event-ID) without affecting the run.
-Graph state is persisted by the SQLite checkpointer, so run state and pending
-approvals survive a server restart.
+Graph state is persisted by the SQLite checkpointer, so finished runs can still
+be inspected and downloaded after a server restart.
 """
 
 from __future__ import annotations
@@ -14,14 +14,12 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from langgraph.types import Command
-
 from agent.config import settings
 from agent.graph import build_graph, initial_state, sqlite_checkpointer
 
 log = logging.getLogger(__name__)
 
-TERMINAL = {"succeeded", "failed", "rejected", "error"}
+TERMINAL = {"succeeded", "failed", "error"}
 
 
 @dataclass
@@ -71,21 +69,6 @@ class RunManager:
             self._launch(run, state)
         return run
 
-    def resume(self, run_id: str, decision: dict[str, Any]) -> Run:
-        run = self.runs.get(run_id)
-        if run is None:
-            # Server restarted while awaiting approval: rebuild from the checkpoint.
-            snapshot = self.graph.get_state(self._config(run_id))
-            if not snapshot.values:
-                raise KeyError(run_id)
-            run = Run(id=run_id, prompt=snapshot.values.get("prompt", ""), status="awaiting_approval")
-            self.runs[run_id] = run
-        with self._lock:
-            if run.active or run.status != "awaiting_approval":
-                raise RuntimeError(f"run is not awaiting approval (status: {run.status})")
-            self._launch(run, Command(resume=decision))
-        return run
-
     def _launch(self, run: Run, graph_input: Any) -> None:
         run.status = "running"
         run.emit({"type": "status", "status": "running"})
@@ -97,11 +80,6 @@ class RunManager:
         try:
             for update in self.graph.stream(graph_input, config, stream_mode="updates"):
                 for node, delta in update.items():
-                    if node == "__interrupt__":
-                        payload = delta[0].value if delta else {}
-                        run.status = "awaiting_approval"
-                        run.emit({"type": "interrupt", "node": "approve_spec", "data": payload})
-                        continue
                     delta = delta or {}
                     run.emit(
                         {
@@ -112,15 +90,13 @@ class RunManager:
                             "files": sorted(delta.get("files", {}) or {}),
                             "validation": _trim_validation(delta.get("validation")),
                             "error_class": delta.get("error_class"),
-                            "review": delta.get("review"),
                             "iteration": delta.get("iteration"),
                         }
                     )
-            if run.status != "awaiting_approval":
-                values = self.graph.get_state(config).values
-                run.status = values.get("status", "succeeded")
-                if run.status not in TERMINAL:
-                    run.status = "failed"
+            values = self.graph.get_state(config).values
+            run.status = values.get("status", "succeeded")
+            if run.status not in TERMINAL:
+                run.status = "failed"
         except Exception as exc:  # noqa: BLE001 - surface any failure to the UI
             log.exception("run %s crashed", run.id)
             run.status = "error"
@@ -145,7 +121,6 @@ class RunManager:
             "file_plan": values.get("file_plan"),
             "files": sorted((values.get("files") or {}).keys()),
             "ledger": values.get("ledger", []),
-            "review": values.get("review", []),
             "validation": _trim_validation(values.get("validation")),
             "iteration": values.get("iteration", 0),
             "usage": values.get("usage", {}),

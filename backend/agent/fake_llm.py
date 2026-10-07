@@ -25,7 +25,7 @@ BLOG_SPEC = {
 
 
 class FakeLLM:
-    """Plays spec architect, API engineer, reviewer and reflector."""
+    """Plays architect, API engineer and reflector."""
 
     def __init__(self, spec=None, fix_reflection=True):
         self.spec = spec or BLOG_SPEC
@@ -34,16 +34,13 @@ class FakeLLM:
 
     def complete(self, role, system, user):
         usage = Usage(prompt_tokens=100, completion_tokens=50, cost_usd=0.0001, calls=1, models={role: 1})
-        if "Spec Architect" in system:
+        if "Architect of VibeStack" in system:
             self.calls.append("spec")
             return json.dumps(self.spec), usage
         if "API Engineer" in system:
             self.calls.append("entity")
             reference = user.split("Reference implementation:\n", 1)[1]
             return "RATIONALE: kept the reference contract\n" + reference, usage
-        if "Reviewer" in system:
-            self.calls.append("review")
-            return json.dumps({"findings": [{"severity": "Low", "file": "app/main.py", "issue": "no rate limiting"}]}), usage
         if "Reflector" in system:
             self.calls.append(f"reflect:{role}")
             m = re.search(r"File most likely at fault: (\S+)\n```python\n(.*?)```", user, re.S)

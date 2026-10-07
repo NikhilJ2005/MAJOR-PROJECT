@@ -24,7 +24,7 @@ HERE = Path(__file__).parent
 
 
 def run_case(graph, case: dict, offline: bool, fault: bool) -> dict:
-    options = {"auto_approve": True, "inject_fault": fault, "codegen_mode": "template" if offline else "llm"}
+    options = {"inject_fault": fault, "codegen_mode": "template" if offline else "llm"}
     state = initial_state(case["prompt"], options, case["spec"] if offline else None)
     config = {"configurable": {"thread_id": state["run_id"]}}
     t0 = time.monotonic()

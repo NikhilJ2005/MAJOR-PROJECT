@@ -167,7 +167,7 @@ class LocalSandbox:
 
     def _gate_tests(self, workdir: Path) -> tuple[bool, str]:
         code, out = self._run(
-            [sys.executable, "-m", "pytest", "-q", "-x", "--no-header", "-p", "no:cacheprovider", "tests"],
+            [sys.executable, "-m", "pytest", "-v", "-x", "--no-header", "-p", "no:cacheprovider", "tests"],
             workdir,
         )
         return code == 0, out

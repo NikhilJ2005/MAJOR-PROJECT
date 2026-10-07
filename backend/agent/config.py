@@ -22,11 +22,11 @@ class Settings:
     )
     # Tiered routing: strong model for spec + codegen, cheap model for review + healing.
     strong_model: str = field(
-        default_factory=lambda: os.environ.get("STRONG_MODEL", "anthropic/claude-sonnet-4.5")
+        default_factory=lambda: os.environ.get("STRONG_MODEL", "anthropic/claude-sonnet-4.6")
     )
-    cheap_model: str = field(default_factory=lambda: os.environ.get("CHEAP_MODEL", "openai/gpt-4o-mini"))
+    cheap_model: str = field(default_factory=lambda: os.environ.get("CHEAP_MODEL", "qwen/qwen3-coder"))
     fallback_model: str = field(
-        default_factory=lambda: os.environ.get("FALLBACK_MODEL", "deepseek/deepseek-chat")
+        default_factory=lambda: os.environ.get("FALLBACK_MODEL", "deepseek/deepseek-chat-v3.1")
     )
 
     # "llm" lets the model write entity files; "template" is fully deterministic.

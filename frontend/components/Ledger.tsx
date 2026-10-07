@@ -44,3 +44,23 @@ export function Ledger({ entries }: { entries: LedgerEntry[] }) {
 export function Empty({ text }: { text: string }) {
   return <div className="rounded-lg border border-dashed border-zinc-800 p-6 text-center text-sm text-zinc-500">{text}</div>;
 }
+
+const HEAL_AGENTS = ["fault_injector", "validator", "error_classifier", "reflector", "template_repair", "circuit_breaker"];
+
+export function SelfHealing({ entries, done }: { entries: LedgerEntry[]; done: boolean }) {
+  const heal = entries.filter((e) => HEAL_AGENTS.includes(e.agent.split(" ")[0]));
+  const repaired = heal.some((e) => e.agent.startsWith("reflector") || e.agent === "template_repair");
+  if (!heal.length) return <Empty text="When the sandbox finds a bug, the classifier → reflector → re-validate loop shows up here." />;
+  return (
+    <div className="space-y-4">
+      {done && (
+        <p className="text-sm text-zinc-400">
+          {repaired
+            ? "The agent found a bug in its own output, located the faulty file, patched it and re-validated, with no human involved."
+            : "The generated code passed validation on the first try; no healing was needed."}
+        </p>
+      )}
+      <Ledger entries={heal} />
+    </div>
+  );
+}

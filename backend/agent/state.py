@@ -178,7 +178,6 @@ class Validation(TypedDict, total=False):
 
 
 class Options(TypedDict, total=False):
-    auto_approve: bool
     inject_fault: bool
     codegen_mode: str
 
@@ -194,7 +193,6 @@ class AgentState(TypedDict, total=False):
     validation: Validation
     iteration: int
     error_class: str
-    review: list[dict[str, str]]
     ledger: Annotated[list[LedgerEntry], operator.add]
     usage: Annotated[dict[str, Any], merge_usage]
     status: str

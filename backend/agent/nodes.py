@@ -13,8 +13,6 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from langgraph.types import interrupt
-from pydantic import BaseModel, Field, field_validator
 
 from . import prompts
 from .codegen import inject_fault, plan_files, render_project
@@ -49,7 +47,7 @@ def parse_spec(state: AgentState) -> dict[str, Any]:
         return {
             "spec": spec.model_dump(),
             "status": "spec_ready",
-            "ledger": [_entry("spec_architect", "used provided spec", "spec supplied with the request")],
+            "ledger": [_entry("architect", "used provided spec", "spec supplied with the request")],
         }
     llm = get_llm()
     if llm is None:
@@ -64,37 +62,13 @@ def parse_spec(state: AgentState) -> dict[str, Any]:
         "usage": usage.as_state(),
         "ledger": [
             _entry(
-                "spec_architect",
+                "architect",
                 f"designed {len(spec.entities)} entities: {names}" + (" + JWT auth" if spec.auth else ""),
                 "natural language converted to a validated ProjectSpec (single source of truth)",
                 tokens=usage.total_tokens,
             )
         ],
     }
-
-
-def approve_spec(state: AgentState) -> dict[str, Any]:
-    if _opts(state).get("auto_approve"):
-        return {"status": "approved"}
-    decision = interrupt({"type": "approve_spec", "spec": state["spec"]})
-    if not decision or not decision.get("approved", False):
-        return {
-            "status": "rejected",
-            "ledger": [_entry("human", "rejected the spec", decision.get("reason", "") if decision else "")],
-        }
-    edited = decision.get("spec")
-    if edited and edited != state["spec"]:
-        spec = ProjectSpec.model_validate(edited)
-        return {
-            "spec": spec.model_dump(),
-            "status": "approved",
-            "ledger": [_entry("human", "approved an edited spec", "human-in-the-loop correction")],
-        }
-    return {"status": "approved", "ledger": [_entry("human", "approved the spec", "")]}
-
-
-def route_after_approval(state: AgentState) -> str:
-    return "plan" if state.get("status") == "approved" else "end"
 
 
 # --------------------------------------------------------------------------- plan + generate
@@ -179,80 +153,6 @@ def _generate_entity(
     new_files = {p: blocks[p] for p in expected if p in blocks and blocks[p].strip()}
     m = re.search(r"RATIONALE:\s*(.+)", text)
     return new_files, (m.group(1).strip() if m else "entity files generated"), usage
-
-
-# --------------------------------------------------------------------------- review council
-
-
-_STATIC_RULES: list[tuple[str, str, re.Pattern[str]]] = [
-    ("high", "dynamic code execution", re.compile(r"\b(eval|exec)\(|os\.system\(|subprocess\.")),
-    ("high", "raw SQL built with string formatting", re.compile(r"text\(\s*f[\"']|execute\(\s*f[\"']")),
-    ("medium", "password hash may be exposed in a response model", re.compile(r"class \w+Read\b[^\n]*\n(?:[^\n]*\n){0,8}?\s+password_hash")),
-    ("medium", "CORS allows every origin", re.compile(r"allow_origins=\[\s*[\"']\*[\"']")),
-]
-
-
-def review(state: AgentState) -> dict[str, Any]:
-    spec = _spec(state)
-    files = state["files"]
-    findings: list[dict[str, str]] = []
-    for path, src in files.items():
-        if not path.endswith(".py") or path.startswith("tests/"):
-            continue
-        for severity, issue, pattern in _STATIC_RULES:
-            if pattern.search(src):
-                findings.append({"severity": severity, "file": path, "issue": issue, "source": "static"})
-        if path.startswith("app/routers/") and path not in ("app/routers/auth.py", "app/routers/__init__.py"):
-            if "limit" not in src:
-                findings.append({"severity": "medium", "file": path, "issue": "list endpoint has no limit", "source": "static"})
-            if spec.auth and "get_current_user" not in src:
-                findings.append({"severity": "high", "file": path, "issue": "write endpoints are not authenticated", "source": "static"})
-    if spec.auth:
-        findings.append(
-            {"severity": "info", "file": "app/security.py", "issue": "set SECRET_KEY via environment in production", "source": "static"}
-        )
-
-    out: dict[str, Any] = {}
-    llm = get_llm()
-    if llm is not None:
-        try:
-            check_budget(state.get("usage"))
-            routers = {p: s for p, s in files.items() if p.startswith(("app/routers/", "app/schemas/"))}
-            blob = "\n\n".join(f"# {p}\n{s}" for p, s in routers.items())
-            result, usage = structured(
-                llm, "cheap", prompts.REVIEW_SYSTEM, prompts.REVIEW_USER.format(spec=_spec_json(spec), files=blob[:24000]), _ReviewOut
-            )
-            findings += [{**f.model_dump(), "source": "llm"} for f in result.findings]
-            out["usage"] = usage.as_state()
-        except LLMError as exc:
-            log.warning("LLM review skipped: %s", exc)
-
-    counts = {s: sum(1 for f in findings if f["severity"] == s) for s in ("high", "medium", "low", "info")}
-    summary = ", ".join(f"{n} {s}" for s, n in counts.items() if n) or "no findings"
-    out.update(
-        {
-            "review": findings,
-            "status": "reviewed",
-            "ledger": [_entry("review_council", f"reviewed code: {summary}", "advisory security/architecture pass")],
-        }
-    )
-    return out
-
-
-class _Finding(BaseModel):
-    severity: str = "info"
-    file: str = ""
-    issue: str
-
-    @field_validator("severity")
-    @classmethod
-    def _norm(cls, v: str) -> str:
-        v = v.lower().strip()
-        return v if v in ("high", "medium", "low", "info") else "info"
-
-
-class _ReviewOut(BaseModel):
-    findings: list[_Finding] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- validate + heal
@@ -459,15 +359,12 @@ def _entry(agent: str, action: str, rationale: str, *, files: list[str] | None =
 
 __all__ = [
     "parse_spec",
-    "approve_spec",
     "plan",
     "generate",
-    "review",
     "validate",
     "classify",
     "reflect",
     "package",
     "failure_report",
-    "route_after_approval",
     "route_after_validate",
 ]
