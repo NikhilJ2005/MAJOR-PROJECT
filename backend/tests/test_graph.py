@@ -22,6 +22,18 @@ def test_architecture_to_working_app_with_self_heal(fake_llm):
     assert agents.index("fault_injector") < agents.index("error_classifier") < agents.index("reflector (cheap)")
     assert "reflect:cheap" in fake_llm.calls  # cheap model handles the first repair attempt
     assert values["usage"]["total_tokens"] > 0
+    reflector = next(e for e in values["ledger"] if e["agent"].startswith("reflector"))
+    assert reflector["model"] == "cheap"  # FakeLLM reports the role as the model name
+    assert "-from sqlalchemy.orm import Sesion" in reflector["diff"]["app/routers/post.py"]
+    assert "+from sqlalchemy.orm import Session" in reflector["diff"]["app/routers/post.py"]
+
+
+def test_status_bug_heals(fake_llm):
+    values = _run(build_graph(), initial_state("blog", {"fault": "status", "codegen_mode": "template"}, BLOG_SPEC))
+    assert values["status"] == "succeeded"
+    assert values["iteration"] >= 1
+    classify = next(e for e in values["ledger"] if e["agent"] == "error_classifier")
+    assert "contract" in classify["action"] and "app/routers/post.py" in classify["action"]
 
 
 def test_clean_run_needs_no_healing(fake_llm):

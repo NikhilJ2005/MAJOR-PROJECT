@@ -85,14 +85,17 @@ def initial_state(prompt: str, options: dict[str, Any] | None = None, spec: dict
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Generate a validated FastAPI backend from a description")
     ap.add_argument("prompt")
-    ap.add_argument("--fault", action="store_true", help="inject a bug to demo self-healing")
+    ap.add_argument(
+        "--fault", nargs="?", const="import", default="none", choices=["none", "import", "status"],
+        help="plant a bug to demo self-healing (default kind: import)",
+    )
     ap.add_argument("--template", action="store_true", help="deterministic template codegen (no LLM for code)")
     ap.add_argument("--spec", help="path to a ProjectSpec JSON (skips the LLM spec step)")
     args = ap.parse_args(argv)
 
     spec = json.loads(open(args.spec).read()) if args.spec else None
     options = {
-        "inject_fault": args.fault,
+        "fault": args.fault,
         "codegen_mode": "template" if args.template else settings.codegen_mode,
     }
     state = initial_state(args.prompt, options, spec)

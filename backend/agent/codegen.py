@@ -8,6 +8,7 @@ reference contract and as the last-resort repair source for self-healing.
 from __future__ import annotations
 
 import pprint
+import re
 from pathlib import Path
 from typing import Any
 
@@ -161,14 +162,30 @@ def render_project(spec: ProjectSpec) -> dict[str, str]:
     return files
 
 
-# A deliberately broken import, used to demo the self-healing loop on demand.
-FAULT_FIND = "from sqlalchemy.orm import Session"
-FAULT_REPLACE = "from sqlalchemy.orm import Sesion"
+# Deliberate bugs used to demo the self-healing loop on demand. Each one fails at a
+# different validation gate, so the classifier has real work to do.
+FAULT_KINDS = ("none", "import", "status")
+_IMPORT_OK = "from sqlalchemy.orm import Session"
+_IMPORT_BROKEN = "from sqlalchemy.orm import Sesion"
+_STATUS_201 = re.compile(r"status_code\s*=\s*(status\.HTTP_201_CREATED|201)")
 
 
-def inject_fault(spec: ProjectSpec, files: dict[str, str]) -> tuple[str, str] | None:
-    path = f"app/routers/{spec.entities[0].module}.py"
-    src = files.get(path, "")
-    if FAULT_FIND not in src:
+def inject_fault(spec: ProjectSpec, files: dict[str, str], kind: str = "import") -> tuple[str, str, str] | None:
+    """Plant a bug in the first entity's router. Returns (path, broken source, description)."""
+    if kind not in ("import", "status"):
         return None
-    return path, src.replace(FAULT_FIND, FAULT_REPLACE, 1)
+    path = f"app/routers/{spec.entities[0].module}.py"
+    src = files.get(path)
+    if src is None:
+        return None
+    if kind == "status" and _STATUS_201.search(src):
+        broken = _STATUS_201.sub("status_code=status.HTTP_200_OK", src, count=1)
+        if "from fastapi import" in broken and " status" not in broken.split("from fastapi import", 1)[1].split("\n", 1)[0]:
+            broken = "from fastapi import status\n" + broken
+        return path, broken, "create endpoint returns 200 instead of 201 (caught by the API tests)"
+    # "import", or "status" when the generated router has no explicit 201 to break.
+    if _IMPORT_OK in src:
+        broken = src.replace(_IMPORT_OK, _IMPORT_BROKEN, 1)
+    else:
+        broken = _IMPORT_BROKEN + "\n" + src
+    return path, broken, "misspelled import Session -> Sesion (caught when the app is imported)"

@@ -8,7 +8,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,7 +35,7 @@ manager = RunManager()
 
 class RunRequest(BaseModel):
     prompt: str = Field(min_length=10, max_length=2000)
-    inject_fault: bool = True
+    fault: Literal["none", "import", "status"] = "import"
     codegen_mode: str | None = Field(default=None, pattern="^(llm|template)$")
 
 
@@ -68,7 +68,7 @@ def create_run(body: RunRequest, x_access_code: str | None = Header(default=None
     if not settings.llm_enabled:
         raise HTTPException(status_code=503, detail="OPENROUTER_API_KEY is not configured on the server")
     options = {
-        "inject_fault": body.inject_fault,
+        "fault": body.fault,
         "codegen_mode": body.codegen_mode or settings.codegen_mode,
     }
     try:

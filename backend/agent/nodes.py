@@ -6,6 +6,7 @@ which is what makes the run explainable after the fact.
 
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 import shutil
@@ -66,6 +67,7 @@ def parse_spec(state: AgentState) -> dict[str, Any]:
                 f"designed {len(spec.entities)} entities: {names}" + (" + JWT auth" if spec.auth else ""),
                 "natural language converted to a validated ProjectSpec (single source of truth)",
                 tokens=usage.total_tokens,
+                model=_model(usage),
             )
         ],
     }
@@ -120,17 +122,24 @@ def generate(state: AgentState) -> dict[str, Any]:
                         rationale,
                         files=sorted(new_files),
                         tokens=usage.total_tokens,
+                        model=_model(usage),
                     )
                 )
 
-    if opts.get("inject_fault"):
-        fault = inject_fault(spec, files)
-        if fault:
-            path, broken = fault
-            files[path] = broken
-            ledger.append(
-                _entry("fault_injector", "planted a broken import (demo mode)", "proves the self-healing loop", files=[path])
+    kind = opts.get("fault") or ("import" if opts.get("inject_fault") else "none")
+    fault = inject_fault(spec, files, kind)
+    if fault:
+        path, broken, description = fault
+        before, files[path] = files[path], broken
+        ledger.append(
+            _entry(
+                "fault_injector",
+                f"planted a bug (demo mode): {description}",
+                "proves the self-healing loop",
+                files=[path],
+                diff={path: _diff(path, before, broken)},
             )
+        )
 
     out: dict[str, Any] = {"files": files, "status": "generated", "iteration": 0, "ledger": ledger}
     if total.calls:
@@ -252,6 +261,8 @@ def reflect(state: AgentState) -> dict[str, Any]:
                 files=sorted(changed),
                 tokens=usage.total_tokens,
                 iteration=attempt,
+                model=_model(usage),
+                diff={p: _diff(p, files.get(p, ""), body) for p, body in changed.items()},
             )
         ],
     }
@@ -346,7 +357,17 @@ def failure_report(state: AgentState) -> dict[str, Any]:
     return {"artifact_path": path, "report": report, "status": "failed", "ledger": [entry]}
 
 
-def _entry(agent: str, action: str, rationale: str, *, files: list[str] | None = None, tokens: int = 0, iteration: int | None = None) -> dict[str, Any]:
+def _entry(
+    agent: str,
+    action: str,
+    rationale: str,
+    *,
+    files: list[str] | None = None,
+    tokens: int = 0,
+    iteration: int | None = None,
+    model: str | None = None,
+    diff: dict[str, str] | None = None,
+) -> dict[str, Any]:
     e: dict[str, Any] = {"agent": agent, "action": action, "rationale": rationale}
     if files:
         e["files"] = files
@@ -354,7 +375,25 @@ def _entry(agent: str, action: str, rationale: str, *, files: list[str] | None =
         e["tokens"] = tokens
     if iteration is not None:
         e["iteration"] = iteration
+    if model:
+        e["model"] = model
+    if diff:
+        e["diff"] = {p: d for p, d in diff.items() if d}
     return e
+
+
+def _model(usage: Usage) -> str | None:
+    """The model that actually served the call(s): shows fallbacks in the UI and ledger."""
+    return ", ".join(usage.models) or None
+
+
+def _diff(path: str, before: str, after: str, max_lines: int = 60) -> str:
+    lines = list(
+        difflib.unified_diff(before.splitlines(), after.splitlines(), f"a/{path}", f"b/{path}", n=2, lineterm="")
+    )
+    if len(lines) > max_lines:
+        lines = lines[:max_lines] + [f"... ({len(lines) - max_lines} more lines)"]
+    return "\n".join(lines)
 
 
 __all__ = [

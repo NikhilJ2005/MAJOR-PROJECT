@@ -156,6 +156,8 @@ class LedgerEntry(TypedDict, total=False):
     files: list[str]
     tokens: int
     iteration: int
+    model: str
+    diff: dict[str, str]
 
 
 def merge_usage(a: dict[str, Any] | None, b: dict[str, Any] | None) -> dict[str, Any]:
@@ -178,7 +180,8 @@ class Validation(TypedDict, total=False):
 
 
 class Options(TypedDict, total=False):
-    inject_fault: bool
+    inject_fault: bool  # legacy flag, same as fault="import"
+    fault: str  # "none" | "import" | "status"
     codegen_mode: str
 
 
