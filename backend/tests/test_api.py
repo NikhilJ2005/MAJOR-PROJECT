@@ -46,3 +46,37 @@ def test_short_prompt_rejected(fake_llm):
 
     with TestClient(app) as client:
         assert client.post("/api/runs", json={"prompt": "hi"}).status_code == 422
+
+
+def test_live_preview_runs_generated_app_behind_proxy(fake_llm):
+    from app.main import app, previews
+
+    with TestClient(app) as client:
+        run_id = client.post("/api/runs", json={"prompt": "A blog with posts and comments", "fault": "none"}).json()["run_id"]
+        assert _wait(client, run_id, {"succeeded", "failed", "error"})["status"] == "succeeded"
+        assert client.get(f"/api/runs/{run_id}/preview").json()["running"] is False
+        assert client.get(f"/preview/{run_id}/health").status_code == 404
+
+        r = client.post(f"/api/runs/{run_id}/preview")
+        assert r.status_code == 200, r.text
+        base = r.json()["base"]
+        try:
+            assert client.get(f"{base}/health").json() == {"status": "ok"}
+
+            # Swagger UI works behind the proxy: it points at the prefixed OpenAPI document.
+            docs = client.get(f"{base}/docs").text
+            assert f"{base}/openapi.json" in docs
+            assert "/posts/" in client.get(f"{base}/openapi.json").json()["paths"]
+
+            # Use the generated app like a user would: register, log in, write, read.
+            creds = {"email": "demo@example.com", "password": "demo-pass-123"}
+            assert client.post(f"{base}/auth/register", json=creds).status_code == 201
+            token = client.post(f"{base}/auth/login", json=creds).json()["access_token"]
+            auth = {"Authorization": f"Bearer {token}"}
+            me = client.get(f"{base}/auth/me", headers=auth).json()
+            assert client.post(f"{base}/posts/", json={"title": "x", "body": "y", "author_id": me["id"]}).status_code == 401
+            r = client.post(f"{base}/posts/", json={"title": "Hello", "body": "World", "author_id": me["id"]}, headers=auth)
+            assert r.status_code == 201, r.text
+            assert [p["title"] for p in client.get(f"{base}/posts/?q=Hell").json()] == ["Hello"]
+        finally:
+            previews.stop_all()

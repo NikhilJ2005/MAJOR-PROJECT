@@ -7,10 +7,13 @@ import json
 import logging
 import os
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, Header, HTTPException, Request
+import httpx
+from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,11 +21,28 @@ from pydantic import BaseModel, Field
 
 from agent.config import settings
 
+from .preview import PreviewError, PreviewManager
 from .runs import TERMINAL, RunManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-app = FastAPI(title="VibeStack", version="0.1.0", description="Agentic natural-language-to-backend harness")
+previews = PreviewManager()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    app.state.proxy = httpx.AsyncClient(timeout=30, trust_env=False)
+    yield
+    await app.state.proxy.aclose()
+    previews.stop_all()
+
+
+app = FastAPI(
+    title="VibeStack",
+    version="0.1.0",
+    description="Agentic natural-language-to-backend harness",
+    lifespan=lifespan,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",") if o],
@@ -145,6 +165,53 @@ def download(run_id: str) -> FileResponse:
     if not path or not Path(path).exists():
         raise HTTPException(status_code=404, detail="no artifact for this run")
     return FileResponse(path, media_type="application/zip", filename=Path(path).name)
+
+
+@app.post("/api/runs/{run_id}/preview")
+async def start_preview(run_id: str, x_access_code: str | None = Header(default=None)) -> dict[str, Any]:
+    """Start the generated app as a live process, reachable at /preview/<run_id>/."""
+    _check_access(x_access_code)
+    snap = manager.snapshot(run_id)
+    if snap is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    if snap["status"] != "succeeded":
+        raise HTTPException(status_code=409, detail="only a successfully validated app can be previewed")
+    files = manager.files(run_id)
+    try:
+        p = await run_in_threadpool(previews.start, run_id, files)
+    except PreviewError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"running": True, "base": f"/preview/{run_id}", "docs": f"/preview/{run_id}/docs", "started_at": p.started_at}
+
+
+@app.get("/api/runs/{run_id}/preview")
+def preview_status(run_id: str) -> dict[str, Any]:
+    p = previews.get(run_id)
+    return {"running": bool(p), "base": f"/preview/{run_id}", "docs": f"/preview/{run_id}/docs"}
+
+
+_HOP_HEADERS = {"connection", "keep-alive", "transfer-encoding", "content-encoding", "content-length", "upgrade"}
+
+
+@app.api_route("/preview/{run_id}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def preview_proxy(run_id: str, path: str, request: Request) -> Response:
+    """Reverse proxy to the generated app, so it is reachable on the platform's single public port."""
+    p = previews.get(run_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="preview not running; start it from the Live App tab")
+    forward = {k: v for k, v in request.headers.items() if k.lower() in ("content-type", "authorization", "accept")}
+    try:
+        upstream = await request.app.state.proxy.request(
+            request.method,
+            f"{p.base_url}/{path}",
+            params=request.query_params,
+            content=await request.body(),
+            headers=forward,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"preview unreachable: {exc}") from exc
+    headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _HOP_HEADERS}
+    return Response(upstream.content, status_code=upstream.status_code, headers=headers)
 
 
 # Serve the exported Next.js frontend from the same origin when it is present (Railway, Docker).

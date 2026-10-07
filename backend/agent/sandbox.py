@@ -24,7 +24,7 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 
@@ -62,7 +62,7 @@ def _tail(text: str, limit: int = MAX_LOG_CHARS) -> str:
     return text if len(text) <= limit else "...[truncated]...\n" + text[-limit:]
 
 
-def _free_port() -> int:
+def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
@@ -89,15 +89,22 @@ class LocalSandbox:
         self.timeout_s = timeout_s or settings.gate_timeout_s
         self.identity = _sandbox_identity()
 
-    def _popen(self, args: list[str], workdir: Path) -> subprocess.Popen:
-        kwargs = {}
+    def hand_over(self, workdir: Path) -> None:
+        """Give the sandbox user ownership of a workspace it must write to (SQLite files)."""
+        if self.identity:
+            for path in [workdir, *workdir.rglob("*")]:
+                os.chown(path, *self.identity)
+
+    def spawn(self, args: list[str], workdir: Path, stdout: Any = subprocess.PIPE) -> subprocess.Popen:
+        """Start a process for generated code: scrubbed env, own process group, unprivileged user."""
+        kwargs: dict[str, Any] = {}
         if self.identity:
             kwargs = {"user": self.identity[0], "group": self.identity[1], "extra_groups": []}
         return subprocess.Popen(
             args,
             cwd=workdir,
             env=self._env(workdir),
-            stdout=subprocess.PIPE,
+            stdout=stdout,
             stderr=subprocess.STDOUT,
             text=True,
             start_new_session=True,
@@ -120,7 +127,7 @@ class LocalSandbox:
         return _tail(text.replace(str(workdir.resolve()) + "/", "").replace(str(workdir) + "/", ""))
 
     def _run(self, args: list[str], workdir: Path) -> tuple[int, str]:
-        proc = self._popen(args, workdir)
+        proc = self.spawn(args, workdir)
         try:
             out, _ = proc.communicate(timeout=self.timeout_s)
         except subprocess.TimeoutExpired:
@@ -134,8 +141,8 @@ class LocalSandbox:
         return code == 0, out
 
     def _gate_boot(self, workdir: Path) -> tuple[bool, str]:
-        port = _free_port()
-        proc = self._popen(
+        port = free_port()
+        proc = self.spawn(
             [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port)],
             workdir,
         )
@@ -177,9 +184,7 @@ class LocalSandbox:
         t0 = time.monotonic()
         try:
             write_tree(workdir, files)
-            if self.identity:
-                for path in [workdir, *workdir.rglob("*")]:
-                    os.chown(path, *self.identity)
+            self.hand_over(workdir)
             for gate, fn in (
                 ("import", self._gate_import),
                 ("boot", self._gate_boot),

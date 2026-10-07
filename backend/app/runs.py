@@ -128,6 +128,9 @@ class RunManager:
             "has_artifact": bool(values.get("artifact_path")),
         }
 
+    def files(self, run_id: str) -> dict[str, str]:
+        return dict(self.graph.get_state(self._config(run_id)).values.get("files") or {})
+
     def file(self, run_id: str, path: str) -> str | None:
         values = self.graph.get_state(self._config(run_id)).values
         return (values.get("files") or {}).get(path)
