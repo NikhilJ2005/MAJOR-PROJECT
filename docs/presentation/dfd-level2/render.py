@@ -28,8 +28,10 @@ class Diagram:
                               anchor=anchor, align=align, spacing=4 * S)
 
     def circle(self, cx, cy, r, label):
-        self.d.ellipse([(cx - r) * S, (cy - r) * S, (cx + r) * S, (cy + r) * S], outline=K, width=LW * S, fill="white")
-        self.text(label, cx, cy, 24, bold=True)
+        """Process symbol, drawn as a rhombus with half-diagonal r."""
+        pts = [(cx, cy - r), (cx + r, cy), (cx, cy + r), (cx - r, cy)]
+        self.d.polygon([(x * S, y * S) for x, y in pts], outline=K, width=LW * S, fill="white")
+        self.text(label, cx, cy, 22, bold=True)
 
     def rect(self, x, y, w, h, label, size=26):
         self.d.rectangle([x * S, y * S, (x + w) * S, (y + h) * S], outline=K, width=LW * S, fill="white")
@@ -66,12 +68,12 @@ class Diagram:
         print("wrote", path)
 
 
-R, Y = 105, 560
+R, Y = 125, 560
 
 
 def edge(cx, dx, r=R, cy=Y, top=False):
-    """y on circle (cx, cy) at horizontal offset dx (bottom unless top)."""
-    dy = (r * r - dx * dx) ** 0.5
+    """y on the rhombus edge (cx, cy) at horizontal offset dx (bottom unless top)."""
+    dy = r - abs(dx)
     return round(cy - dy) if top else round(cy + dy)
 
 
@@ -152,7 +154,7 @@ def dfd_40(out):
     d.rect(1310, 240, 240, 80, "LLM Provider")
     d.arrow(1430, 320, 1430, Y - R, both=True); d.text("cheap → strong\nmodel / patch", 1445, 390, anchor="lm")
     # 4.5 below 4.4
-    c5 = 850
+    c5 = 860
     d.circle(1430, c5, R, "4.5\nApply Patch\n& Log")
     d.arrow(1430, Y + R, 1430, c5 - R); d.text("patched\nfile", 1445, 705, anchor="lm")
     d.store(1610, 820, 260, 60, "D3", "Change Ledger")
