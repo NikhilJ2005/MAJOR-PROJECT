@@ -3,6 +3,7 @@
 
 # ---------------------------------------------------------------- 1 Title
 s = prs.slides.add_slide(BLANK)
+logo(s)
 rect(s, 0, 0, 0.35, 7.5, fill=ACCENT, shape=MSO_SHAPE.RECTANGLE)
 tb(s, 1.1, 1.3, 11, 0.4, ["SEMINAR PRESENTATION"], size=13, color=ACCENT, bold=True)
 tb(s, 1.1, 1.85, 11.2, 1.0, ["LangGraph"], size=54, font=HEAD, bold=True)

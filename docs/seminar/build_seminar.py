@@ -9,6 +9,7 @@ from lxml import etree
 
 HEAD, BODY = "Poppins", "Inter"
 INK, MUTED, ACCENT, SOFT, CARD, LINE, WHITE = "1F2937", "6B7280", "4F46E5", "EEF2FF", "F3F4F6", "D1D5DB", "FFFFFF"
+LOGO = "mits-logo.png"
 FOOT = "LangGraph Seminar  ·  Nikhil Jimmy Thomas (MUT23CA055)"
 
 prs = Presentation()
@@ -98,8 +99,13 @@ def arrow(s, x1, y1, x2, y2, color=MUTED, w=1.75, both=False):
     return c
 
 
+def logo(s):
+    s.shapes.add_picture(LOGO, Inches(11.76), Inches(0.21), Inches(1.32), Inches(0.75))
+
+
 def base(title, num, kicker=None):
     s = prs.slides.add_slide(BLANK)
+    logo(s)
     rect(s, 0.6, 0.62, 0.09, 0.62, fill=ACCENT, shape=MSO_SHAPE.RECTANGLE)
     if kicker:
         tb(s, 0.85, 0.42, 10, 0.3, [kicker.upper()], size=11, color=ACCENT, font=BODY, bold=True)
