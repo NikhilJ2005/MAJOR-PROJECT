@@ -1,0 +1,170 @@
+"""{{ e.name }} endpoints: CRUD{% if actions %} plus custom actions{% endif %}.
+
+Who may do what: {{ access_text(e) }}.
+"""
+
+from flask import Blueprint, jsonify, request
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.database import db_session
+from app.errors import ApiError
+from app.models.{{ e.module }} import {{ e.name }}
+from app.schemas.{{ e.module }} import {{ e.name }}Create, {{ e.name }}Read, {{ e.name }}Update
+from app.services import {{ e.module }} as service  # noqa: F401
+{% if spec.auth %}
+from app.models.user import User
+from app.security import current_user, require_admin  # noqa: F401
+{% endif %}
+
+bp = Blueprint("{{ e.module }}", __name__, url_prefix="/{{ e.table }}")
+
+
+def _json(obj: {{ e.name }}) -> dict:
+    return {{ e.name }}Read.model_validate(obj).model_dump(mode="json")
+
+
+def _body() -> dict:
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
+
+
+def _int_arg(name: str, default: int | None = None, low: int | None = None, high: int | None = None) -> int | None:
+    """An integer query parameter, with range checks (422 when invalid)."""
+    raw = request.args.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ApiError(422, f"{name} must be an integer") from None
+    if (low is not None and value < low) or (high is not None and value > high):
+        raise ApiError(422, f"{name} is out of range")
+    return value
+
+
+def _get_or_404(db: Session, item_id: int{% if e.owned %}, user: User{% endif %}) -> {{ e.name }}:
+    obj = db.get({{ e.name }}, item_id)
+{% if e.owned %}
+    if obj is None or obj.owner_id != user.id:  # other users' rows look like they don't exist
+{% else %}
+    if obj is None:
+{% endif %}
+        raise ApiError(404, "{{ e.name }} not found")
+    return obj
+
+
+def _commit(db: Session) -> None:
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise ApiError(409, "conflicts with existing data (duplicate value or unknown reference)") from exc
+{% for a in actions %}
+
+
+@bp.{{ a.method | lower }}("{{ a.path | replace('{item_id}', '<int:item_id>') }}")
+def {{ a.name }}_{{ e.module }}({% if a.on_item %}item_id: int{% endif %}):
+    """{{ a.description }}"""
+    db = db_session()
+{% if spec.auth %}
+    user = current_user(db)
+{% endif %}
+{% if a.admin_only and spec.auth %}
+    require_admin(user)
+{% endif %}
+    payload = {% if a.method == "GET" %}request.args.to_dict(){% else %}_body(){% endif %}
+
+    obj = {% if a.on_item %}_get_or_404(db, item_id{% if e.owned %}, user{% endif %}){% else %}None{% endif %}
+
+    return jsonify(service.{{ a.name }}(db, obj, payload, {% if spec.auth %}user{% else %}None{% endif %}))
+{% endfor %}
+
+
+@bp.post("/")
+def create_{{ e.module }}():
+    db = db_session()
+{% if spec.auth %}
+    user = current_user(db)
+{% endif %}
+{% if e.write_access == "admin" %}
+    require_admin(user)
+{% endif %}
+    payload = {{ e.name }}Create.model_validate(_body())
+    obj = {{ e.name }}(**payload.model_dump(){% if e.owned %}, owner_id=user.id{% endif %})
+    db.add(obj)
+    _commit(db)
+    db.refresh(obj)
+    return _json(obj), 201
+
+
+@bp.get("/")
+def list_{{ e.table }}():
+    db = db_session()
+{% if e.owned %}
+    user = current_user(db)
+{% endif %}
+    skip = _int_arg("skip", 0, low=0)
+    limit = _int_arg("limit", 50, low=1, high=100)
+    stmt = select({{ e.name }})
+{% if e.owned %}
+    stmt = stmt.where({{ e.name }}.owner_id == user.id)
+{% endif %}
+{% if search_field %}
+    q = request.args.get("q")
+    if q:
+        stmt = stmt.where({{ e.name }}.{{ search_field }}.ilike(f"%{q}%"))
+{% endif %}
+{% for fk in e.foreign_keys %}
+    {{ fk.name }} = _int_arg("{{ fk.name }}")
+    if {{ fk.name }} is not None:
+        stmt = stmt.where({{ e.name }}.{{ fk.name }} == {{ fk.name }})
+{% endfor %}
+    total = db.scalar(select(func.count()).select_from(stmt.subquery()))
+    rows = db.scalars(stmt.order_by({{ e.name }}.id).offset(skip).limit(limit)).all()
+    response = jsonify([_json(row) for row in rows])
+    response.headers["X-Total-Count"] = str(total)
+    return response
+
+
+@bp.get("/<int:item_id>")
+def get_{{ e.module }}(item_id: int):
+    db = db_session()
+{% if e.owned %}
+    user = current_user(db)
+{% endif %}
+    return _json(_get_or_404(db, item_id{% if e.owned %}, user{% endif %}))
+
+
+@bp.patch("/<int:item_id>")
+def update_{{ e.module }}(item_id: int):
+    db = db_session()
+{% if spec.auth %}
+    user = current_user(db)
+{% endif %}
+{% if e.write_access == "admin" %}
+    require_admin(user)
+{% endif %}
+    obj = _get_or_404(db, item_id{% if e.owned %}, user{% endif %})
+    payload = {{ e.name }}Update.model_validate(_body())
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(obj, key, value)
+    _commit(db)
+    db.refresh(obj)
+    return _json(obj)
+
+
+@bp.delete("/<int:item_id>")
+def delete_{{ e.module }}(item_id: int):
+    db = db_session()
+{% if spec.auth %}
+    user = current_user(db)
+{% endif %}
+{% if e.write_access == "admin" %}
+    require_admin(user)
+{% endif %}
+    obj = _get_or_404(db, item_id{% if e.owned %}, user{% endif %})
+    db.delete(obj)
+    _commit(db)
+    return "", 204

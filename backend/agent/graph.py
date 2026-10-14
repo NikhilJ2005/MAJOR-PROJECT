@@ -1,12 +1,14 @@
 """The VibeStack harness as a LangGraph state machine.
 
-    parse_spec (architect) -> plan -> generate -> validate
-    validate --ok--------------------------------> package -> END
-    validate --fail, attempts left--> classify -> reflect -> validate
-    validate --fail, budget spent---> failure_report -> END
+    analyze -> parse_spec -> plan -> write_tests -> generate -> validate
+    validate --ok, first time---------------> bug_hunt -> validate
+    validate --ok, after the hunt-----------> package -> END
+    validate --fail, still making progress--> classify -> reflect -> validate
+    validate --fail, no more progress-------> failure_report -> END
+                                               (or hunt_giveup -> validate during the hunt)
 
 Run from the CLI:
-    python -m agent.graph "a todo API with users and tasks" [--fault] [--template]
+    python -m agent.graph "a todo API with users and tasks" [--stack flask] [--template]
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import json
 import sqlite3
 import sys
 import uuid
+from pathlib import Path
 from typing import Any
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -27,10 +30,14 @@ from .config import settings
 from .state import AgentState
 
 NODE_ORDER = [
+    "analyze",
     "parse_spec",
     "plan",
+    "write_tests",
     "generate",
     "validate",
+    "bug_hunt",
+    "hunt_giveup",
     "classify",
     "reflect",
     "package",
@@ -43,15 +50,19 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     for name in NODE_ORDER:
         g.add_node(name, getattr(nodes, name))
 
-    g.add_edge(START, "parse_spec")
+    g.add_edge(START, "analyze")
+    g.add_edge("analyze", "parse_spec")
     g.add_edge("parse_spec", "plan")
-    g.add_edge("plan", "generate")
+    g.add_edge("plan", "write_tests")
+    g.add_edge("write_tests", "generate")
     g.add_edge("generate", "validate")
     g.add_conditional_edges(
         "validate",
         nodes.route_after_validate,
-        {"package": "package", "classify": "classify", "failure_report": "failure_report"},
+        ["bug_hunt", "package", "classify", "hunt_giveup", "failure_report"],
     )
+    g.add_conditional_edges("bug_hunt", nodes.route_after_hunt, ["validate", "package"])
+    g.add_edge("hunt_giveup", "validate")
     g.add_edge("classify", "reflect")
     g.add_edge("reflect", "validate")
     g.add_edge("package", END)
@@ -85,17 +96,14 @@ def initial_state(prompt: str, options: dict[str, Any] | None = None, spec: dict
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Generate a validated FastAPI backend from a description")
     ap.add_argument("prompt")
-    ap.add_argument(
-        "--fault", nargs="?", const="import", default="none", choices=["none", "import", "status"],
-        help="plant a bug to demo self-healing (default kind: import)",
-    )
+    ap.add_argument("--stack", choices=["fastapi", "flask", "django"], default="fastapi")
     ap.add_argument("--template", action="store_true", help="deterministic template codegen (no LLM for code)")
     ap.add_argument("--spec", help="path to a ProjectSpec JSON (skips the LLM spec step)")
     args = ap.parse_args(argv)
 
-    spec = json.loads(open(args.spec).read()) if args.spec else None
+    spec = json.loads(Path(args.spec).read_text()) if args.spec else None
     options = {
-        "fault": args.fault,
+        "stack": args.stack,
         "codegen_mode": "template" if args.template else settings.codegen_mode,
     }
     state = initial_state(args.prompt, options, spec)
@@ -107,7 +115,9 @@ def main(argv: list[str] | None = None) -> int:
             for e in (delta or {}).get("ledger", []) or []:
                 print(f"[{node:>15}] {e['agent']}: {e['action']}" + (f"  ({e['rationale']})" if e.get("rationale") else ""))
     final = graph.get_state(config).values
-    print(f"\nstatus: {final.get('status')}  heal iterations: {final.get('iteration', 0)}")
+    print(f"\nstatus: {final.get('status')}  repair attempts: {final.get('iteration', 0)}")
+    if final.get("stop_reason"):
+        print(f"healing stopped: {final['stop_reason']}")
     print(f"usage: {final.get('usage') or 'no LLM calls'}")
     if final.get("artifact_path"):
         print(f"artifact: {final['artifact_path']}")

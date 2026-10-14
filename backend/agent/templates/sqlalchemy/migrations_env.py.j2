@@ -1,0 +1,23 @@
+"""Alembic environment: uses the app's DATABASE_URL and models."""
+
+from alembic import context
+
+from app import config, models  # noqa: F401  (registers every table)
+from app.database import Base, engine
+
+target_metadata = Base.metadata
+
+
+def run() -> None:
+    if context.is_offline_mode():
+        context.configure(url=config.DATABASE_URL, target_metadata=target_metadata, literal_binds=True)
+        with context.begin_transaction():
+            context.run_migrations()
+        return
+    with engine.connect() as connection:
+        context.configure(connection=connection, target_metadata=target_metadata, render_as_batch=True)
+        with context.begin_transaction():
+            context.run_migrations()
+
+
+run()

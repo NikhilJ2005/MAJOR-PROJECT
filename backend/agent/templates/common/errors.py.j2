@@ -1,0 +1,7 @@
+class ApiError(Exception):
+    """Raise anywhere (routers, services) to answer with an HTTP error, e.g. ApiError(409, "out of stock")."""
+
+    def __init__(self, status_code: int, detail: str):
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail

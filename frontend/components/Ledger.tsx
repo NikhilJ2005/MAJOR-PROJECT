@@ -1,35 +1,42 @@
 import { useEffect, useRef } from "react";
-import type { LedgerEntry } from "@/lib/api";
+import type { Bug, LedgerEntry, ReviewNote } from "@/lib/api";
 
 const colors: Record<string, string> = {
+  analyst: "text-sky-300",
   architect: "text-sky-300",
   planner: "text-zinc-300",
+  test_engineer: "text-teal-300",
   api_engineer: "text-sky-300",
-  fault_injector: "text-rose-300",
   validator: "text-emerald-300",
+  bug_hunter: "text-violet-300",
   error_classifier: "text-amber-300",
   reflector: "text-amber-300",
   template_repair: "text-amber-300",
+  judge: "text-fuchsia-300",
   devops_packager: "text-emerald-300",
   circuit_breaker: "text-rose-400",
 };
 
 const AGENT_NAMES: Record<string, string> = {
+  analyst: "Analyst",
   architect: "Architect",
   planner: "Planner",
-  api_engineer: "Code Generator",
-  fault_injector: "Bug injector (demo)",
-  validator: "Sandbox Validator",
+  test_engineer: "Test Engineer",
+  api_engineer: "API Engineer",
+  validator: "Validator",
+  bug_hunter: "Bug Hunter",
   error_classifier: "Error Classifier",
   reflector: "Reflector",
   template_repair: "Template repair",
+  judge: "Judge",
   devops_packager: "Packager",
   circuit_breaker: "Circuit Breaker",
 };
 
 const base = (agent: string) => agent.split(" ")[0];
-export const agentName = (agent: string) => AGENT_NAMES[base(agent)] ?? agent;
-export const agentColor = (agent: string) => colors[base(agent)] ?? "text-zinc-300";
+export const agentName = (agent: string) =>
+  agent.startsWith("plugin:") ? `Plugin ${agent.slice(7)}` : (AGENT_NAMES[base(agent)] ?? agent);
+export const agentColor = (agent: string) => (agent.startsWith("plugin:") ? "text-lime-300" : (colors[base(agent)] ?? "text-zinc-300"));
 
 export function Diff({ text }: { text: string }) {
   return (
@@ -82,22 +89,76 @@ export function Ledger({ entries, showDiffs = false }: { entries: LedgerEntry[];
   );
 }
 
-const HEAL_AGENTS = ["fault_injector", "validator", "error_classifier", "reflector", "template_repair", "circuit_breaker"];
+const HEAL_AGENTS = ["validator", "bug_hunter", "error_classifier", "reflector", "template_repair", "judge", "circuit_breaker"];
 
-export function SelfHealing({ entries, done }: { entries: LedgerEntry[]; done: boolean }) {
-  const heal = entries.filter((e) => HEAL_AGENTS.includes(base(e.agent)));
-  const repaired = heal.some((e) => base(e.agent) === "reflector" || e.agent === "template_repair");
-  if (!heal.length) return <Empty text="When the sandbox finds a bug, the classify → patch → re-validate loop shows up here, with the exact code change." />;
+const FINDER_STYLE: Record<string, string> = {
+  "bug hunter": "bg-violet-500/15 text-violet-300",
+  "test engineer": "bg-teal-500/15 text-teal-300",
+  "contract tests": "bg-sky-500/15 text-sky-300",
+  "static checker": "bg-orange-500/15 text-orange-300",
+  validator: "bg-emerald-500/15 text-emerald-300",
+};
+
+export function BugsAndHealing({ entries, bugs, notes, done, stopReason }: {
+  entries: LedgerEntry[];
+  bugs: Bug[];
+  notes: ReviewNote[];
+  done: boolean;
+  stopReason?: string | null;
+}) {
+  const heal = entries.filter((e) => HEAL_AGENTS.includes(base(e.agent)) && !(base(e.agent) === "validator" && !bugs.length));
+  const fixed = bugs.filter((b) => b.fixed).length;
+  if (!bugs.length && !heal.length && !notes.length)
+    return <Empty text="Bugs the agents find on their own (static checks, contract tests, rule tests, the Bug Hunter) and every fix appear here." />;
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       {done && (
-        <p className={`rounded-lg border px-4 py-3 text-base ${repaired ? "border-amber-400/40 bg-amber-500/5 text-amber-100" : "border-emerald-500/40 bg-emerald-500/5 text-emerald-100"}`}>
-          {repaired
-            ? "The agent found a bug in its own output, located the faulty file, patched it and re-validated, with no human involved."
-            : "The generated code passed validation on the first try; no healing was needed."}
+        <p className={`rounded-lg border px-4 py-3 text-base ${bugs.length ? "border-amber-400/40 bg-amber-500/5 text-amber-100" : "border-emerald-500/40 bg-emerald-500/5 text-emerald-100"}`}>
+          {bugs.length
+            ? `The agents found ${bugs.length} bug${bugs.length === 1 ? "" : "s"} on their own and fixed ${fixed}, with no human involved. Nothing was planted.`
+            : "No bugs found: the code passed static checks, contract tests and the Bug Hunter's edge cases on the first try."}
+          {stopReason && <span className="mt-1 block text-sm text-rose-200">Healing stopped: {stopReason}</span>}
         </p>
       )}
-      <Ledger entries={heal} showDiffs />
+      {bugs.length > 0 && (
+        <div className="overflow-x-auto rounded-xl border border-zinc-800">
+          <table className="w-full text-left text-sm">
+            <thead className="text-xs uppercase text-zinc-500">
+              <tr>
+                <th className="px-4 py-2">found by</th>
+                <th className="px-4 py-2">problem</th>
+                <th className="px-4 py-2 text-right">status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bugs.map((b) => (
+                <tr key={b.id} className="border-t border-zinc-800/60">
+                  <td className="px-4 py-2">
+                    <span className={`rounded px-1.5 py-0.5 text-xs ${FINDER_STYLE[b.found_by] ?? "bg-zinc-800 text-zinc-300"}`}>{b.found_by}</span>
+                  </td>
+                  <td className="max-w-[520px] truncate px-4 py-2 font-mono text-xs text-zinc-300" title={b.detail}>{b.detail}</td>
+                  <td className={`px-4 py-2 text-right text-xs font-semibold ${b.fixed ? "text-emerald-300" : "text-rose-300"}`}>
+                    {b.fixed ? "fixed ✓" : b.open ? "open (listed in ledger)" : "not fixed"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {heal.length > 0 && <Ledger entries={heal} showDiffs />}
+      {notes.length > 0 && (
+        <div>
+          <h4 className="mb-2 text-[11px] uppercase tracking-wider text-zinc-500">Review notes (low severity, not blocking)</h4>
+          <ul className="space-y-1 font-mono text-xs text-zinc-400">
+            {notes.map((n, i) => (
+              <li key={i}>
+                <span className="text-zinc-500">{n.path}:{n.line}</span> [{n.rule}] {n.message}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

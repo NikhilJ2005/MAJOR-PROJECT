@@ -1,0 +1,15 @@
+from django.db import models
+
+
+class {{ e.name }}(models.Model):
+{% if e.owned %}
+    owner = models.ForeignKey("User", on_delete=models.CASCADE, related_name="+")
+{% endif %}
+{% for f in e.fields %}
+    {{ f.name[:-3] if f.references else f.name }} = {{ django_field(f) }}
+{% endfor %}
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "{{ e.table }}"
+        ordering = ["id"]

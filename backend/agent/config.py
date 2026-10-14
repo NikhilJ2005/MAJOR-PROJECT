@@ -35,7 +35,9 @@ class Settings:
     # Unprivileged OS user that runs generated code (used when the server runs as root).
     sandbox_user: str = field(default_factory=lambda: os.environ.get("SANDBOX_USER", "sandbox"))
 
-    max_heal_iterations: int = field(default_factory=lambda: _env_int("MAX_HEAL_ITERATIONS", 3))
+    # Healing stops when it stops making progress (see healing.should_continue);
+    # this is only a seatbelt against a pathological run.
+    max_heal_safety: int = field(default_factory=lambda: _env_int("MAX_HEAL_SAFETY", 12))
     max_tokens_per_run: int = field(default_factory=lambda: _env_int("MAX_TOKENS_PER_RUN", 150000))
     max_concurrent_runs: int = field(default_factory=lambda: _env_int("MAX_CONCURRENT_RUNS", 2))
     gate_timeout_s: int = field(default_factory=lambda: _env_int("GATE_TIMEOUT_S", 60))
@@ -43,7 +45,16 @@ class Settings:
     # FAKE_LLM=1: deterministic stand-in model, for UI development and offline demos.
     fake_llm: bool = field(default_factory=lambda: os.environ.get("FAKE_LLM", "") == "1")
 
+    # Public deployments: ACCESS_CODE is an invite code needed to create an account.
     access_code: str = field(default_factory=lambda: os.environ.get("ACCESS_CODE", ""))
+    max_runs_per_day: int = field(default_factory=lambda: _env_int("MAX_RUNS_PER_DAY", 25))
+    admin_emails: frozenset[str] = field(
+        default_factory=lambda: frozenset(
+            e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()
+        )
+    )
+    # Resource limits for generated code (see sandbox.LocalSandbox.spawn).
+    sandbox_memory_mb: int = field(default_factory=lambda: _env_int("SANDBOX_MEMORY_MB", 2048))
     data_dir: Path = field(
         default_factory=lambda: Path(os.environ.get("DATA_DIR", Path(__file__).resolve().parents[1] / "data"))
     )
@@ -59,6 +70,10 @@ class Settings:
     @property
     def checkpoint_db(self) -> Path:
         return self.data_dir / "checkpoints.sqlite"
+
+    @property
+    def platform_db(self) -> Path:
+        return self.data_dir / "platform.sqlite"
 
 
 settings = Settings()

@@ -64,7 +64,7 @@ class Usage:
             "llm_calls": self.calls,
         }
 
-    def add(self, other: "Usage") -> None:
+    def add(self, other: Usage) -> None:
         self.prompt_tokens += other.prompt_tokens
         self.completion_tokens += other.completion_tokens
         self.cost_usd += other.cost_usd
@@ -79,7 +79,7 @@ class LLM(Protocol):
 
 def extract_json(text: str) -> Any:
     """Pull the first JSON object out of a model reply (tolerates ``` fences and chatter)."""
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     candidate = fenced.group(1) if fenced else None
     if candidate is None:
         start = text.find("{")
@@ -113,7 +113,7 @@ def structured(llm: LLM, role: Role, system: str, user: str, model: type[T]) -> 
 def parse_file_blocks(text: str) -> dict[str, str]:
     """Parse replies of the form '### FILE: path' followed by a fenced code block."""
     files: dict[str, str] = {}
-    pattern = re.compile(r"###\s*FILE:\s*(\S+)\s*\n```[a-zA-Z]*\n(.*?)```", re.S)
+    pattern = re.compile(r"###\s*FILE:\s*(\S+)\s*\n```[a-zA-Z]*\n(.*?)```", re.DOTALL)
     for path, body in pattern.findall(text):
         files[path.strip()] = body.rstrip() + "\n"
     return files

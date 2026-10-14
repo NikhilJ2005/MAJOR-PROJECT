@@ -17,6 +17,8 @@ from typing import Any
 from agent.config import settings
 from agent.graph import build_graph, initial_state, sqlite_checkpointer
 
+from .store import Store
+
 log = logging.getLogger(__name__)
 
 TERMINAL = {"succeeded", "failed", "error"}
@@ -48,8 +50,9 @@ class Run:
 
 
 class RunManager:
-    def __init__(self) -> None:
+    def __init__(self, store: Store) -> None:
         self.graph = build_graph(sqlite_checkpointer())
+        self.store = store
         self.runs: dict[str, Run] = {}
         self._lock = threading.Lock()
 
@@ -59,13 +62,14 @@ class RunManager:
     def active_count(self) -> int:
         return sum(1 for r in self.runs.values() if r.active)
 
-    def start(self, prompt: str, options: dict[str, Any], spec: dict | None = None) -> Run:
+    def start(self, prompt: str, options: dict[str, Any], owner_id: int, spec: dict | None = None) -> Run:
         with self._lock:
             if self.active_count() >= settings.max_concurrent_runs:
                 raise RuntimeError("too many runs in progress, try again shortly")
             state = initial_state(prompt, options, spec)
             run = Run(id=state["run_id"], prompt=prompt)
             self.runs[run.id] = run
+            self.store.add_run(run.id, owner_id, prompt, options.get("stack", "fastapi"))
             self._launch(run, state)
         return run
 
@@ -91,16 +95,21 @@ class RunManager:
                             "validation": _trim_validation(delta.get("validation")),
                             "error_class": delta.get("error_class"),
                             "iteration": delta.get("iteration"),
+                            "bugs": delta.get("bugs"),
+                            "phase": delta.get("phase"),
+                            "stop_reason": delta.get("stop_reason"),
                         }
                     )
             values = self.graph.get_state(config).values
             run.status = values.get("status", "succeeded")
             if run.status not in TERMINAL:
                 run.status = "failed"
-        except Exception as exc:  # noqa: BLE001 - surface any failure to the UI
+        except Exception as exc:  # any crash is reported to the UI instead of killing the worker
             log.exception("run %s crashed", run.id)
             run.status = "error"
             run.emit({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
+            values = self.graph.get_state(config).values
+        self.store.finish_run(run.id, run.status, values or {})
         run.emit({"type": "status", "status": run.status})
 
     def snapshot(self, run_id: str) -> dict[str, Any] | None:
@@ -124,6 +133,12 @@ class RunManager:
             "validation": _trim_validation(values.get("validation")),
             "iteration": values.get("iteration", 0),
             "usage": values.get("usage", {}),
+            "requirements": values.get("requirements") or (values.get("spec") or {}).get("requirements", []),
+            "bugs": values.get("bugs", []),
+            "review": values.get("review", []),
+            "heal_history": values.get("heal_history", []),
+            "stop_reason": values.get("stop_reason"),
+            "phase": values.get("phase"),
             "report": values.get("report"),
             "has_artifact": bool(values.get("artifact_path")),
         }

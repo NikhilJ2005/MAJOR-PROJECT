@@ -1,49 +1,56 @@
-# Review on 8 Oct: demo plan
+# VibeStack v2: sprint plan and demo (seed-grant submission, 23 Oct)
 
-## Scope for the review
-One story: **prompt → architecture → working app is built → self-healing fixes a bug**.
-Human approval and the review council were cut; they're on the roadmap slide.
+## Done in code (this branch)
+- [x] No planted bugs. Healing stops when it stops making progress (`healing.should_continue`).
+- [x] FastAPI, Flask and Django generation from one contract.
+- [x] Complex requests: Requirements Analyst, access rules (owner/admin), enums, min/max, custom actions with business rules, Test Engineer (tests before code).
+- [x] Bug hunting: `ast` static checks plus the Bug Hunter agent; Judge for disputed AI tests.
+- [x] Production basics:
+  - Platform: accounts, run ownership, private previews, quotas, OS sandbox limits, stats, CI.
+  - Generated apps: migrations, env config, JSON errors, `/ready`, Makefile, CI, non-root Docker image.
+- [x] MCP server (`/mcp/`) and plugins (`backend/plugins/`).
 
-## Tonight's checklist
-1. **OpenRouter:** top up **$10**, then create a **new** key. Revoke any key that was ever pasted into a chat.
-2. **Laptop check:**
+## Still to do (team)
+1. **Real-model evals:** run each command and put the tables in the slides (cost: a few dollars).
    ```bash
-   cd backend && pip install -e .
-   OPENROUTER_API_KEY=sk-or-... python scripts/check_llm.py --full
+   cd backend
+   python -m evals.run --stack fastapi
+   python -m evals.run --hard --stack fastapi
+   python -m evals.run --hard --stack django
    ```
-   - All three models should print `OK`, followed by one full run ending in `status: succeeded`.
-   - If a model fails, look up the right id on https://openrouter.ai/models and set `STRONG_MODEL`, `CHEAP_MODEL` or `FALLBACK_MODEL`.
-3. **Rehearse in the UI 3–5 times** with the "blog + auth" and "library" examples (see README → Run it).
-   - If code generation often needs 2+ heals, keep Sonnet.
-   - If credit is tight, switch to `STRONG_MODEL=qwen/qwen3-coder`.
-4. **Railway:**
-   - Variables: `OPENROUTER_API_KEY`, the three model variables, `ACCESS_CODE`, `MAX_CONCURRENT_RUNS=1`.
-   - Volume at `/data`, then generate a domain.
-   - Do one full run there.
-5. **Local backup:** `cp .env.example .env` (fill in the key), then `docker compose up --build` → http://localhost:8000. Test it once.
-6. **Record a backup video** of one full run. Freeze the code.
+   If a hard prompt fails often, read its ledger (`VIBESTACK_LEDGER.md` in the zip) and tune `prompts.py`.
+2. **Railway:**
+   - Set `OPENROUTER_API_KEY`, `SECRET_KEY`, `ADMIN_EMAILS` (your emails) and `ACCESS_CODE` (an invite code for the judges).
+   - Mount a volume at `/data`.
+   - Do one full run per framework.
+3. **MCP demo:** connect Claude Desktop (or the MCP Inspector) to `<railway-url>/mcp/` with your token (see `docs/MCP.md`).
+4. **Demo video** as the fallback, then freeze the code on 22 Oct.
 
-## Demo script (about 5 minutes)
-1. **Problem (30 s):** AI app builders are JS-only, cloud-locked, and don't check that what they generate actually runs.
-2. **Live run (3 min):** pick the **E-commerce** or **Blog + auth** example and set "Demo: plant a bug" to **Wrong HTTP status**, then press **Generate application**.
-   - Point at the **"now running" banner** and the pipeline cards: each agent lights up, with the model it used and its time.
-   - **Architecture tab:** the Architect turned one paragraph into a data model, endpoints and a file plan.
-   - The Validator fails at the API-tests gate. The Error Classifier names it a `contract` error in `app/routers/...`. The Reflector patches it, and the Validator passes. The **activity feed** on the right logs every step.
-   - **Self-healing tab:** the planted bug and the fix as a red/green code diff, with no human involved.
-   - **▶ Live app tab** (it opens by itself): the generated app is *running*. Click **Sign up**, create a record, create a related record using the dropdown (foreign key), delete one, then **Open API docs ↗** for the live Swagger.
-   - Optionally run again with **Broken import** to show a different failure caught at a different gate.
+## Demo script (about 6 minutes)
+1. **Problem (30 s):** AI app builders produce code that nobody has checked, mostly JavaScript. Backends need business rules, permissions and tests.
+2. **Live run (3 min):** log in, choose **Django**, the **Shop checkout (rules)** example and the `kubernetes` and `postman` plugins, then press **Generate**.
+   - **Architecture tab:** the Analyst's numbered requirements, each ticked by the entity or action that covers it; private orders, admin-only products, and the `checkout` action with its rules.
+   - The pipeline: the Test Engineer writes tests *before* the code; the Validator runs static checks → import → boot → tests.
+   - **Bug hunt:** the Bug Hunter writes tests to break the app. Show **Bugs & healing**: who found each bug, the fix diff, and "nothing was planted".
+   - **Live app:** log in as **customer**, create an order, run `checkout`; log in as **admin**, add a product; switch back to show that private rows disappear and that admin-only writes return 403.
+   - **Download .zip:** migrations, Makefile, CI, k8s manifests, Postman collection, the ledger.
 3. **Engineering (1.5 min):**
-   - The LangGraph state machine with checkpointing.
-   - Tiered models: Sonnet builds; Qwen Coder repairs first, then escalation and the circuit breaker.
-   - The tests come from the architecture, not the generated code.
-   - Generated code runs as an unprivileged user.
-4. **Roadmap (30 s):** human approval, a review council, long-term memory, MCP, security scanning, Java.
+   - One contract for three frameworks.
+   - Healing that stops on lack of progress (show `should_continue`).
+   - The Judge.
+   - OS-level sandbox limits.
+   - MCP: the same pipeline as a tool for AI assistants.
+4. **Numbers (30 s):** the eval tables: pass rate, bugs found by the agents, repairs, cost per app.
 
-**Fallbacks, in order:** Railway URL → `docker compose up` on the laptop → recorded video.
+## Likely questions
+- **Who checks the AI's tests?** The contract tests come from the design and can never be removed. AI-written tests can be disputed; a Judge decides, and every decision is in the ledger.
+- **Why not a fixed number of repairs?** A fixed number either gives up too early on a long but productive repair or wastes money on a stuck one. We measure progress: later gate, fewer failures, or a new error.
+- **Is generated code safe to run?** It runs as a separate OS user, with no secrets in its environment and OS limits on memory, CPU, processes and file size. Static checks also block `eval`, shell commands, hardcoded secrets and SQL built from strings.
+- **How do I extend it?** Add a plugin file (`docs/PLUGINS.md`) or a framework (`agent/stacks.py` plus a template folder).
 
-## Likely questions and short answers
-- **Why LangGraph and not a single prompt?** The workflow loops (heal), branches (pass/fail/give up) and keeps state across steps. A graph makes that explicit, checkpointed and testable.
-- **How do you know the generated app works?** It is executed: imported, booted and tested. The tests come from the architecture, so the model can't grade its own homework.
-- **What stops infinite loops and token burn?** Max 3 heal attempts, a per-run token budget, a cheap model first, and repairs get only the failing file plus its siblings.
-- **What if the AI writes bad code?** The heal loop fixes it. On the final attempt the harness restores verified templates, so the user still gets a working backend.
-- **Cost?** About $0.15–0.20 per app with Sonnet, about $0.015 with Qwen Coder only.
+## Objectives in a standard form (for the report)
+1. To design a multi-agent pipeline that converts a natural-language application description into a deployable REST backend in FastAPI, Flask or Django.
+2. To verify generated code automatically through static analysis, execution in an isolated sandbox, and tests derived from the design and written before the code.
+3. To detect defects autonomously, through adversarial test generation, and to repair them with a progress-driven self-healing loop that needs no fixed iteration limit.
+4. To evaluate the system on a benchmark of 15 applications (5 with business rules), measuring success rate, defects found and repaired, cost and time per application.
+5. To make the system extensible and interoperable through a plugin interface and the Model Context Protocol (MCP).

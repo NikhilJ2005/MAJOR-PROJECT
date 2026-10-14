@@ -1,0 +1,23 @@
+.PHONY: install dev test lint migrate migration docker
+
+install:
+	pip install -e ".[dev]"
+
+dev:
+	ENV=dev {{ stack.cmd.dev }}
+
+test:
+	pytest -q
+
+lint:
+	ruff check app tests
+
+migrate:
+	{{ stack.cmd.migrate }}
+
+# Create a new migration after you change a model.
+migration:
+	ENV=dev {{ stack.cmd.new_migration }}
+
+docker:
+	docker compose up --build

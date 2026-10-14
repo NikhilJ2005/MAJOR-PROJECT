@@ -1,0 +1,57 @@
+"""URL routes: every entity's urlpatterns plus health checks and API docs."""
+
+from pathlib import Path
+
+from django.db import connection
+from django.http import HttpResponse, JsonResponse
+
+from django.urls import path
+
+{% if spec.auth %}
+from app.routers import auth
+{% endif %}
+{% for e in spec.entities %}
+from app.routers import {{ e.module }}
+{% endfor %}
+
+HERE = Path(__file__).parent
+
+
+def health(request):
+    return JsonResponse({"status": "ok"})
+
+
+def ready(request):
+    try:
+        connection.ensure_connection()
+    except Exception:  # noqa: BLE001 - any failure means "not ready"
+        return JsonResponse({"detail": "database unavailable"}, status=503)
+    return JsonResponse({"status": "ready"})
+
+
+def openapi(request):
+    return HttpResponse((HERE / "openapi.json").read_text(), content_type="application/json")
+
+
+def docs(request):
+    return HttpResponse((HERE / "docs.html").read_text(), content_type="text/html")
+
+
+def not_found(request, exception=None):
+    return JsonResponse({"detail": "not found"}, status=404)
+
+
+handler404 = not_found
+
+urlpatterns = [
+    path("health", health),
+    path("ready", ready),
+    path("openapi.json", openapi),
+    path("docs", docs),
+{% if spec.auth %}
+    *auth.urlpatterns,
+{% endif %}
+{% for e in spec.entities %}
+    *{{ e.module }}.urlpatterns,
+{% endfor %}
+]

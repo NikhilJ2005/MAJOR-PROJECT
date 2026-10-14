@@ -1,0 +1,41 @@
+"""Django settings. Values come from environment variables through app.config."""
+
+import os
+from urllib.parse import urlparse
+
+from app import config
+
+
+def database_from_url(url: str) -> dict:
+    """Turn DATABASE_URL (sqlite:///file.db or postgresql://user:pw@host/db) into Django's format."""
+    if url.startswith("sqlite"):
+        return {"ENGINE": "django.db.backends.sqlite3", "NAME": url.split(":///", 1)[1]}
+    parts = urlparse(url.replace("+psycopg", ""))
+    return {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": parts.path.lstrip("/"),
+        "USER": parts.username,
+        "PASSWORD": parts.password,
+        "HOST": parts.hostname,
+        "PORT": parts.port or 5432,
+    }
+
+
+SECRET_KEY = config.SECRET_KEY
+DEBUG = os.getenv("DJANGO_DEBUG", "0") == "1"
+ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,testserver").split(",") if h.strip()]
+
+INSTALLED_APPS = ["app"]
+MIDDLEWARE = ["app.middleware.ApiMiddleware"]
+ROOT_URLCONF = "app.urls"
+WSGI_APPLICATION = "app.wsgi.application"
+DATABASES = {"default": database_from_url(config.DATABASE_URL)}
+DEFAULT_AUTO_FIELD = "django.db.models.AutoField"
+USE_TZ = True
+TIME_ZONE = "UTC"
+
+LOGGING = {
+    "version": 1,
+    "handlers": {"console": {"class": "logging.StreamHandler"}},
+    "root": {"handlers": ["console"], "level": config.LOG_LEVEL},
+}

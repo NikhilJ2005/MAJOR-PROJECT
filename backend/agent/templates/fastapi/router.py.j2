@@ -1,0 +1,167 @@
+"""{{ e.name }} endpoints: CRUD{% if actions %} plus custom actions{% endif %}.
+
+Who may do what: {{ access_text(e) }}.
+"""
+
+from fastapi import APIRouter, Body, Depends, Query, Request, Response, status  # noqa: F401
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.errors import ApiError
+from app.models.{{ e.module }} import {{ e.name }}
+from app.schemas.{{ e.module }} import {{ e.name }}Create, {{ e.name }}Read, {{ e.name }}Update
+from app.services import {{ e.module }} as service  # noqa: F401
+{% if spec.auth %}
+from app.models.user import User
+from app.security import get_current_user, require_admin  # noqa: F401
+{% endif %}
+
+router = APIRouter(prefix="/{{ e.table }}", tags=["{{ e.name }}"])
+
+
+def _get_or_404(db: Session, item_id: int{% if e.owned %}, user: User{% endif %}) -> {{ e.name }}:
+    obj = db.get({{ e.name }}, item_id)
+{% if e.owned %}
+    if obj is None or obj.owner_id != user.id:  # other users' rows look like they don't exist
+{% else %}
+    if obj is None:
+{% endif %}
+        raise ApiError(404, "{{ e.name }} not found")
+    return obj
+
+
+def _commit(db: Session) -> None:
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise ApiError(409, "conflicts with existing data (duplicate value or unknown reference)") from exc
+{% for a in actions %}
+
+
+@router.{{ a.method | lower }}("{{ a.path }}")
+def {{ a.name }}_{{ e.module }}(
+{% if a.on_item %}
+    item_id: int,
+{% endif %}
+{% if a.method == "POST" %}
+    payload: dict = Body(default={}),
+{% else %}
+    request: Request,
+{% endif %}
+    db: Session = Depends(get_db),
+{% if spec.auth %}
+    user: User = Depends(get_current_user),
+{% endif %}
+) -> dict:
+    """{{ a.description }}"""
+{% if a.admin_only and spec.auth %}
+    require_admin(user)
+{% endif %}
+{% if a.method == "GET" %}
+    payload = dict(request.query_params)
+{% endif %}
+    obj = {% if a.on_item %}_get_or_404(db, item_id{% if e.owned %}, user{% endif %}){% else %}None{% endif %}
+
+    return service.{{ a.name }}(db, obj, payload, {% if spec.auth %}user{% else %}None{% endif %})
+{% endfor %}
+
+
+@router.post("/", response_model={{ e.name }}Read, status_code=status.HTTP_201_CREATED)
+def create_{{ e.module }}(
+    payload: {{ e.name }}Create,
+    db: Session = Depends(get_db),
+{% if spec.auth %}
+    user: User = Depends(get_current_user),
+{% endif %}
+):
+{% if e.write_access == "admin" %}
+    require_admin(user)
+{% endif %}
+    obj = {{ e.name }}(**payload.model_dump(){% if e.owned %}, owner_id=user.id{% endif %})
+    db.add(obj)
+    _commit(db)
+    db.refresh(obj)
+    return obj
+
+
+@router.get("/", response_model=list[{{ e.name }}Read])
+def list_{{ e.table }}(
+    response: Response,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+{% if search_field %}
+    q: str | None = Query(None, description="Search in {{ search_field }}"),
+{% endif %}
+{% for fk in e.foreign_keys %}
+    {{ fk.name }}: int | None = Query(None, description="Only items with this {{ fk.name }}"),
+{% endfor %}
+    db: Session = Depends(get_db),
+{% if e.owned %}
+    user: User = Depends(get_current_user),
+{% endif %}
+):
+    stmt = select({{ e.name }})
+{% if e.owned %}
+    stmt = stmt.where({{ e.name }}.owner_id == user.id)
+{% endif %}
+{% if search_field %}
+    if q:
+        stmt = stmt.where({{ e.name }}.{{ search_field }}.ilike(f"%{q}%"))
+{% endif %}
+{% for fk in e.foreign_keys %}
+    if {{ fk.name }} is not None:
+        stmt = stmt.where({{ e.name }}.{{ fk.name }} == {{ fk.name }})
+{% endfor %}
+    response.headers["X-Total-Count"] = str(db.scalar(select(func.count()).select_from(stmt.subquery())))
+    return db.scalars(stmt.order_by({{ e.name }}.id).offset(skip).limit(limit)).all()
+
+
+@router.get("/{item_id}", response_model={{ e.name }}Read)
+def get_{{ e.module }}(
+    item_id: int,
+    db: Session = Depends(get_db),
+{% if e.owned %}
+    user: User = Depends(get_current_user),
+{% endif %}
+):
+    return _get_or_404(db, item_id{% if e.owned %}, user{% endif %})
+
+
+@router.patch("/{item_id}", response_model={{ e.name }}Read)
+def update_{{ e.module }}(
+    item_id: int,
+    payload: {{ e.name }}Update,
+    db: Session = Depends(get_db),
+{% if spec.auth %}
+    user: User = Depends(get_current_user),
+{% endif %}
+):
+{% if e.write_access == "admin" %}
+    require_admin(user)
+{% endif %}
+    obj = _get_or_404(db, item_id{% if e.owned %}, user{% endif %})
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(obj, key, value)
+    _commit(db)
+    db.refresh(obj)
+    return obj
+
+
+@router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_{{ e.module }}(
+    item_id: int,
+    db: Session = Depends(get_db),
+{% if spec.auth %}
+    user: User = Depends(get_current_user),
+{% endif %}
+):
+{% if e.write_access == "admin" %}
+    require_admin(user)
+{% endif %}
+    obj = _get_or_404(db, item_id{% if e.owned %}, user{% endif %})
+    db.delete(obj)
+    _commit(db)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

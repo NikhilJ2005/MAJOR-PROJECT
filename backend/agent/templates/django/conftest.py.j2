@@ -1,0 +1,68 @@
+import json as jsonlib
+import os
+import tempfile
+from urllib.parse import urlencode
+
+import pytest
+
+# Point the app at a throwaway SQLite file *before* Django starts.
+_db_dir = tempfile.mkdtemp()
+os.environ["DATABASE_URL"] = f"sqlite:///{_db_dir}/test.db"
+os.environ["ENV"] = "test"
+os.environ["ADMIN_EMAILS"] = "admin@example.com"
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "app.settings")
+
+import django  # noqa: E402
+
+django.setup()
+
+from django.core.management import call_command  # noqa: E402
+from django.test import Client as DjangoClient  # noqa: E402
+
+call_command("migrate", run_syncdb=True, verbosity=0)
+
+
+class Response:
+    def __init__(self, status_code: int, text: str):
+        self.status_code = status_code
+        self.text = text
+
+    def json(self):
+        return jsonlib.loads(self.text)
+
+
+class Client:
+    """Django's test client behind the same small interface every stack's tests use."""
+
+    def __init__(self):
+        self._client = DjangoClient()
+
+    def request(self, method, url, json=None, headers=None, params=None):
+        if params:
+            url = f"{url}?{urlencode(params)}"
+        body = "" if json is None else jsonlib.dumps(json)
+        r = self._client.generic(method, url, data=body, content_type="application/json", headers=headers or {})
+        return Response(r.status_code, r.content.decode())
+
+    def get(self, url, **kw):
+        return self.request("GET", url, **kw)
+
+    def post(self, url, **kw):
+        return self.request("POST", url, **kw)
+
+    def patch(self, url, **kw):
+        return self.request("PATCH", url, **kw)
+
+    def put(self, url, **kw):
+        return self.request("PUT", url, **kw)
+
+    def delete(self, url, **kw):
+        return self.request("DELETE", url, **kw)
+
+
+@pytest.fixture(scope="session")
+def client():
+    return Client()
+
+
+{% include "fixtures.py.j2" %}

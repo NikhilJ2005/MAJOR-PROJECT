@@ -1,0 +1,99 @@
+"""Password hashing (PBKDF2, standard library) and JWT login tokens."""
+
+import hashlib
+import hmac
+import secrets
+from datetime import datetime, timedelta, timezone
+
+import jwt
+{% if stack.name == "fastapi" %}
+from fastapi import Depends
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+{% elif stack.name == "flask" %}
+from flask import request
+from sqlalchemy.orm import Session
+{% endif %}
+from app import config
+from app.errors import ApiError
+from app.models.user import User
+
+ALGORITHM = "HS256"
+_PBKDF2_ROUNDS = 240_000
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), _PBKDF2_ROUNDS)
+    return f"{salt}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    salt, _, expected = stored.partition("$")
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), _PBKDF2_ROUNDS)
+    return hmac.compare_digest(digest.hex(), expected)
+
+
+def create_access_token(user_id: int) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(minutes=config.ACCESS_TOKEN_MINUTES)
+    return jwt.encode({"sub": str(user_id), "exp": expire}, config.SECRET_KEY, algorithm=ALGORITHM)
+
+
+def user_id_from_header(header: str | None) -> int | None:
+    """The user id inside a valid 'Bearer <token>' header, else None."""
+    if not header or not header.startswith("Bearer "):
+        return None
+    try:
+        payload = jwt.decode(header[7:], config.SECRET_KEY, algorithms=[ALGORITHM])
+        return int(payload["sub"])
+    except (jwt.PyJWTError, KeyError, ValueError):
+        return None
+
+
+def is_admin(user: User) -> bool:
+    return user.email.lower() in config.ADMIN_EMAILS
+
+
+def require_admin(user: User) -> None:
+    if not is_admin(user):
+        raise ApiError(403, "admin rights required")
+{% if stack.name == "fastapi" %}
+
+
+bearer = HTTPBearer(auto_error=False)
+
+
+def get_current_user(
+    creds: HTTPAuthorizationCredentials | None = Depends(bearer),
+    db: Session = Depends(get_db),
+) -> User:
+    """FastAPI dependency: the logged-in user, or 401."""
+    header = f"Bearer {creds.credentials}" if creds else None
+    user_id = user_id_from_header(header)
+    user = db.get(User, user_id) if user_id is not None else None
+    if user is None:
+        raise ApiError(401, "invalid or missing token")
+    return user
+{% elif stack.name == "flask" %}
+
+
+def current_user(db: Session) -> User:
+    """The logged-in user for this request, or 401."""
+    user_id = user_id_from_header(request.headers.get("Authorization"))
+    user = db.get(User, user_id) if user_id is not None else None
+    if user is None:
+        raise ApiError(401, "invalid or missing token")
+    return user
+{% else %}
+
+
+def current_user(request) -> User:
+    """The logged-in user for this request, or 401."""
+    user_id = user_id_from_header(request.headers.get("Authorization"))
+    user = User.objects.filter(id=user_id).first() if user_id is not None else None
+    if user is None:
+        raise ApiError(401, "invalid or missing token")
+    return user
+{% endif %}
