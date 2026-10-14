@@ -150,6 +150,7 @@ class LocalSandbox:
             "DATABASE_URL": f"sqlite:///{workdir}/sandbox.db",
             "LANG": "C.UTF-8",
             "ENV": "test",  # generated apps: create tables on start, throwaway SECRET_KEY
+            "ADMIN_EMAILS": "admin@vibestack.dev",  # the live preview's demo admin account
             "DJANGO_SETTINGS_MODULE": "app.settings",
             "FLASK_SKIP_DOTENV": "1",
             # Host plugins (e.g. langsmith) must not leak into the generated project's tests.

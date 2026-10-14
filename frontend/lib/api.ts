@@ -11,16 +11,48 @@ export type LedgerEntry = {
   diff?: Record<string, string>;
 };
 
-export type Field = { name: string; type: string; required?: boolean; unique?: boolean; references?: string | null };
-export type Entity = { name: string; fields: Field[] };
-export type Spec = { project_name: string; description?: string; auth?: boolean; features?: string[]; entities: Entity[] };
+export type Field = {
+  name: string;
+  type: string;
+  required?: boolean;
+  unique?: boolean;
+  references?: string | null;
+  choices?: string[];
+  min?: number | null;
+  max?: number | null;
+};
+export type Entity = { name: string; fields: Field[]; write_access?: "any_user" | "owner" | "admin"; requirement_ids?: string[] };
+export type Action = {
+  name: string;
+  entity: string;
+  method: "GET" | "POST";
+  path: string;
+  description?: string;
+  rules?: string[];
+  admin_only?: boolean;
+  requirement_ids?: string[];
+};
+export type Requirement = { id: string; text: string; kind: "data" | "rule" | "permission" | "endpoint" };
+export type Spec = {
+  project_name: string;
+  description?: string;
+  stack?: string;
+  auth?: boolean;
+  features?: string[];
+  entities: Entity[];
+  actions?: Action[];
+  requirements?: Requirement[];
+};
 
 export type Validation = { ok: boolean; gate: string; log: string; failing_file?: string | null; duration_s?: number };
+export type Bug = { id: string; found_by: string; detail: string; fixed: boolean; open?: boolean };
+export type ReviewNote = { path: string; line: number; rule: string; severity: string; message: string };
 
 export type Snapshot = {
   run_id: string;
   prompt?: string;
   status: string;
+  options?: { stack?: string; bug_hunt?: boolean; codegen_mode?: string; plugins?: string[] };
   spec?: Spec;
   file_plan?: { path: string; owner: string; purpose: string }[];
   files?: string[];
@@ -28,17 +60,27 @@ export type Snapshot = {
   validation?: Validation | null;
   iteration?: number;
   usage?: { total_tokens?: number; cost_usd?: number; llm_calls?: number };
+  requirements?: Requirement[];
+  bugs?: Bug[];
+  review?: ReviewNote[];
+  stop_reason?: string | null;
+  phase?: string | null;
   report?: string | null;
   has_artifact?: boolean;
 };
+
+export type PluginInfo = { name: string; description: string; hooks: string[]; default: boolean };
 
 export type ServerConfig = {
   llm_enabled: boolean;
   fake_llm?: boolean;
   codegen_mode: string;
   sandbox: string;
-  access_required: boolean;
-  max_heal_iterations: number;
+  invite_required: boolean;
+  max_heal_safety: number;
+  max_runs_per_day: number;
+  stacks: { name: string; label: string }[];
+  plugins: PluginInfo[];
   models: { strong: string; cheap: string; fallback: string };
 };
 
@@ -53,41 +95,81 @@ export type RunEvent = {
   validation?: Validation | null;
   error_class?: string | null;
   iteration?: number | null;
+  bugs?: Bug[] | null;
+  phase?: string | null;
+  stop_reason?: string | null;
 };
 
-export type Fault = "none" | "import" | "status";
+export type RunSummary = { run_id: string; prompt: string; stack: string; status: string; created_at: number };
+export type Stats = { runs: number; succeeded: number; success_rate: number; avg_repairs: number; bugs_found: number; bugs_fixed: number; cost_usd: number };
+export type PreviewInfo = { running: boolean; base: string | null; docs: string | null };
+export type StartRun = { prompt: string; stack: string; codegen_mode?: string; bug_hunt: boolean; plugins: string[] };
 
-export type PreviewInfo = { running: boolean; base: string; docs: string };
+// --- login token (kept in this browser only) -------------------------------------------
+const TOKEN_KEY = "vibestack-token";
+
+export function getToken(): string {
+  try {
+    return typeof window === "undefined" ? "" : (localStorage.getItem(TOKEN_KEY) ?? "");
+  } catch {
+    return "";
+  }
+}
+
+export function setToken(token: string) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {}
+}
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API}${path}`, init);
+  const token = getToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json", ...((init?.headers as Record<string, string>) ?? {}) };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`${API}${path}`, { ...init, headers });
   if (!res.ok) {
     let detail = res.statusText;
     try {
       const body = await res.json();
       detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
     } catch {}
-    throw new Error(`${res.status}: ${detail}`);
+    throw new ApiError(res.status, `${res.status}: ${detail}`);
   }
-  return res.json() as Promise<T>;
+  const text = await res.text();
+  return (text ? JSON.parse(text) : null) as T;
 }
 
-const headers = (code: string) => ({ "Content-Type": "application/json", ...(code ? { "X-Access-Code": code } : {}) });
+const post = (body: unknown) => ({ method: "POST", body: JSON.stringify(body) });
+// Links the browser opens by itself (event stream, downloads) cannot send headers: pass the token in the URL.
+const withToken = (url: string) => `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(getToken())}`;
 
 export const api = {
   config: () => request<ServerConfig>("/api/config"),
+  register: (email: string, password: string, invite_code?: string) =>
+    request<{ token: string; email: string }>("/api/auth/register", post({ email, password, invite_code })),
+  login: (email: string, password: string) => request<{ token: string; email: string }>("/api/auth/login", post({ email, password })),
+  me: () => request<{ id: number; email: string; is_admin: boolean }>("/api/auth/me"),
+  runs: () => request<RunSummary[]>("/api/runs"),
+  stats: () => request<{ mine: Stats; everyone?: Stats }>("/api/stats"),
   snapshot: (id: string) => request<Snapshot>(`/api/runs/${id}`),
-  start: (body: { prompt: string; fault: Fault; codegen_mode?: string }, code: string) =>
-    request<{ run_id: string }>("/api/runs", { method: "POST", headers: headers(code), body: JSON.stringify(body) }),
+  start: (body: StartRun) => request<{ run_id: string }>("/api/runs", post(body)),
   file: async (id: string, path: string) => {
-    const res = await fetch(`${API}/api/runs/${id}/files/${path}`);
+    const res = await fetch(`${API}/api/runs/${id}/files/${path}`, { headers: { Authorization: `Bearer ${getToken()}` } });
     if (!res.ok) throw new Error(`${res.status}`);
     return res.text();
   },
   previewStatus: (id: string) => request<PreviewInfo>(`/api/runs/${id}/preview`),
-  startPreview: (id: string, code: string) =>
-    request<PreviewInfo>(`/api/runs/${id}/preview`, { method: "POST", headers: headers(code) }),
-  previewBase: (id: string) => `${API}/preview/${id}`,
-  eventsUrl: (id: string, after: number) => `${API}/api/runs/${id}/events?after=${after}`,
-  downloadUrl: (id: string) => `${API}/api/runs/${id}/download`,
+  startPreview: (id: string) => request<PreviewInfo>(`/api/runs/${id}/preview`, { method: "POST" }),
+  eventsUrl: (id: string, after: number) => withToken(`${API}/api/runs/${id}/events?after=${after}`),
+  downloadUrl: (id: string) => withToken(`${API}/api/runs/${id}/download`),
 };
