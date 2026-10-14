@@ -1,4 +1,7 @@
-"""VibeStack HTTP API: start runs, stream progress (SSE), browse files, download output."""
+"""VibeStack HTTP API: accounts, runs, live progress (SSE), files, downloads and live previews.
+
+Every run belongs to the user who started it; other users get 404 for it.
+"""
 
 from __future__ import annotations
 
@@ -6,13 +9,14 @@ import asyncio
 import json
 import logging
 import os
+import sqlite3
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
@@ -22,8 +26,10 @@ from pydantic import BaseModel, Field
 from agent.config import settings
 from agent.stacks import STACKS
 
+from .accounts import create_token, hash_password, user_id_from_token, verify_password
 from .preview import PreviewError, PreviewManager
 from .runs import TERMINAL, RunManager
+from .store import Store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -51,7 +57,66 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-manager = RunManager()
+store = Store(settings.platform_db)
+manager = RunManager(store)
+
+
+# --------------------------------------------------------------------------- accounts
+
+
+class Credentials(BaseModel):
+    email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", max_length=255)
+    password: str = Field(min_length=8, max_length=128)
+    invite_code: str | None = None
+
+
+def current_user(authorization: str | None = Header(default=None), token: str | None = None) -> dict[str, Any]:
+    """The logged-in user. The token comes from `Authorization: Bearer ...`, or `?token=` for
+    links the browser opens itself (event stream, downloads)."""
+    raw = authorization[7:] if authorization and authorization.startswith("Bearer ") else token
+    user_id = user_id_from_token(raw)
+    user = store.user_by_id(user_id) if user_id is not None else None
+    if user is None:
+        raise HTTPException(status_code=401, detail="please log in", headers={"WWW-Authenticate": "Bearer"})
+    user["is_admin"] = user["email"] in settings.admin_emails
+    return user
+
+
+CurrentUser = Annotated[dict[str, Any], Depends(current_user)]
+
+
+def own_run(run_id: str, user: dict[str, Any]) -> None:
+    """404 unless this run belongs to the user (other people's runs look like they don't exist)."""
+    if store.run_owner(run_id) != user["id"]:
+        raise HTTPException(status_code=404, detail="run not found")
+
+
+@app.post("/api/auth/register", status_code=201)
+def register(body: Credentials) -> dict[str, Any]:
+    if settings.access_code and body.invite_code != settings.access_code:
+        raise HTTPException(status_code=403, detail="a valid invite code is required")
+    email = body.email.lower()
+    try:
+        user_id = store.add_user(email, hash_password(body.password))
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="email already registered") from None
+    return {"token": create_token(user_id), "email": email}
+
+
+@app.post("/api/auth/login")
+def login(body: Credentials) -> dict[str, Any]:
+    user = store.user_by_email(body.email.lower())
+    if user is None or not verify_password(body.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="wrong email or password")
+    return {"token": create_token(user["id"]), "email": user["email"]}
+
+
+@app.get("/api/auth/me")
+def me(user: CurrentUser) -> dict[str, Any]:
+    return {"id": user["id"], "email": user["email"], "is_admin": user["is_admin"]}
+
+
+# --------------------------------------------------------------------------- runs
 
 
 class RunRequest(BaseModel):
@@ -59,11 +124,6 @@ class RunRequest(BaseModel):
     stack: Literal["fastapi", "flask", "django"] = "fastapi"
     codegen_mode: str | None = Field(default=None, pattern="^(llm|template)$")
     bug_hunt: bool = True
-
-
-def _check_access(code: str | None) -> None:
-    if settings.access_code and code != settings.access_code:
-        raise HTTPException(status_code=401, detail="invalid access code")
 
 
 @app.get("/api/health")
@@ -78,38 +138,52 @@ def config() -> dict[str, Any]:
         "fake_llm": settings.fake_llm,
         "codegen_mode": settings.codegen_mode,
         "sandbox": settings.sandbox,
-        "access_required": bool(settings.access_code),
+        "invite_required": bool(settings.access_code),
         "max_heal_safety": settings.max_heal_safety,
+        "max_runs_per_day": settings.max_runs_per_day,
         "stacks": [{"name": s.name, "label": s.label} for s in STACKS.values()],
         "models": {"strong": settings.strong_model, "cheap": settings.cheap_model, "fallback": settings.fallback_model},
     }
 
 
 @app.post("/api/runs", status_code=201)
-def create_run(body: RunRequest, x_access_code: str | None = Header(default=None)) -> dict[str, str]:
-    _check_access(x_access_code)
+def create_run(body: RunRequest, user: CurrentUser) -> dict[str, str]:
     if not settings.llm_enabled:
         raise HTTPException(status_code=503, detail="OPENROUTER_API_KEY is not configured on the server")
+    if store.runs_since(user["id"], time.time() - 86400) >= settings.max_runs_per_day and not user["is_admin"]:
+        raise HTTPException(status_code=429, detail=f"daily limit of {settings.max_runs_per_day} runs reached")
     options = {
         "stack": body.stack,
         "codegen_mode": body.codegen_mode or settings.codegen_mode,
         "bug_hunt": body.bug_hunt,
     }
     try:
-        run = manager.start(body.prompt, options)
+        run = manager.start(body.prompt, options, owner_id=user["id"])
     except RuntimeError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     return {"run_id": run.id}
 
 
 @app.get("/api/runs")
-def list_runs() -> list[dict[str, Any]]:
-    runs = sorted(manager.runs.values(), key=lambda r: r.created_at, reverse=True)
-    return [{"run_id": r.id, "prompt": r.prompt, "status": r.status, "created_at": r.created_at} for r in runs[:20]]
+def list_runs(user: CurrentUser) -> list[dict[str, Any]]:
+    return [
+        {"run_id": r["id"], "prompt": r["prompt"], "stack": r["stack"], "status": r["status"], "created_at": r["created_at"]}
+        for r in store.runs_for(user["id"])
+    ]
+
+
+@app.get("/api/stats")
+def stats(user: CurrentUser) -> dict[str, Any]:
+    """Headline numbers: success rate, repairs, bugs found and fixed, cost. Admins also see everyone's."""
+    out: dict[str, Any] = {"mine": store.stats(user["id"])}
+    if user["is_admin"]:
+        out["everyone"] = store.stats()
+    return out
 
 
 @app.get("/api/runs/{run_id}")
-def get_run(run_id: str) -> dict[str, Any]:
+def get_run(run_id: str, user: CurrentUser) -> dict[str, Any]:
+    own_run(run_id, user)
     snap = manager.snapshot(run_id)
     if snap is None:
         raise HTTPException(status_code=404, detail="run not found")
@@ -120,10 +194,12 @@ def get_run(run_id: str) -> dict[str, Any]:
 async def events(
     run_id: str,
     request: Request,
+    user: CurrentUser,
     after: int = -1,
     last_event_id: str | None = Header(default=None),
 ) -> StreamingResponse:
     """Server-sent events. Resume with the Last-Event-ID header or ?after=<seq>."""
+    own_run(run_id, user)
     run = manager.runs.get(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="run not found (or server restarted; fetch /api/runs/{id})")
@@ -156,7 +232,8 @@ async def events(
 
 
 @app.get("/api/runs/{run_id}/files/{path:path}", response_class=PlainTextResponse)
-def get_file(run_id: str, path: str) -> str:
+def get_file(run_id: str, path: str, user: CurrentUser) -> str:
+    own_run(run_id, user)
     content = manager.file(run_id, path)
     if content is None:
         raise HTTPException(status_code=404, detail="file not found")
@@ -164,17 +241,24 @@ def get_file(run_id: str, path: str) -> str:
 
 
 @app.get("/api/runs/{run_id}/download")
-def download(run_id: str) -> FileResponse:
+def download(run_id: str, user: CurrentUser) -> FileResponse:
+    own_run(run_id, user)
     path = manager.artifact(run_id)
     if not path or not Path(path).exists():
         raise HTTPException(status_code=404, detail="no artifact for this run")
     return FileResponse(path, media_type="application/zip", filename=Path(path).name)
 
 
+def _preview_info(p: Any) -> dict[str, Any]:
+    if p is None:
+        return {"running": False, "base": None, "docs": None}
+    return {"running": True, "base": p.public_path, "docs": f"{p.public_path}/docs", "started_at": p.started_at}
+
+
 @app.post("/api/runs/{run_id}/preview")
-async def start_preview(run_id: str, x_access_code: str | None = Header(default=None)) -> dict[str, Any]:
-    """Start the generated app as a live process, reachable at /preview/<run_id>/."""
-    _check_access(x_access_code)
+async def start_preview(run_id: str, user: CurrentUser) -> dict[str, Any]:
+    """Start the generated app as a live process, reachable at a private /preview/<key>/ URL."""
+    own_run(run_id, user)
     snap = manager.snapshot(run_id)
     if snap is None:
         raise HTTPException(status_code=404, detail="run not found")
@@ -186,22 +270,22 @@ async def start_preview(run_id: str, x_access_code: str | None = Header(default=
         p = await run_in_threadpool(previews.start, run_id, files, stack)
     except PreviewError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return {"running": True, "base": f"/preview/{run_id}", "docs": f"/preview/{run_id}/docs", "started_at": p.started_at}
+    return _preview_info(p)
 
 
 @app.get("/api/runs/{run_id}/preview")
-def preview_status(run_id: str) -> dict[str, Any]:
-    p = previews.get(run_id)
-    return {"running": bool(p), "base": f"/preview/{run_id}", "docs": f"/preview/{run_id}/docs"}
+def preview_status(run_id: str, user: CurrentUser) -> dict[str, Any]:
+    own_run(run_id, user)
+    return _preview_info(previews.get(run_id))
 
 
 _HOP_HEADERS = {"connection", "keep-alive", "transfer-encoding", "content-encoding", "content-length", "upgrade"}
 
 
-@app.api_route("/preview/{run_id}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-async def preview_proxy(run_id: str, path: str, request: Request) -> Response:
+@app.api_route("/preview/{key}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def preview_proxy(key: str, path: str, request: Request) -> Response:
     """Reverse proxy to the generated app, so it is reachable on the platform's single public port."""
-    p = previews.get(run_id)
+    p = previews.by_key(key)
     if p is None:
         raise HTTPException(status_code=404, detail="preview not running; start it from the Live App tab")
     forward = {k: v for k, v in request.headers.items() if k.lower() in ("content-type", "authorization", "accept")}

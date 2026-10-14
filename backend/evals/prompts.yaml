@@ -84,3 +84,87 @@
       - {name: Vehicle, fields: [{name: plate, unique: true}, {name: model}, {name: active, type: bool}]}
       - {name: Driver, fields: [{name: name}, {name: license_no, unique: true}]}
       - {name: Trip, fields: [{name: vehicle_id, references: Vehicle}, {name: driver_id, references: Driver}, {name: distance_km, type: float}, {name: fuel_l, type: float}]}
+
+# --- Hard prompts: business rules, permissions and custom actions -------------------------
+# Online runs are scored on whether the agents implement the rules (Test Engineer + Bug Hunter
+# tests). The reference specs below let --offline runs check that the harness handles the design.
+- id: hard-checkout
+  hard: true
+  prompt: >-
+    An online shop. Admins manage products with a price and stock. Customers sign up and place orders
+    made of order items. Checking out an order reduces stock for every item, fails with 409 if any
+    product has too little stock, and marks the order paid. Customers only ever see their own orders.
+    An order that is already paid cannot be checked out again.
+  spec:
+    project_name: checkout_shop
+    auth: true
+    entities:
+      - {name: Product, write_access: admin, fields: [{name: name, unique: true}, {name: price, type: decimal, min: 0}, {name: stock, type: int, min: 0}]}
+      - {name: Order, write_access: owner, fields: [{name: status, choices: [pending, paid, cancelled]}]}
+      - {name: OrderItem, write_access: owner, fields: [{name: order_id, references: Order}, {name: product_id, references: Product}, {name: quantity, type: int, min: 1}]}
+    actions:
+      - {name: checkout, entity: Order, method: POST, path: "/{item_id}/checkout", description: Pay for an order, rules: ["409 if any product has less stock than ordered", "409 if the order is not pending", "reduces stock and sets status to paid"]}
+- id: hard-clinic
+  hard: true
+  prompt: >-
+    Hospital appointment booking. Admins manage departments and doctors. Patients log in and book
+    appointments with a doctor at a start time; a doctor cannot have two appointments at the same time
+    (409). Patients see and cancel only their own appointments; cancelling sets the status to cancelled.
+    Doctors have a daily appointment report.
+  spec:
+    project_name: clinic_booking
+    auth: true
+    entities:
+      - {name: Department, write_access: admin, fields: [{name: name, unique: true}]}
+      - {name: Doctor, write_access: admin, fields: [{name: name}, {name: specialty}, {name: department_id, references: Department}]}
+      - {name: Appointment, write_access: owner, fields: [{name: doctor_id, references: Doctor}, {name: starts_at, type: datetime}, {name: status, choices: [booked, cancelled, done]}, {name: reason, type: text, required: false}]}
+    actions:
+      - {name: cancel, entity: Appointment, method: POST, path: "/{item_id}/cancel", description: Cancel an appointment, rules: ["409 if already cancelled", "sets status to cancelled"]}
+      - {name: daily_report, entity: Doctor, method: GET, path: "/{item_id}/daily-report", description: "Appointments of a doctor on ?date", rules: []}
+- id: hard-library
+  hard: true
+  prompt: >-
+    Library loans. Librarians (admins) manage books with a number of copies. Members log in and borrow
+    books: a member may have at most 3 open loans (409 otherwise) and a book cannot be borrowed when no
+    copy is left (409). Returning a loan frees the copy. Members see only their own loans.
+  spec:
+    project_name: library_loans
+    auth: true
+    entities:
+      - {name: Book, write_access: admin, fields: [{name: title}, {name: isbn, unique: true}, {name: copies, type: int, min: 0}]}
+      - {name: Loan, write_access: owner, fields: [{name: book_id, references: Book}, {name: due_on, type: date}, {name: returned, type: bool}]}
+    actions:
+      - {name: borrow, entity: Book, method: POST, path: "/{item_id}/borrow", description: Borrow a copy, rules: ["409 if no copy is left", "409 if the member has 3 open loans"]}
+      - {name: return_loan, entity: Loan, method: POST, path: "/{item_id}/return", description: Return a book, rules: ["409 if already returned"]}
+- id: hard-projects
+  hard: true
+  prompt: >-
+    Jira-like project tracker. Logged-in users create projects they own. Issues belong to a project and
+    have a title, a status (todo, in_progress, done), a priority from 1 to 5 and story points. Only the
+    project owner may add issues to it. Moving an issue to done is only allowed from in_progress (409).
+    Each project has a summary of story points per status.
+  spec:
+    project_name: tracker
+    auth: true
+    entities:
+      - {name: Project, write_access: owner, fields: [{name: name}, {name: description, type: text, required: false}]}
+      - {name: Issue, write_access: owner, fields: [{name: project_id, references: Project}, {name: title}, {name: status, choices: [todo, in_progress, done]}, {name: priority, type: int, min: 1, max: 5}, {name: points, type: int, min: 0}]}
+    actions:
+      - {name: complete, entity: Issue, method: POST, path: "/{item_id}/complete", description: Move an issue to done, rules: ["409 unless the status is in_progress"]}
+      - {name: summary, entity: Project, method: GET, path: "/{item_id}/summary", description: Story points per status, rules: []}
+- id: hard-tickets
+  hard: true
+  prompt: >-
+    Event ticketing. Admins manage venues with a capacity and events at venues. Logged-in users book
+    tickets for an event with a quantity; total bookings for an event can never exceed the venue
+    capacity (409). Users see only their own bookings and can cancel them before the event starts.
+  spec:
+    project_name: ticketing_pro
+    auth: true
+    entities:
+      - {name: Venue, write_access: admin, fields: [{name: name}, {name: city}, {name: capacity, type: int, min: 1}]}
+      - {name: Event, write_access: admin, fields: [{name: title}, {name: venue_id, references: Venue}, {name: starts_at, type: datetime}]}
+      - {name: Booking, write_access: owner, fields: [{name: event_id, references: Event}, {name: quantity, type: int, min: 1}, {name: status, choices: [active, cancelled]}]}
+    actions:
+      - {name: book, entity: Event, method: POST, path: "/{item_id}/book", description: Book tickets for an event, rules: ["409 if the event would exceed the venue capacity"]}
+      - {name: cancel, entity: Booking, method: POST, path: "/{item_id}/cancel", description: Cancel a booking, rules: ["409 if the event already started"]}

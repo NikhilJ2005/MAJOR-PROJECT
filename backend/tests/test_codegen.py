@@ -73,3 +73,12 @@ def test_generated_code_cannot_read_server_environment():
     )
     result = LocalSandbox().validate(files)
     assert result.ok, result.log
+
+
+def test_memory_bomb_is_stopped_by_the_os_limit():
+    """3 GB allocation in generated code fails with MemoryError instead of exhausting the server."""
+    files = render_project(ProjectSpec.model_validate(NO_AUTH))
+    files["app/main.py"] += "\nbomb = bytearray(3 * 1024 ** 3)\n"
+    result = LocalSandbox().validate(files)
+    assert not result.ok and result.gate == "import"
+    assert "MemoryError" in result.log

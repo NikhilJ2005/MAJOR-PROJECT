@@ -8,7 +8,8 @@ Three gates, cheapest first; the first failing gate stops validation:
 What "import" and "boot" mean per framework comes from stacks.py.
 
 `LocalSandbox` runs each gate as a subprocess with a scrubbed environment (no
-API keys leak to generated code), its own process group and a hard timeout.
+API keys leak to generated code), its own process group, a hard timeout and OS
+resource limits (memory, CPU time, file size, open files, processes).
 On Railway this is the only option (no Docker daemon); the hosting container
 is the isolation boundary. A Docker backend can implement the same protocol.
 """
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import os
 import pwd
+import resource
 import shutil
 import signal
 import socket
@@ -89,6 +91,24 @@ def _sandbox_identity() -> tuple[int, int] | None:
     return pw.pw_uid, pw.pw_gid
 
 
+def resource_limits(cpu_seconds: int, memory_mb: int, limit_processes: bool):
+    """Build the function the child process runs before the generated code starts.
+
+    Limits are enforced by the operating system, so even a fork bomb or a 10 GB
+    allocation in generated code fails inside the sandbox instead of hurting the server.
+    """
+
+    def apply() -> None:
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))
+        resource.setrlimit(resource.RLIMIT_AS, (memory_mb * 1024 * 1024,) * 2)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (100 * 1024 * 1024,) * 2)  # 100 MB per file
+        resource.setrlimit(resource.RLIMIT_NOFILE, (512, 512))
+        if limit_processes:  # only as the dedicated sandbox user: the limit is per user
+            resource.setrlimit(resource.RLIMIT_NPROC, (128, 128))
+
+    return apply
+
+
 class LocalSandbox:
     def __init__(self, timeout_s: int | None = None) -> None:
         self.timeout_s = timeout_s or settings.gate_timeout_s
@@ -100,11 +120,16 @@ class LocalSandbox:
             for path in [workdir, *workdir.rglob("*")]:
                 os.chown(path, *self.identity)
 
-    def spawn(self, args: list[str], workdir: Path, stdout: Any = subprocess.PIPE) -> subprocess.Popen:
-        """Start a process for generated code: scrubbed env, own process group, unprivileged user."""
+    def spawn(
+        self, args: list[str], workdir: Path, stdout: Any = subprocess.PIPE, cpu_seconds: int | None = None
+    ) -> subprocess.Popen:
+        """Start a process for generated code: scrubbed env, own process group, unprivileged user, limits."""
         kwargs: dict[str, Any] = {}
         if self.identity:
             kwargs = {"user": self.identity[0], "group": self.identity[1], "extra_groups": []}
+        kwargs["preexec_fn"] = resource_limits(
+            cpu_seconds or self.timeout_s * 2, settings.sandbox_memory_mb, limit_processes=bool(self.identity)
+        )
         return subprocess.Popen(
             args,
             cwd=workdir,

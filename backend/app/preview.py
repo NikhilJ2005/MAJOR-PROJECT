@@ -3,14 +3,16 @@
 This is the Lovable-style "see it running" step. The generated project is
 started with the same isolation as the validator (scrubbed environment, own
 process group, unprivileged `sandbox` user) on a private localhost port, and
-reached through the main server at /preview/<run_id>/..., so it works on a
-single-port host such as Railway.
+reached through the main server at /preview/<key>/..., so it works on a
+single-port host such as Railway. The key is random (secrets.token_urlsafe), so
+only someone who was given the link can reach another user's preview.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import secrets
 import shutil
 import signal
 import subprocess
@@ -32,11 +34,13 @@ log = logging.getLogger(__name__)
 MAX_PREVIEWS = 2
 IDLE_TIMEOUT_S = 20 * 60
 BOOT_TIMEOUT_S = 25
+PREVIEW_CPU_SECONDS = 600  # total CPU time a preview may use before the OS stops it
 
 
 @dataclass
 class Preview:
     run_id: str
+    key: str  # the unguessable part of the public URL /preview/<key>/
     port: int
     proc: subprocess.Popen
     workdir: Path
@@ -51,6 +55,10 @@ class Preview:
     @property
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
+
+    @property
+    def public_path(self) -> str:
+        return f"/preview/{self.key}"
 
 
 class PreviewError(RuntimeError):
@@ -69,6 +77,11 @@ class PreviewManager:
             p.last_used = time.time()
             return p
         return None
+
+    def by_key(self, key: str) -> Preview | None:
+        """The running preview behind a public /preview/<key>/ URL."""
+        p = next((p for p in self._previews.values() if secrets.compare_digest(p.key, key)), None)
+        return self.get(p.run_id) if p else None
 
     def start(self, run_id: str, files: dict[str, str], stack: str = "fastapi") -> Preview:
         """Start (or restart) the preview for a run. Blocks until /health answers."""
@@ -90,13 +103,15 @@ class PreviewManager:
                 shutil.rmtree(workdir, ignore_errors=True)
                 raise PreviewError(f"generated app could not be prepared:\n{out[-2000:]}")
             port = free_port()
+            key = secrets.token_urlsafe(16)
             logfile = open(workdir / "preview.log", "w")  # noqa: SIM115 - owned by the process
             proc = self._sandbox.spawn(
-                [sys.executable, *chosen.boot_args(port, root_path=f"/preview/{run_id}")],
+                [sys.executable, *chosen.boot_args(port, root_path=f"/preview/{key}")],
                 workdir,
                 stdout=logfile,
+                cpu_seconds=PREVIEW_CPU_SECONDS,
             )
-            preview = Preview(run_id, port, proc, workdir, logfile)
+            preview = Preview(run_id, key, port, proc, workdir, logfile)
             self._previews[run_id] = preview
 
         deadline = time.monotonic() + BOOT_TIMEOUT_S
