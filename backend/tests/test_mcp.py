@@ -33,10 +33,12 @@ def _token(app) -> str:
 
 async def _call(port, token, tool, args):
     headers = {"Authorization": f"Bearer {token}"} if token else {}
-    async with httpx2.AsyncClient(headers=headers, timeout=300) as http:
-        async with Client(streamable_http_client(f"http://127.0.0.1:{port}/mcp/", http_client=http)) as client:
-            tools = sorted(t.name for t in (await client.list_tools()).tools)
-            return tools, await client.call_tool(tool, args)
+    async with (
+        httpx2.AsyncClient(headers=headers, timeout=300) as http,
+        Client(streamable_http_client(f"http://127.0.0.1:{port}/mcp/", http_client=http)) as client,
+    ):
+        tools = sorted(t.name for t in (await client.list_tools()).tools)
+        return tools, await client.call_tool(tool, args)
 
 
 def test_generate_backend_through_mcp(fake_llm):
