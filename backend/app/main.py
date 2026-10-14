@@ -21,12 +21,15 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 
+from agent import plugins
 from agent.config import settings
 from agent.stacks import STACKS
 
 from .accounts import create_token, hash_password, user_id_from_token, verify_password
+from .mcp_server import build_mcp
 from .preview import PreviewError, PreviewManager
 from .runs import TERMINAL, RunManager
 from .store import Store
@@ -39,7 +42,18 @@ previews = PreviewManager()
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     app.state.proxy = httpx.AsyncClient(timeout=30, trust_env=False)
-    yield
+    # A fresh MCP server per lifespan: its session manager can only run once.
+    mcp = build_mcp(manager, store, start_run)
+    app.state.mcp_app = mcp.streamable_http_app(
+        streamable_http_path="/",
+        stateless_http=True,
+        json_response=True,
+        # Every tool call needs a Bearer token, which a browser cannot add cross-site, so
+        # DNS-rebinding protection (a localhost-only default) is not needed behind a public domain.
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
+    async with mcp.session_manager.run():
+        yield
     await app.state.proxy.aclose()
     previews.stop_all()
 
@@ -124,6 +138,7 @@ class RunRequest(BaseModel):
     stack: Literal["fastapi", "flask", "django"] = "fastapi"
     codegen_mode: str | None = Field(default=None, pattern="^(llm|template)$")
     bug_hunt: bool = True
+    plugins: list[str] | None = None  # None: the server's default plugins
 
 
 @app.get("/api/health")
@@ -142,26 +157,38 @@ def config() -> dict[str, Any]:
         "max_heal_safety": settings.max_heal_safety,
         "max_runs_per_day": settings.max_runs_per_day,
         "stacks": [{"name": s.name, "label": s.label} for s in STACKS.values()],
+        "plugins": plugins.describe(),
         "models": {"strong": settings.strong_model, "cheap": settings.cheap_model, "fallback": settings.fallback_model},
     }
 
 
-@app.post("/api/runs", status_code=201)
-def create_run(body: RunRequest, user: CurrentUser) -> dict[str, str]:
+def start_run(user: dict[str, Any], prompt: str, options: dict[str, Any]) -> str:
+    """Checks and starts a run for a user. Shared by the HTTP API and the MCP server."""
     if not settings.llm_enabled:
         raise HTTPException(status_code=503, detail="OPENROUTER_API_KEY is not configured on the server")
-    if store.runs_since(user["id"], time.time() - 86400) >= settings.max_runs_per_day and not user["is_admin"]:
+    if not 10 <= len(prompt) <= 6000:
+        raise HTTPException(status_code=422, detail="the description must be 10-6000 characters")
+    if options.get("stack", "fastapi") not in STACKS:
+        raise HTTPException(status_code=422, detail=f"stack must be one of {', '.join(STACKS)}")
+    is_admin = user.get("is_admin") or user["email"] in settings.admin_emails
+    if store.runs_since(user["id"], time.time() - 86400) >= settings.max_runs_per_day and not is_admin:
         raise HTTPException(status_code=429, detail=f"daily limit of {settings.max_runs_per_day} runs reached")
-    options = {
-        "stack": body.stack,
-        "codegen_mode": body.codegen_mode or settings.codegen_mode,
-        "bug_hunt": body.bug_hunt,
-    }
+    options = {"codegen_mode": settings.codegen_mode, "bug_hunt": True, **options}
     try:
-        run = manager.start(body.prompt, options, owner_id=user["id"])
+        return manager.start(prompt, options, owner_id=user["id"]).id
     except RuntimeError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
-    return {"run_id": run.id}
+
+
+@app.post("/api/runs", status_code=201)
+def create_run(body: RunRequest, user: CurrentUser) -> dict[str, str]:
+    options = {"stack": body.stack, "codegen_mode": body.codegen_mode or settings.codegen_mode, "bug_hunt": body.bug_hunt}
+    if body.plugins is not None:
+        unknown = set(body.plugins) - {p["name"] for p in plugins.describe()}
+        if unknown:
+            raise HTTPException(status_code=422, detail=f"unknown plugins: {', '.join(sorted(unknown))}")
+        options["plugins"] = body.plugins
+    return {"run_id": start_run(user, body.prompt, options)}
 
 
 @app.get("/api/runs")
@@ -301,6 +328,14 @@ async def preview_proxy(key: str, path: str, request: Request) -> Response:
         raise HTTPException(status_code=502, detail=f"preview unreachable: {exc}") from exc
     headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _HOP_HEADERS}
     return Response(upstream.content, status_code=upstream.status_code, headers=headers)
+
+
+async def mcp_endpoint(scope, receive, send) -> None:
+    """Forward /mcp/ to the MCP app created in lifespan()."""
+    await app.state.mcp_app(scope, receive, send)
+
+
+app.mount("/mcp", mcp_endpoint)
 
 
 # Serve the exported Next.js frontend from the same origin when it is present (Railway, Docker).

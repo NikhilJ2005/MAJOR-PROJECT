@@ -24,7 +24,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from . import prompts
+from . import plugins, prompts
 from .analysis import RequirementList, check_coverage, requirements_text
 from .bughunt import failing_tests, static_check, update_bugs, write_edge_tests
 from .codegen import plan_files, render_project
@@ -63,6 +63,10 @@ def _spec(state: AgentState) -> ProjectSpec:
 
 def _opts(state: AgentState) -> dict[str, Any]:
     return dict(state.get("options") or {})
+
+
+def _plugins(state: AgentState) -> list[tuple[str, Any]]:
+    return plugins.chosen(_opts(state).get("plugins"))
 
 
 def _count_tests(source: str) -> int:
@@ -154,18 +158,26 @@ def parse_spec(state: AgentState) -> dict[str, Any]:
 def plan(state: AgentState) -> dict[str, Any]:
     spec = _spec(state)
     file_plan = plan_files(spec)
+    template_files = render_project(spec)
+    ledger = [
+        entry(
+            "planner",
+            f"planned {len(file_plan)} {get_stack(spec.stack).label} files in dependency order",
+            "models -> schemas -> services -> routers -> app wiring -> tests -> packaging",
+        )
+    ]
+    for name, added in plugins.extra_files(_plugins(state), spec).items():
+        added = {p: c for p, c in added.items() if p not in template_files}  # plugins add, never overwrite
+        template_files.update(added)
+        file_plan += [{"path": p, "owner": f"plugin:{name}", "purpose": f"added by the {name} plugin"} for p in sorted(added)]
+        if added:
+            ledger.append(entry(f"plugin:{name}", f"added {len(added)} file(s)", "extra_files hook", files=sorted(added)))
     return {
         "file_plan": file_plan,
-        "template_files": render_project(spec),
+        "template_files": template_files,
         "status": "planned",
         "phase": "build",
-        "ledger": [
-            entry(
-                "planner",
-                f"planned {len(file_plan)} {get_stack(spec.stack).label} files in dependency order",
-                "models -> schemas -> services -> routers -> app wiring -> tests -> packaging",
-            )
-        ],
+        "ledger": ledger,
     }
 
 
@@ -236,6 +248,9 @@ def _generate_entity(
     stack = get_stack(spec.stack)
     reference = "\n\n".join(f"### FILE: {p}\n```python\n{baseline[p]}```" for p in expected)
     system = prompts.entity_system(stack.name, stack.label, e.module, e.name, e.table)
+    notes = plugins.prompt_notes(_plugins(state), stack.name)
+    if notes:
+        system += f"\n\nAlso follow these project rules:\n{notes}"
     user = prompts.ENTITY_USER.format(
         prompt=state["prompt"],
         requirements=requirements_text(spec.requirements),
@@ -260,7 +275,7 @@ def validate(state: AgentState) -> dict[str, Any]:
     """Static checks first (no subprocess), then the sandbox gates: import -> boot -> tests."""
     spec = _spec(state)
     files = state["files"]
-    findings = static_check(files)
+    findings = static_check(files) + plugins.extra_checks(_plugins(state), files)
     blocking = [f for f in findings if f.severity == "high"]
     if blocking:
         result = GateResult(False, "static", "\n".join(f.log_line() for f in blocking), 0.0)
@@ -476,7 +491,11 @@ def _llm_repair(llm: Any, role: str, state: AgentState, path: str, attempt: int)
         content=files[path],
         related=related,
     )
-    return llm.complete(role, prompts.reflect_system(spec.stack), user)
+    system = prompts.reflect_system(spec.stack)
+    notes = plugins.prompt_notes(_plugins(state), spec.stack)
+    if notes:
+        system += f"\n- Also follow these project rules:\n{notes}"
+    return llm.complete(role, system, user)
 
 
 def _parse_repair(text: str, files: dict[str, str]) -> tuple[dict[str, str], str]:

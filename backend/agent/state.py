@@ -290,6 +290,7 @@ class Options(TypedDict, total=False):
     stack: str  # "fastapi" | "flask" | "django"
     codegen_mode: str  # "llm" | "template"
     bug_hunt: bool  # run the Bug Hunter after the contract passes (default on)
+    plugins: list[str]  # plugin names from backend/plugins/ (default: the PLUGINS env var)
 
 
 class AgentState(TypedDict, total=False):
