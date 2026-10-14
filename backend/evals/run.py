@@ -2,7 +2,6 @@
 
     python -m evals.run                  # online: LLM spec + LLM codegen (needs OPENROUTER_API_KEY)
     python -m evals.run --offline        # reference specs + templates, no LLM (harness regression)
-    python -m evals.run --fault          # inject a bug into every project to measure healing
     python -m evals.run --only blog,todo
 """
 
@@ -23,8 +22,8 @@ from agent.graph import build_graph, initial_state
 HERE = Path(__file__).parent
 
 
-def run_case(graph, case: dict, offline: bool, fault: bool) -> dict:
-    options = {"fault": "import" if fault else "none", "codegen_mode": "template" if offline else "llm"}
+def run_case(graph, case: dict, offline: bool) -> dict:
+    options = {"codegen_mode": "template" if offline else "llm"}
     state = initial_state(case["prompt"], options, case["spec"] if offline else None)
     config = {"configurable": {"thread_id": state["run_id"]}}
     t0 = time.monotonic()
@@ -39,6 +38,7 @@ def run_case(graph, case: dict, offline: bool, fault: bool) -> dict:
         "id": case["id"],
         "status": "error" if error else values.get("status"),
         "heal_iterations": values.get("iteration", 0),
+        "stop_reason": values.get("stop_reason"),
         "failed_gate": None if values.get("status") == "succeeded" else (values.get("validation") or {}).get("gate"),
         "entities": len((values.get("spec") or {}).get("entities", [])),
         "files": len(values.get("files") or {}),
@@ -85,7 +85,6 @@ def to_markdown(mode: str, summary: dict, rows: list[dict]) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--offline", action="store_true")
-    ap.add_argument("--fault", action="store_true")
     ap.add_argument("--only", help="comma-separated case ids")
     args = ap.parse_args()
 
@@ -101,12 +100,12 @@ def main() -> None:
     graph = build_graph()
     rows = []
     for case in cases:
-        row = run_case(graph, case, args.offline, args.fault)
+        row = run_case(graph, case, args.offline)
         rows.append(row)
         print(f"{row['id']:>10}: {row['status']:<10} heal={row['heal_iterations']} tokens={row['tokens']} {row['seconds']}s"
               + (f"  {row['error']}" if row["error"] else ""))
 
-    mode = ("offline" if args.offline else "online") + ("+fault" if args.fault else "")
+    mode = "offline" if args.offline else "online"
     summary = summarize(rows)
     out_dir = HERE / "results"
     out_dir.mkdir(exist_ok=True)

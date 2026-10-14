@@ -69,7 +69,7 @@ Rules:
 
 REFLECT_USER = """Failed gate: {gate}
 Error class: {error_class} - {hint}
-Attempt: {attempt} of {max_attempts}
+Repair attempt: {attempt}
 
 Validation log (tail):
 ```

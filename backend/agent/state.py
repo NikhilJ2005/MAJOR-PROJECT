@@ -180,8 +180,6 @@ class Validation(TypedDict, total=False):
 
 
 class Options(TypedDict, total=False):
-    inject_fault: bool  # legacy flag, same as fault="import"
-    fault: str  # "none" | "import" | "status"
     codegen_mode: str
 
 
@@ -195,6 +193,8 @@ class AgentState(TypedDict, total=False):
     template_files: dict[str, str]
     validation: Validation
     iteration: int
+    heal_history: list[dict[str, Any]]  # one entry per validation, read by healing.should_continue
+    stop_reason: str
     error_class: str
     ledger: Annotated[list[LedgerEntry], operator.add]
     usage: Annotated[dict[str, Any], merge_usage]

@@ -27,12 +27,12 @@ def test_end_to_end_over_http(fake_llm):
         snap = _wait(client, run_id, {"succeeded", "failed", "error"})
         assert snap["status"] == "succeeded", snap
         assert snap["spec"]["project_name"] == "blog_api"
-        assert snap["iteration"] == 1  # inject_fault defaults to on: the demo always shows a heal
+        assert snap["iteration"] == 0  # no bugs are planted: a clean model output needs no repair
         assert snap["file_plan"]
 
         with client.stream("GET", f"/api/runs/{run_id}/events") as resp:
             body = "".join(resp.iter_text())
-        assert '"node": "parse_spec"' in body and '"node": "reflect"' in body
+        assert '"node": "parse_spec"' in body and '"node": "validate"' in body
         with client.stream("GET", f"/api/runs/{run_id}/events", headers={"Last-Event-ID": "3"}) as resp:
             assert '"node": "parse_spec"' not in "".join(resp.iter_text())
 
@@ -52,7 +52,7 @@ def test_live_preview_runs_generated_app_behind_proxy(fake_llm):
     from app.main import app, previews
 
     with TestClient(app) as client:
-        run_id = client.post("/api/runs", json={"prompt": "A blog with posts and comments", "fault": "none"}).json()["run_id"]
+        run_id = client.post("/api/runs", json={"prompt": "A blog with posts and comments"}).json()["run_id"]
         assert _wait(client, run_id, {"succeeded", "failed", "error"})["status"] == "succeeded"
         assert client.get(f"/api/runs/{run_id}/preview").json()["running"] is False
         assert client.get(f"/preview/{run_id}/health").status_code == 404

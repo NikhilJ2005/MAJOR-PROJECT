@@ -55,7 +55,6 @@ manager = RunManager()
 
 class RunRequest(BaseModel):
     prompt: str = Field(min_length=10, max_length=2000)
-    fault: Literal["none", "import", "status"] = "import"
     codegen_mode: str | None = Field(default=None, pattern="^(llm|template)$")
 
 
@@ -77,7 +76,7 @@ def config() -> dict[str, Any]:
         "codegen_mode": settings.codegen_mode,
         "sandbox": settings.sandbox,
         "access_required": bool(settings.access_code),
-        "max_heal_iterations": settings.max_heal_iterations,
+        "max_heal_safety": settings.max_heal_safety,
         "models": {"strong": settings.strong_model, "cheap": settings.cheap_model, "fallback": settings.fallback_model},
     }
 
@@ -88,7 +87,6 @@ def create_run(body: RunRequest, x_access_code: str | None = Header(default=None
     if not settings.llm_enabled:
         raise HTTPException(status_code=503, detail="OPENROUTER_API_KEY is not configured on the server")
     options = {
-        "fault": body.fault,
         "codegen_mode": body.codegen_mode or settings.codegen_mode,
     }
     try:

@@ -41,6 +41,8 @@ def _resolve(payload: dict) -> dict:
     out = {}
     for key, value in payload.items():
         if isinstance(value, str) and value.startswith("@ref:"):
+            if value[5:] not in state["ids"]:
+                pytest.skip(f"needs a {value[5:]}, whose test failed earlier")
             out[key] = state["ids"][value[5:]]
         else:
             out[key] = value

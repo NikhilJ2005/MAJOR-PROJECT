@@ -49,7 +49,7 @@ def main() -> int:
         from agent.graph import main as run_graph
 
         print("\nFull run (architecture -> code -> validate -> self-heal):\n")
-        return run_graph(["A blog API with posts and comments; users log in to write. Posts searchable by title.", "--fault"])
+        return run_graph(["A blog API with posts and comments; users log in to write. Posts searchable by title."])
     return 0
 
 

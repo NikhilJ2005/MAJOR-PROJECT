@@ -6,7 +6,7 @@
     validate --fail, budget spent---> failure_report -> END
 
 Run from the CLI:
-    python -m agent.graph "a todo API with users and tasks" [--fault] [--template]
+    python -m agent.graph "a todo API with users and tasks" [--template]
 """
 
 from __future__ import annotations
@@ -85,17 +85,12 @@ def initial_state(prompt: str, options: dict[str, Any] | None = None, spec: dict
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Generate a validated FastAPI backend from a description")
     ap.add_argument("prompt")
-    ap.add_argument(
-        "--fault", nargs="?", const="import", default="none", choices=["none", "import", "status"],
-        help="plant a bug to demo self-healing (default kind: import)",
-    )
     ap.add_argument("--template", action="store_true", help="deterministic template codegen (no LLM for code)")
     ap.add_argument("--spec", help="path to a ProjectSpec JSON (skips the LLM spec step)")
     args = ap.parse_args(argv)
 
     spec = json.loads(open(args.spec).read()) if args.spec else None
     options = {
-        "fault": args.fault,
         "codegen_mode": "template" if args.template else settings.codegen_mode,
     }
     state = initial_state(args.prompt, options, spec)
@@ -107,7 +102,9 @@ def main(argv: list[str] | None = None) -> int:
             for e in (delta or {}).get("ledger", []) or []:
                 print(f"[{node:>15}] {e['agent']}: {e['action']}" + (f"  ({e['rationale']})" if e.get("rationale") else ""))
     final = graph.get_state(config).values
-    print(f"\nstatus: {final.get('status')}  heal iterations: {final.get('iteration', 0)}")
+    print(f"\nstatus: {final.get('status')}  repair attempts: {final.get('iteration', 0)}")
+    if final.get("stop_reason"):
+        print(f"healing stopped: {final['stop_reason']}")
     print(f"usage: {final.get('usage') or 'no LLM calls'}")
     if final.get("artifact_path"):
         print(f"artifact: {final['artifact_path']}")

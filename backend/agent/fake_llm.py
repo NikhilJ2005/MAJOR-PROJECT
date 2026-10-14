@@ -2,7 +2,9 @@
 
 Used by the test-suite, and by `FAKE_LLM=1` so the UI can be developed and
 demoed without an API key or token spend. It never invents code: entity files
-echo the reference templates and the reflector fixes the demo fault.
+echo the reference templates. With `buggy=True` the "API engineer" makes a
+typical model mistake (a misspelled import), so tests can watch the agents
+find and repair a bug that nobody planted on purpose.
 """
 
 from __future__ import annotations
@@ -27,9 +29,11 @@ BLOG_SPEC = {
 class FakeLLM:
     """Plays architect, API engineer and reflector."""
 
-    def __init__(self, spec=None, fix_reflection=True):
+    def __init__(self, spec=None, fix_reflection=True, buggy=False):
         self.spec = spec or BLOG_SPEC
         self.fix_reflection = fix_reflection
+        self.buggy = buggy
+        self._made_mistake = False
         self.calls: list[str] = []
 
     def complete(self, role, system, user):
@@ -40,6 +44,9 @@ class FakeLLM:
         if "API Engineer" in system:
             self.calls.append("entity")
             reference = user.split("Reference implementation:\n", 1)[1]
+            if self.buggy and not self._made_mistake:
+                self._made_mistake = True  # one slip, like a real model typo
+                reference = reference.replace("import Session", "import Sesion", 1)
             return "RATIONALE: kept the reference contract\n" + reference, usage
         if "Reflector" in system:
             self.calls.append(f"reflect:{role}")

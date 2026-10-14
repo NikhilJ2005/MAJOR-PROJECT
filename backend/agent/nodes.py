@@ -16,9 +16,16 @@ from typing import Any
 
 
 from . import prompts
-from .codegen import inject_fault, plan_files, render_project
+from .codegen import plan_files, render_project
 from .config import settings
-from .healing import classify_error, locate_failing_file, related_files
+from .healing import (
+    classify_error,
+    history_entry,
+    locate_failing_file,
+    related_files,
+    repair_rung,
+    should_continue,
+)
 from .llm import LLMError, Usage, check_budget, get_llm, parse_file_blocks, structured
 from .sandbox import get_sandbox
 from .state import AgentState, EntitySpec, ProjectSpec
@@ -126,21 +133,6 @@ def generate(state: AgentState) -> dict[str, Any]:
                     )
                 )
 
-    kind = opts.get("fault") or ("import" if opts.get("inject_fault") else "none")
-    fault = inject_fault(spec, files, kind)
-    if fault:
-        path, broken, description = fault
-        before, files[path] = files[path], broken
-        ledger.append(
-            _entry(
-                "fault_injector",
-                f"planted a bug (demo mode): {description}",
-                "proves the self-healing loop",
-                files=[path],
-                diff={path: _diff(path, before, broken)},
-            )
-        )
-
     out: dict[str, Any] = {"files": files, "status": "generated", "iteration": 0, "ledger": ledger}
     if total.calls:
         out["usage"] = total.as_state()
@@ -175,19 +167,32 @@ def validate(state: AgentState) -> dict[str, Any]:
         if result.ok
         else f"failed at gate '{result.gate}' after {result.duration_s:.1f}s"
     )
+    validation = result.as_state()
+    history = [*state.get("heal_history", []), history_entry(validation, state["files"])]
     return {
-        "validation": result.as_state(),
+        "validation": validation,
+        "heal_history": history,
         "status": "validated" if result.ok else "validation_failed",
-        "ledger": [_entry("validator", action, "import -> boot -> smoke tests", iteration=it)],
+        "ledger": [_entry("validator", action, "import -> boot -> tests", iteration=it)],
     }
+
+
+def _keep_healing(state: AgentState) -> tuple[bool, str]:
+    """Ask healing.should_continue with this run's numbers."""
+    return should_continue(
+        state.get("heal_history", []),
+        tokens_used=int((state.get("usage") or {}).get("total_tokens", 0)),
+        token_budget=settings.max_tokens_per_run,
+        llm_available=get_llm() is not None,
+        safety_limit=settings.max_heal_safety,
+    )
 
 
 def route_after_validate(state: AgentState) -> str:
     if state["validation"]["ok"]:
         return "package"
-    if state.get("iteration", 0) >= settings.max_heal_iterations:
-        return "failure_report"
-    return "classify"
+    keep_going, _ = _keep_healing(state)
+    return "classify" if keep_going else "failure_report"
 
 
 def classify(state: AgentState) -> dict[str, Any]:
@@ -213,13 +218,11 @@ def classify(state: AgentState) -> dict[str, Any]:
 
 
 def reflect(state: AgentState) -> dict[str, Any]:
-    """Repair with escalating cost and certainty.
+    """Repair the failing file, escalating only when the previous attempt made no progress.
 
-    attempt 1 .. N-2: cheap model     (most failures are small: imports, typos)
-    attempt N-1:      strong model    (harder reasoning about the failure)
-    attempt N:        verified templates for the failing entity (deterministic,
-                      trades the LLM's improvements for a known-good build)
-    Without an LLM every attempt uses the deterministic path.
+    The rung comes from healing.repair_rung: the cheap model while we are making
+    progress, the strong model after a stall, and the verified templates after a
+    second stall (trades the LLM's improvements for a known-good build).
     """
     v = state["validation"]
     files = state["files"]
@@ -231,17 +234,16 @@ def reflect(state: AgentState) -> dict[str, Any]:
     agent = "reflector"
 
     llm = get_llm()
-    last_attempt = attempt >= settings.max_heal_iterations
-    if llm is not None and path and not last_attempt:
-        role = "strong" if attempt >= settings.max_heal_iterations - 1 else "cheap"
+    rung = repair_rung(state.get("heal_history", []), llm is not None)
+    if llm is not None and path and rung in ("cheap", "strong"):
         try:
             check_budget(state.get("usage"))
-            changed, diagnosis, usage = _llm_repair(llm, role, state, path, attempt)
-            agent = f"reflector ({role})"
+            changed, diagnosis, usage = _llm_repair(llm, rung, state, path, attempt)
+            agent = f"reflector ({rung})"
         except LLMError as exc:
             diagnosis = f"LLM repair unavailable ({exc})"
 
-    if not changed and path:
+    if not changed and path and rung == "template":
         changed = _template_restore(path, files, state.get("template_files", {}))
         if changed:
             agent = "template_repair"
@@ -281,7 +283,6 @@ def _llm_repair(llm: Any, role: str, state: AgentState, path: str, attempt: int)
         error_class=error_class,
         hint=prompts.ERROR_HINTS[error_class],
         attempt=attempt,
-        max_attempts=settings.max_heal_iterations,
         log=v["log"][-4000:],
         path=path,
         content=files[path],
@@ -345,16 +346,17 @@ def package(state: AgentState) -> dict[str, Any]:
 
 def failure_report(state: AgentState) -> dict[str, Any]:
     v = state["validation"]
+    _, reason = _keep_healing(state)
     report = (
         f"# Generation failed validation\n\n"
-        f"Circuit breaker tripped after {state.get('iteration', 0)} healing attempts.\n\n"
+        f"Self-healing stopped after {state.get('iteration', 0)} repair attempts: **{reason}**.\n\n"
         f"- Failed gate: `{v['gate']}`\n- Error class: `{state.get('error_class', 'unknown')}`\n"
         f"- Suspected file: `{v.get('failing_file')}`\n\n## Last log\n\n```\n{v['log'][-3000:]}\n```\n"
     )
-    entry = _entry("circuit_breaker", "stopped healing; produced diagnostic report", f"max {settings.max_heal_iterations} attempts reached")
+    entry = _entry("circuit_breaker", "stopped healing; produced diagnostic report", reason)
     final = {**state, "ledger": [*state.get("ledger", []), entry]}
     path = _write_artifact(final, {"VIBESTACK_LEDGER.md": _ledger_markdown(final), "VIBESTACK_FAILURE.md": report})
-    return {"artifact_path": path, "report": report, "status": "failed", "ledger": [entry]}
+    return {"artifact_path": path, "report": report, "stop_reason": reason, "status": "failed", "ledger": [entry]}
 
 
 def _entry(

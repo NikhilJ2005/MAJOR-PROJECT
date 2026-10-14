@@ -35,7 +35,9 @@ class Settings:
     # Unprivileged OS user that runs generated code (used when the server runs as root).
     sandbox_user: str = field(default_factory=lambda: os.environ.get("SANDBOX_USER", "sandbox"))
 
-    max_heal_iterations: int = field(default_factory=lambda: _env_int("MAX_HEAL_ITERATIONS", 3))
+    # Healing stops when it stops making progress (see healing.should_continue);
+    # this is only a seatbelt against a pathological run.
+    max_heal_safety: int = field(default_factory=lambda: _env_int("MAX_HEAL_SAFETY", 12))
     max_tokens_per_run: int = field(default_factory=lambda: _env_int("MAX_TOKENS_PER_RUN", 150000))
     max_concurrent_runs: int = field(default_factory=lambda: _env_int("MAX_CONCURRENT_RUNS", 2))
     gate_timeout_s: int = field(default_factory=lambda: _env_int("GATE_TIMEOUT_S", 60))

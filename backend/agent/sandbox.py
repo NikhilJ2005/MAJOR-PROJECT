@@ -174,7 +174,8 @@ class LocalSandbox:
 
     def _gate_tests(self, workdir: Path) -> tuple[bool, str]:
         code, out = self._run(
-            [sys.executable, "-m", "pytest", "-v", "-x", "--no-header", "-p", "no:cacheprovider", "tests"],
+            # No -x: we want the full failing count, so healing can tell whether it made progress.
+            [sys.executable, "-m", "pytest", "-q", "-rf", "--tb=short", "--no-header", "-p", "no:cacheprovider", "tests"],
             workdir,
         )
         return code == 0, out
