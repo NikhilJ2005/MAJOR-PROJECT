@@ -1,0 +1,77 @@
+"""App wiring: routers, error format, CORS, request logging, health checks."""
+
+import logging
+import time
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from app import config, models  # noqa: F401  (registers tables on Base.metadata)
+from app.database import Base, database_ok, engine
+from app.errors import ApiError
+{% if spec.auth %}
+from app.routers import auth
+{% endif %}
+{% for e in spec.entities %}
+from app.routers import {{ e.module }}
+{% endfor %}
+
+logging.basicConfig(level=config.LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("app")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    if config.AUTO_CREATE_TABLES:
+        Base.metadata.create_all(bind=engine)
+    yield
+
+
+app = FastAPI(
+    title="{{ spec.project_name }}",
+    description={{ spec.description | tojson }},
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+if config.CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"]
+    )
+
+
+@app.exception_handler(ApiError)
+async def api_error(_: Request, exc: ApiError) -> JSONResponse:
+    headers = {"WWW-Authenticate": "Bearer"} if exc.status_code == 401 else None
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=headers)
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    ms = (time.perf_counter() - start) * 1000
+    log.info("%s %s -> %s (%.0f ms)", request.method, request.url.path, response.status_code, ms)
+    return response
+
+
+{% if spec.auth %}
+app.include_router(auth.router)
+{% endif %}
+{% for e in spec.entities %}
+app.include_router({{ e.module }}.router)
+{% endfor %}
+
+
+@app.get("/health", tags=["meta"])
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/ready", tags=["meta"])
+def ready() -> dict[str, str]:
+    if not database_ok():
+        raise ApiError(503, "database unavailable")
+    return {"status": "ready"}

@@ -1,0 +1,100 @@
+"""App wiring: blueprints, error format, CORS, request logging, health checks, docs."""
+
+import json
+import logging
+import time
+from pathlib import Path
+
+from flask import Flask, Response, g, jsonify, request
+from pydantic import ValidationError
+from werkzeug.exceptions import HTTPException
+
+from app import config, models  # noqa: F401  (registers tables on Base.metadata)
+from app.database import Base, database_ok, engine
+from app.errors import ApiError
+{% if spec.auth %}
+from app.routers import auth
+{% endif %}
+{% for e in spec.entities %}
+from app.routers import {{ e.module }}
+{% endfor %}
+
+logging.basicConfig(level=config.LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("app")
+HERE = Path(__file__).parent
+
+app = Flask(__name__)
+if config.AUTO_CREATE_TABLES:
+    Base.metadata.create_all(bind=engine)
+
+{% if spec.auth %}
+app.register_blueprint(auth.bp)
+{% endif %}
+{% for e in spec.entities %}
+app.register_blueprint({{ e.module }}.bp)
+{% endfor %}
+
+
+@app.errorhandler(ApiError)
+def api_error(exc: ApiError):
+    response = jsonify(detail=exc.detail)
+    response.status_code = exc.status_code
+    if exc.status_code == 401:
+        response.headers["WWW-Authenticate"] = "Bearer"
+    return response
+
+
+@app.errorhandler(ValidationError)
+def validation_error(exc: ValidationError):
+    return jsonify(detail=json.loads(exc.json(include_url=False))), 422
+
+
+@app.errorhandler(HTTPException)
+def http_error(exc: HTTPException):
+    return jsonify(detail=exc.description), exc.code
+
+
+@app.before_request
+def start_timer() -> None:
+    g.started = time.perf_counter()
+
+
+@app.after_request
+def finish(response: Response) -> Response:
+    origin = request.headers.get("Origin")
+    if origin and origin in config.CORS_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
+    ms = (time.perf_counter() - g.get("started", time.perf_counter())) * 1000
+    log.info("%s %s -> %s (%.0f ms)", request.method, request.path, response.status_code, ms)
+    return response
+
+
+@app.teardown_appcontext
+def close_db(_exc) -> None:
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+def ready():
+    if not database_ok():
+        raise ApiError(503, "database unavailable")
+    return {"status": "ready"}
+
+
+@app.get("/openapi.json")
+def openapi():
+    return Response((HERE / "openapi.json").read_text(), mimetype="application/json")
+
+
+@app.get("/docs")
+def docs():
+    return Response((HERE / "docs.html").read_text(), mimetype="text/html")

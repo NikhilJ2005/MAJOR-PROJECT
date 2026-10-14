@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from agent.config import settings
+from agent.stacks import STACKS
 
 from .preview import PreviewError, PreviewManager
 from .runs import TERMINAL, RunManager
@@ -54,8 +55,10 @@ manager = RunManager()
 
 
 class RunRequest(BaseModel):
-    prompt: str = Field(min_length=10, max_length=2000)
+    prompt: str = Field(min_length=10, max_length=6000)
+    stack: Literal["fastapi", "flask", "django"] = "fastapi"
     codegen_mode: str | None = Field(default=None, pattern="^(llm|template)$")
+    bug_hunt: bool = True
 
 
 def _check_access(code: str | None) -> None:
@@ -77,6 +80,7 @@ def config() -> dict[str, Any]:
         "sandbox": settings.sandbox,
         "access_required": bool(settings.access_code),
         "max_heal_safety": settings.max_heal_safety,
+        "stacks": [{"name": s.name, "label": s.label} for s in STACKS.values()],
         "models": {"strong": settings.strong_model, "cheap": settings.cheap_model, "fallback": settings.fallback_model},
     }
 
@@ -87,7 +91,9 @@ def create_run(body: RunRequest, x_access_code: str | None = Header(default=None
     if not settings.llm_enabled:
         raise HTTPException(status_code=503, detail="OPENROUTER_API_KEY is not configured on the server")
     options = {
+        "stack": body.stack,
         "codegen_mode": body.codegen_mode or settings.codegen_mode,
+        "bug_hunt": body.bug_hunt,
     }
     try:
         run = manager.start(body.prompt, options)
@@ -175,8 +181,9 @@ async def start_preview(run_id: str, x_access_code: str | None = Header(default=
     if snap["status"] != "succeeded":
         raise HTTPException(status_code=409, detail="only a successfully validated app can be previewed")
     files = manager.files(run_id)
+    stack = (snap.get("spec") or {}).get("stack", "fastapi")
     try:
-        p = await run_in_threadpool(previews.start, run_id, files)
+        p = await run_in_threadpool(previews.start, run_id, files, stack)
     except PreviewError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {"running": True, "base": f"/preview/{run_id}", "docs": f"/preview/{run_id}/docs", "started_at": p.started_at}

@@ -67,9 +67,11 @@ def to_markdown(mode: str, summary: dict, rows: list[dict]) -> str:
     lines = [
         f"# VibeStack eval: {mode} ({datetime.now():%Y-%m-%d %H:%M})",
         "",
-        f"**Pass rate {summary['passed']}/{summary['cases']} ({summary['pass_rate']:.0%})**, "
-        f"first-try {summary['first_try_pass']}, avg heal iterations {summary['avg_heal_iterations']}, "
-        f"avg tokens {summary['avg_tokens']}, avg cost ${summary['avg_cost_usd']}, avg time {summary['avg_seconds']}s",
+        (
+            f"**Pass rate {summary['passed']}/{summary['cases']} ({summary['pass_rate']:.0%})**, "
+            f"first-try {summary['first_try_pass']}, avg heal iterations {summary['avg_heal_iterations']}, "
+            f"avg tokens {summary['avg_tokens']}, avg cost ${summary['avg_cost_usd']}, avg time {summary['avg_seconds']}s"
+        ),
         "",
         "| case | status | heal iters | failed gate | entities | files | tokens | cost $ | time s |",
         "|---|---|---|---|---|---|---|---|---|",

@@ -1,9 +1,11 @@
 """Validation sandbox: the external, objective signal for the self-healing loop.
 
 Three gates, cheapest first; the first failing gate stops validation:
-  1. import  - `import app.main` (syntax errors, bad imports, mapper errors)
-  2. boot    - uvicorn starts and GET /health returns 200
-  3. tests   - pytest runs the spec-derived smoke tests
+  1. import  - import the whole app (syntax errors, bad imports, mapper errors)
+  2. boot    - the framework's server starts and GET /health returns 200
+  3. tests   - pytest runs the spec-derived contract tests (+ rule / edge-case tests)
+
+What "import" and "boot" mean per framework comes from stacks.py.
 
 `LocalSandbox` runs each gate as a subprocess with a scrubbed environment (no
 API keys leak to generated code), its own process group and a hard timeout.
@@ -29,6 +31,7 @@ from typing import Any, Protocol
 import httpx
 
 from .config import settings
+from .stacks import Stack, get_stack
 
 MAX_LOG_CHARS = 6000
 
@@ -45,7 +48,9 @@ class GateResult:
 
 
 class Sandbox(Protocol):
-    def validate(self, files: dict[str, str]) -> GateResult: ...
+    def validate(self, files: dict[str, str], stack: str = "fastapi") -> GateResult: ...
+
+    def make_migrations(self, files: dict[str, str], stack: str) -> tuple[dict[str, str], str]: ...
 
 
 def write_tree(root: Path, files: dict[str, str]) -> None:
@@ -119,6 +124,9 @@ class LocalSandbox:
             "PYTHONDONTWRITEBYTECODE": "1",
             "DATABASE_URL": f"sqlite:///{workdir}/sandbox.db",
             "LANG": "C.UTF-8",
+            "ENV": "test",  # generated apps: create tables on start, throwaway SECRET_KEY
+            "DJANGO_SETTINGS_MODULE": "app.settings",
+            "FLASK_SKIP_DOTENV": "1",
             # Host plugins (e.g. langsmith) must not leak into the generated project's tests.
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         }
@@ -136,16 +144,24 @@ class LocalSandbox:
             return 124, f"{out}\nTimeoutError: gate exceeded {self.timeout_s}s"
         return proc.returncode, out
 
-    def _gate_import(self, workdir: Path) -> tuple[bool, str]:
-        code, out = self._run([sys.executable, "-c", "import app.main"], workdir)
+    def _gate_import(self, workdir: Path, stack: Stack) -> tuple[bool, str]:
+        code, out = self._run([sys.executable, "-c", stack.import_check], workdir)
         return code == 0, out
 
-    def _gate_boot(self, workdir: Path) -> tuple[bool, str]:
+    def prepare(self, workdir: Path, stack: Stack) -> tuple[bool, str]:
+        """Framework set-up before the server can start (Django: create the tables)."""
+        for args in stack.prepare:
+            code, out = self._run([sys.executable, *args], workdir)
+            if code != 0:
+                return False, out
+        return True, ""
+
+    def _gate_boot(self, workdir: Path, stack: Stack) -> tuple[bool, str]:
+        ok, out = self.prepare(workdir, stack)
+        if not ok:
+            return False, out
         port = free_port()
-        proc = self.spawn(
-            [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port)],
-            workdir,
-        )
+        proc = self.spawn([sys.executable, *stack.boot_args(port)], workdir)
         deadline = time.monotonic() + min(self.timeout_s, 30)
         ok, detail = False, ""
         try:
@@ -172,15 +188,16 @@ class LocalSandbox:
             out, _ = proc.communicate()
         return ok, f"{out}\n{detail}"
 
-    def _gate_tests(self, workdir: Path) -> tuple[bool, str]:
+    def _gate_tests(self, workdir: Path, stack: Stack) -> tuple[bool, str]:
         code, out = self._run(
             # No -x: we want the full failing count, so healing can tell whether it made progress.
-            [sys.executable, "-m", "pytest", "-q", "-rf", "--tb=short", "--no-header", "-p", "no:cacheprovider", "tests"],
+            [sys.executable, "-m", "pytest", "-q", "-rfE", "--tb=short", "--no-header", "-p", "no:cacheprovider", "tests"],
             workdir,
         )
         return code == 0, out
 
-    def validate(self, files: dict[str, str]) -> GateResult:
+    def validate(self, files: dict[str, str], stack: str = "fastapi") -> GateResult:
+        chosen = get_stack(stack)
         workdir = Path(tempfile.mkdtemp(prefix="vibestack-"))
         t0 = time.monotonic()
         try:
@@ -191,10 +208,36 @@ class LocalSandbox:
                 ("boot", self._gate_boot),
                 ("tests", self._gate_tests),
             ):
-                ok, out = fn(workdir)
+                ok, out = fn(workdir, chosen)
                 if not ok:
                     return GateResult(False, gate, self._clean(out, workdir), time.monotonic() - t0)
             return GateResult(True, "tests", self._clean(out, workdir), time.monotonic() - t0)
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+
+    def make_migrations(self, files: dict[str, str], stack: str) -> tuple[dict[str, str], str]:
+        """Create the initial migration with the framework's own tool and apply it once.
+
+        Returns (new files, ledger note). On failure the project ships without them
+        (dev/test still create tables automatically) and the note says why.
+        """
+        chosen = get_stack(stack)
+        workdir = Path(tempfile.mkdtemp(prefix="vibestack-migrate-"))
+        try:
+            write_tree(workdir, files)
+            self.hand_over(workdir)
+            for args in chosen.migration_steps:
+                code, out = self._run([sys.executable, *args], workdir)
+                if code != 0:
+                    return {}, f"migrations skipped: `{' '.join(args)}` failed: {self._clean(out, workdir)[-300:]}"
+            folder = workdir / chosen.migration_dir
+            new = {
+                str(p.relative_to(workdir)): p.read_text()
+                for p in sorted(folder.rglob("*.py"))
+                if "__pycache__" not in p.parts and str(p.relative_to(workdir)) not in files
+            }
+            return new, f"created and applied {len(new)} migration file(s) in {chosen.migration_dir}/"
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
 

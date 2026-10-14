@@ -1,0 +1,52 @@
+"""Database engine and sessions (SQLAlchemy 2.0)."""
+
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
+
+from app import config
+
+_sqlite = config.DATABASE_URL.startswith("sqlite")
+engine = create_engine(
+    config.DATABASE_URL,
+    connect_args={"check_same_thread": False} if _sqlite else {},
+    pool_pre_ping=True,
+)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+if _sqlite:
+    @event.listens_for(engine, "connect")
+    def _enforce_foreign_keys(dbapi_connection, _record):
+        """SQLite ignores foreign keys unless asked; Postgres always enforces them."""
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+{% if stack.name == "flask" %}
+def db_session():
+    """One session per request; app.main closes it when the request ends."""
+    from flask import g
+
+    if "db" not in g:
+        g.db = SessionLocal()
+    return g.db
+{% else %}
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+{% endif %}
+
+
+def database_ok() -> bool:
+    """Used by /ready: can we reach the database?"""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
+    except Exception:  # noqa: BLE001 - any failure means "not ready"
+        return False

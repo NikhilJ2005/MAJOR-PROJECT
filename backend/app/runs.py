@@ -91,13 +91,16 @@ class RunManager:
                             "validation": _trim_validation(delta.get("validation")),
                             "error_class": delta.get("error_class"),
                             "iteration": delta.get("iteration"),
+                            "bugs": delta.get("bugs"),
+                            "phase": delta.get("phase"),
+                            "stop_reason": delta.get("stop_reason"),
                         }
                     )
             values = self.graph.get_state(config).values
             run.status = values.get("status", "succeeded")
             if run.status not in TERMINAL:
                 run.status = "failed"
-        except Exception as exc:  # noqa: BLE001 - surface any failure to the UI
+        except Exception as exc:
             log.exception("run %s crashed", run.id)
             run.status = "error"
             run.emit({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
@@ -124,6 +127,12 @@ class RunManager:
             "validation": _trim_validation(values.get("validation")),
             "iteration": values.get("iteration", 0),
             "usage": values.get("usage", {}),
+            "requirements": values.get("requirements") or (values.get("spec") or {}).get("requirements", []),
+            "bugs": values.get("bugs", []),
+            "review": values.get("review", []),
+            "heal_history": values.get("heal_history", []),
+            "stop_reason": values.get("stop_reason"),
+            "phase": values.get("phase"),
             "report": values.get("report"),
             "has_artifact": bool(values.get("artifact_path")),
         }

@@ -4,10 +4,18 @@ services:
     ports:
       - "8000:8000"
     environment:
+      ENV: production
       DATABASE_URL: postgresql+psycopg://app:app@db:5432/app
-{% if spec.auth %}
-      SECRET_KEY: ${SECRET_KEY:-change-me-in-production-use-a-long-random-secret}
+{% if spec.auth or stack.name == "django" %}
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY to a long random value}
 {% endif %}
+{% if spec.auth %}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+{% endif %}
+{% if stack.name == "django" %}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+{% endif %}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
     depends_on:
       db:
         condition: service_healthy

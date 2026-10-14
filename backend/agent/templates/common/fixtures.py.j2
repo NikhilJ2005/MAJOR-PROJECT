@@ -1,0 +1,35 @@
+# --- shared test helpers (same for every framework) -----------------------------
+# Tests use `client` with a small requests-style interface:
+#   client.get(url, params=..., headers=...), client.post(url, json=..., headers=...),
+#   client.patch(...), client.delete(...)  ->  response.status_code, response.json(), response.text
+AUTH = {{ spec.auth | string }}
+PASSWORD = "s3cret-pass-123"
+
+
+def login(client, email: str) -> dict:
+    """Register (or reuse) a user and return the Authorization header for it."""
+    if not AUTH:
+        return {}
+    creds = {"email": email, "password": PASSWORD}
+    client.post("/auth/register", json=creds)  # 201, or 409 when it already exists
+    r = client.post("/auth/login", json=creds)
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+@pytest.fixture(scope="session")
+def user_headers(client):
+    """A normal logged-in user."""
+    return login(client, "user@example.com")
+
+
+@pytest.fixture(scope="session")
+def other_headers(client):
+    """A second normal user, for "can't touch someone else's data" tests."""
+    return login(client, "other@example.com")
+
+
+@pytest.fixture(scope="session")
+def admin_headers(client):
+    """An admin (listed in ADMIN_EMAILS)."""
+    return login(client, "admin@example.com")

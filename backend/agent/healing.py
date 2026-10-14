@@ -13,6 +13,7 @@ from .state import ProjectSpec
 
 # Order matters: the first matching rule wins.
 _RULES: list[tuple[str, re.Pattern[str]]] = [
+    ("static", re.compile(r"StaticCheckError")),
     ("timeout", re.compile(r"TimeoutError")),
     ("syntax", re.compile(r"\b(SyntaxError|IndentationError|TabError)\b")),
     ("dependency", re.compile(r"ModuleNotFoundError: No module named '(?!app\b)[\w.]+'")),
@@ -36,12 +37,18 @@ def locate_failing_file(log: str, files: dict[str, str], spec: ProjectSpec) -> s
     # 1. Python tracebacks: the deepest frame inside generated app code.
     frames = re.findall(r'File "(app/[\w/]+\.py)", line \d+', log)
     # 2. pytest's short tracebacks: "app/routers/post.py:31: in create_post"
-    frames += re.findall(r"^(app/[\w/]+\.py):\d+", log, re.M)
+    frames += re.findall(r"^(app/[\w/]+\.py):\d+", log, re.MULTILINE)
     candidates = [f for f in frames if f in files]
     if candidates:
         # Prefer the last frame that appears in the log (deepest call).
         last_pos = {f: log.rfind(f) for f in candidates}
         return max(last_pos, key=last_pos.get)
+    # 2b. A failing rule/edge-case test: find the entity (and action) it calls.
+    for test_path, name in re.findall(r"^(?:FAILED|ERROR) (tests/[\w/]+\.py)::(\w+)", log, re.MULTILINE):
+        if test_path in files and test_path != "tests/test_smoke.py":
+            target = file_for_test(_function_source(files[test_path], name), spec)
+            if target and target in files:
+                return target
     # 3. A failing parametrised smoke test names the entity.
     m = re.search(r"test_crud\[(\w+)\]", log)
     if m:
@@ -57,12 +64,35 @@ def locate_failing_file(log: str, files: dict[str, str], spec: ProjectSpec) -> s
     return None
 
 
+def _function_source(source: str, name: str) -> str:
+    """The text of `def name(...)` up to the next top-level definition (good enough for matching URLs)."""
+    m = re.search(rf"^def {re.escape(name)}\(.*?(?=^\S|\Z)", source, re.MULTILINE | re.DOTALL)
+    return m.group(0) if m else ""
+
+
+def file_for_test(test_source: str, spec: ProjectSpec) -> str | None:
+    """Which generated file a failing test is about: the service for an action, else the router."""
+    for e in spec.entities:
+        if f"/{e.table}" not in test_source:
+            continue
+        for a in spec.actions_for(e):
+            if f"/{a.segment}" in test_source:
+                return f"app/services/{e.module}.py"
+    for e in spec.entities:
+        if f"/{e.table}" in test_source:
+            return f"app/routers/{e.module}.py"
+    return None
+
+
 def related_files(path: str, files: dict[str, str]) -> list[str]:
     """Delta-only context: the failing file's siblings for the same entity, nothing else."""
     module = path.rsplit("/", 1)[-1]
     related = [
         p
-        for p in (f"app/models/{module}", f"app/schemas/{module}", f"app/routers/{module}", "app/database.py")
+        for p in (
+            f"app/models/{module}", f"app/schemas/{module}", f"app/services/{module}", f"app/routers/{module}",
+            "app/database.py", "app/errors.py",
+        )
         if p in files and p != path
     ]
     if "app/security.py" in files and path.startswith("app/routers/"):
@@ -76,7 +106,8 @@ def related_files(path: str, files: dict[str, str]) -> list[str]:
 # After every validation we store a small record (see `history_entry`); the
 # rules below read that history:
 #
-#   1. progress (a later gate reached, or fewer failing tests) -> keep going,
+#   1. progress (a later gate reached, fewer failing tests, or a never-seen error
+#      because the previous one got fixed) -> keep going,
 #      and drop back to the cheap model for the next (new) problem
 #   2. no progress -> climb one rung of the ladder: cheap -> strong -> templates
 #   3. top rung tried without progress                 -> stop
@@ -84,7 +115,7 @@ def related_files(path: str, files: dict[str, str]) -> list[str]:
 #   5. token budget spent                               -> stop
 #   6. MAX_HEAL_SAFETY attempts (a seatbelt, not the rule) -> stop
 
-GATE_ORDER = ["import", "static", "boot", "tests"]
+GATE_ORDER = ["static", "import", "boot", "tests"]  # the order validation runs them
 LADDER_WITH_LLM = ["cheap", "strong", "template"]
 LADDER_OFFLINE = ["template"]
 
@@ -131,15 +162,20 @@ def score(entry: dict) -> tuple[int, int]:
     return gate, -failing
 
 
+def made_progress(entry: dict, earlier: list[dict]) -> bool:
+    """Better than everything before it, or a brand-new error (so the previous one was fixed)."""
+    if not earlier:
+        return True
+    if score(entry) > max(score(h) for h in earlier):
+        return True
+    return entry["signature"] not in {h["signature"] for h in earlier}
+
+
 def stalls(history: list[dict]) -> int:
-    """How many attempts in a row have not beaten the best result so far."""
-    best = None
+    """How many attempts in a row made no progress."""
     count = 0
-    for entry in history:
-        if best is None or score(entry) > best:
-            best, count = score(entry), 0
-        else:
-            count += 1
+    for i, entry in enumerate(history):
+        count = 0 if made_progress(entry, history[:i]) else count + 1
     return count
 
 

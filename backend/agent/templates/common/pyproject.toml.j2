@@ -1,0 +1,27 @@
+[project]
+name = "{{ spec.project_name | replace('_', '-') }}"
+version = "0.1.0"
+description = {{ spec.description | tojson }}
+requires-python = ">=3.11"
+dependencies = [
+{% for dep in stack.dependencies(spec) %}
+    "{{ dep }}",
+{% endfor %}
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.5"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+extend-exclude = ["migrations"]

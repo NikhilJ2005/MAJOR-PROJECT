@@ -14,8 +14,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from agent.config import settings  # noqa: E402
-from agent.llm import OpenRouterLLM  # noqa: E402
+from agent.config import settings
+from agent.llm import OpenRouterLLM
 
 
 def main() -> int:

@@ -1,73 +1,116 @@
+import pytest
+
 from agent import llm as llm_mod
 from agent import sandbox as sandbox_mod
 from agent.fake_llm import BLOG_SPEC, FakeLLM
 from agent.graph import build_graph, initial_state
 from agent.sandbox import GateResult
+from tests.specs import SHOP
 
 
-def _run(graph, state):
-    config = {"configurable": {"thread_id": state["run_id"]}}
-    list(graph.stream(state, config, stream_mode="updates"))
-    return graph.get_state(config).values
-
-
-def _with_llm(fake):
+def _run(state, fake=None):
     llm_mod.set_llm(fake)
-    return fake
+    try:
+        graph = build_graph()
+        config = {"configurable": {"thread_id": state["run_id"]}}
+        list(graph.stream(state, config, stream_mode="updates"))
+        return graph.get_state(config).values
+    finally:
+        llm_mod.set_llm(None)
+
+
+def _agents(values):
+    return [e["agent"] for e in values["ledger"]]
 
 
 def test_model_mistake_is_found_and_healed():
     """Nobody plants a bug: the (fake) model makes a typo, the validator finds it, the cheap model fixes it."""
-    fake = _with_llm(FakeLLM(buggy=True))
-    try:
-        values = _run(build_graph(), initial_state("a blog with posts and comments", {"codegen_mode": "llm"}))
-    finally:
-        llm_mod.set_llm(None)
+    fake = FakeLLM(mistake="typo")
+    values = _run(initial_state("a blog with posts and comments", {"codegen_mode": "llm"}), fake)
 
     assert values["status"] == "succeeded"
     assert values["iteration"] == 1
-    agents = [e["agent"] for e in values["ledger"]]
-    assert "fault_injector" not in agents
+    agents = _agents(values)
+    assert agents[:2] == ["analyst", "architect"]
     assert agents.index("error_classifier") < agents.index("reflector (cheap)")
-    assert "reflect:cheap" in fake.calls
     reflector = next(e for e in values["ledger"] if e["agent"].startswith("reflector"))
     diff = "\n".join(reflector["diff"].values())
-    assert "-from sqlalchemy.orm import Sesion" in diff and "+from sqlalchemy.orm import Session" in diff
-    assert [h["ok"] for h in values["heal_history"]] == [False, True]
+    assert "-from app.errors import ApiErorr" in diff and "+from app.errors import ApiError" in diff
+    assert [b["found_by"] for b in values["bugs"]] == ["validator"]
+    assert all(b["fixed"] for b in values["bugs"])
 
 
-def test_clean_run_needs_no_healing(fake_llm):
-    values = _run(build_graph(), initial_state("blog", {"codegen_mode": "llm"}))
+def test_clean_run_still_gets_a_bug_hunt():
+    fake = FakeLLM()
+    values = _run(initial_state("blog", {"codegen_mode": "llm"}), fake)
     assert values["status"] == "succeeded"
     assert values["iteration"] == 0
-    assert not any(c.startswith("reflect") for c in fake_llm.calls)
+    assert "bug_hunter" in fake.calls
+    assert not any(c.startswith("reflect") for c in fake.calls)
+    assert "tests/test_edge_cases.py" in values["files"]
+    assert any(e["agent"] == "bug_hunter" and "every edge case passed" in e["action"] for e in values["ledger"])
+
+
+def test_bug_hunter_finds_a_bug_the_contract_tests_miss():
+    """The model forgets to turn constraint errors into 409: only the Bug Hunter's test notices."""
+    fake = FakeLLM(mistake="swallow_fk")
+    values = _run(initial_state("blog", {"codegen_mode": "llm"}), fake)
+    assert values["status"] == "succeeded", values.get("report")
+    hunter = [b for b in values["bugs"] if b["found_by"] == "bug hunter"]
+    assert hunter and all(b["fixed"] for b in hunter)
+    assert any(e["agent"] == "bug_hunter" and "found 1 bug" in e["action"] for e in values["ledger"])
+    assert "reflect:cheap" in fake.calls
+    assert "except IntegrityError" in values["files"]["app/routers/post.py"]
+
+
+def test_unfixable_edge_case_keeps_last_passing_code():
+    class ImpossibleHunter(FakeLLM):
+        def _edge_tests(self, user):
+            return ("### FILE: tests/test_edge_cases.py\n```python\n"
+                    "def test_teapot(client):\n    assert client.get('/health').status_code == 418\n```\n")
+
+    values = _run(initial_state("blog", {"codegen_mode": "llm"}), ImpossibleHunter())
+    assert values["status"] == "succeeded"
+    assert "test_teapot" not in values["files"]["tests/test_edge_cases.py"]
+    assert any(b.get("open") and not b["fixed"] for b in values["bugs"])
+    assert any("left open" in e["action"] for e in values["ledger"])
 
 
 def test_escalates_only_when_stalled_cheap_then_strong_then_templates():
     """A reflector whose fixes never work: each stall climbs one rung."""
-    fake = _with_llm(FakeLLM(buggy=True, fix_reflection=False))
-    try:
-        values = _run(build_graph(), initial_state("blog", {"codegen_mode": "llm"}))
-    finally:
-        llm_mod.set_llm(None)
+    fake = FakeLLM(mistake="typo", fix_reflection=False)
+    values = _run(initial_state("blog", {"codegen_mode": "llm", "bug_hunt": False}), fake)
     assert [c for c in fake.calls if c.startswith("reflect")] == ["reflect:cheap", "reflect:strong"]
     assert values["status"] == "succeeded"
     assert values["iteration"] == 3
     assert any(e["agent"] == "template_repair" for e in values["ledger"])
 
 
-def test_stops_when_going_in_circles(offline, monkeypatch):
+def test_stops_when_going_in_circles(monkeypatch):
     """Templates are already in place, so a repair changes nothing: stop instead of looping."""
 
     class AlwaysFails:
-        def validate(self, files):
+        def validate(self, files, stack="fastapi"):
             return GateResult(False, "tests", "FAILED tests/test_smoke.py::test_crud[Post] - assert 500 == 201\n1 failed", 0.1)
 
     monkeypatch.setattr(sandbox_mod, "get_sandbox", lambda: AlwaysFails())
     monkeypatch.setattr("agent.nodes.get_sandbox", lambda: AlwaysFails())
-    values = _run(build_graph(), initial_state("blog", {"codegen_mode": "template"}, BLOG_SPEC))
+    values = _run(initial_state("blog", {"codegen_mode": "template"}, BLOG_SPEC))
     assert values["status"] == "failed"
     assert values["iteration"] == 1
     assert "circles" in values["stop_reason"]
     assert values["ledger"][-1]["agent"] == "circuit_breaker"
-    assert "circles" in values["report"]
+
+
+@pytest.mark.parametrize("stack", ["fastapi", "flask", "django"])
+def test_complex_spec_end_to_end_on_every_framework(stack):
+    """Requirements, owner/admin access, actions and rule tests, for each framework."""
+    fake = FakeLLM(spec=SHOP)
+    values = _run(initial_state("a shop", {"codegen_mode": "llm", "stack": stack}), fake)
+    assert values["status"] == "succeeded", values.get("report")
+    assert values["spec"]["stack"] == stack
+    assert len(values["spec"]["requirements"]) == 3
+    assert "tests/test_rules.py" in values["files"]  # the shop has actions, so the Test Engineer wrote tests
+    assert fake.calls.index("test_engineer") < fake.calls.index("entity")  # tests before code
+    migrations = [p for p in values["files"] if "migrations/" in p and p.endswith(".py") and "env.py" not in p]
+    assert migrations, "packager should ship real migration files"

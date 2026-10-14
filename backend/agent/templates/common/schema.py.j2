@@ -1,0 +1,38 @@
+"""Request/response shapes for {{ e.name }}. Validation rules live here, so every endpoint shares them."""
+
+from datetime import date, datetime  # noqa: F401
+from typing import Literal  # noqa: F401
+
+from pydantic import BaseModel, ConfigDict, Field  # noqa: F401
+
+
+class {{ e.name }}Create(BaseModel):
+{% for f in e.fields %}
+    {{ f.name }}: {{ input_decl(f, optional=not f.required) }}
+{% endfor %}
+{% if not e.fields %}
+    pass
+{% endif %}
+
+
+class {{ e.name }}Update(BaseModel):
+{% for f in e.fields %}
+    {{ f.name }}: {{ input_decl(f, optional=True) }}
+{% endfor %}
+{% if not e.fields %}
+    pass
+{% endif %}
+
+
+class {{ e.name }}Read(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+{% if e.owned %}
+    owner_id: int
+{% endif %}
+{% for f in e.fields %}
+    {{ f.name }}: {{ read_type(f) }}{% if not f.required %} | None = None{% endif %}
+
+{% endfor %}
+    created_at: datetime

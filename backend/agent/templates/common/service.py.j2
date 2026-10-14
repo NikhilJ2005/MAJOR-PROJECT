@@ -1,0 +1,30 @@
+"""Custom actions for {{ e.name }}: business rules beyond plain CRUD."""
+
+{% if stack.name == "django" %}
+from app.errors import ApiError  # noqa: F401
+from app.models.{{ e.module }} import {{ e.name }}  # noqa: F401
+{% else %}
+from sqlalchemy import select  # noqa: F401
+from sqlalchemy.orm import Session  # noqa: F401
+
+from app.errors import ApiError  # noqa: F401
+from app.models.{{ e.module }} import {{ e.name }}  # noqa: F401
+{% endif %}
+{% for a in actions %}
+
+
+{% if stack.name == "django" %}
+def {{ a.name }}(obj: "{{ e.name }} | None", payload: dict, user) -> dict:
+{% else %}
+def {{ a.name }}(db: Session, obj: "{{ e.name }} | None", payload: dict, user) -> dict:
+{% endif %}
+    """{{ a.method }} /{{ e.table }}{{ a.path }}: {{ a.description }}
+{% for rule in a.rules %}
+    - {{ rule }}
+{% endfor %}
+    """
+    raise ApiError(501, "{{ a.name }} is not implemented yet")
+{% endfor %}
+{% if not actions %}
+# No custom actions for this entity: CRUD is handled by the router.
+{% endif %}

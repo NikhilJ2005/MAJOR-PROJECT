@@ -1,0 +1,26 @@
+"""Settings, read once from environment variables (see .env.example)."""
+
+import os
+{% if spec.auth or stack.name == "django" %}
+import secrets
+{% endif %}
+
+ENV = os.getenv("ENV", "production")
+DEV = ENV in ("dev", "test")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./app.db")
+# dev/test: create tables on start. production: migrations create them.
+AUTO_CREATE_TABLES = os.getenv("AUTO_CREATE_TABLES", "1" if DEV else "0") == "1"
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+{% if spec.auth or stack.name == "django" %}
+
+SECRET_KEY = os.getenv("SECRET_KEY", "")
+if not SECRET_KEY:
+    if not DEV:
+        raise RuntimeError("SECRET_KEY must be set when ENV=production")
+    SECRET_KEY = secrets.token_urlsafe(32)  # dev only: logins reset when the server restarts
+{% endif %}
+{% if spec.auth %}
+ACCESS_TOKEN_MINUTES = int(os.getenv("ACCESS_TOKEN_MINUTES", "60"))
+ADMIN_EMAILS = {e.strip().lower() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()}
+{% endif %}

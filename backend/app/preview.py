@@ -25,6 +25,7 @@ from typing import IO
 import httpx
 
 from agent.sandbox import LocalSandbox, free_port, write_tree
+from agent.stacks import get_stack
 
 log = logging.getLogger(__name__)
 
@@ -69,8 +70,9 @@ class PreviewManager:
             return p
         return None
 
-    def start(self, run_id: str, files: dict[str, str]) -> Preview:
+    def start(self, run_id: str, files: dict[str, str], stack: str = "fastapi") -> Preview:
         """Start (or restart) the preview for a run. Blocks until /health answers."""
+        chosen = get_stack(stack)
         with self._lock:
             self._reap_idle()
             self._stop(run_id)
@@ -83,14 +85,14 @@ class PreviewManager:
             workdir = Path(tempfile.mkdtemp(prefix=f"vibestack-preview-{run_id}-"))
             write_tree(workdir, files)
             self._sandbox.hand_over(workdir)
+            ok, out = self._sandbox.prepare(workdir, chosen)
+            if not ok:
+                shutil.rmtree(workdir, ignore_errors=True)
+                raise PreviewError(f"generated app could not be prepared:\n{out[-2000:]}")
             port = free_port()
             logfile = open(workdir / "preview.log", "w")  # noqa: SIM115 - owned by the process
             proc = self._sandbox.spawn(
-                [
-                    sys.executable, "-m", "uvicorn", "app.main:app",
-                    "--host", "127.0.0.1", "--port", str(port),
-                    "--root-path", f"/preview/{run_id}",
-                ],
+                [sys.executable, *chosen.boot_args(port, root_path=f"/preview/{run_id}")],
                 workdir,
                 stdout=logfile,
             )

@@ -35,17 +35,27 @@ def test_locate_from_failing_smoke_test():
     assert locate_failing_file(log, FILES, SPEC) == "app/routers/post.py"
 
 
+def test_failing_rule_test_points_at_the_service_for_actions():
+    from agent.healing import file_for_test
+    from tests.specs import SHOP
+
+    shop = ProjectSpec.model_validate(SHOP)
+    assert file_for_test("r = client.post(f'/orders/{oid}/checkout')", shop) == "app/services/order.py"
+    assert file_for_test("r = client.get('/products/', params={'q': 'x'})", shop) == "app/routers/product.py"
+    assert file_for_test("r = client.get('/health')", shop) is None
+
+
 def test_related_files_are_entity_siblings_only():
     assert related_files("app/routers/post.py", FILES) == ["app/models/post.py", "app/schemas/post.py", "app/database.py"]
 
 
 # --------------------------------------------------------------------------- dynamic stopping
 
-from agent.healing import error_signature, failing_count, repair_rung, should_continue  # noqa: E402
+from agent.healing import error_signature, failing_count, repair_rung, should_continue
 
 
-def _h(gate, failing=None, fp="a", ok=False):
-    return {"ok": ok, "gate": gate, "failing": failing, "signature": gate, "fingerprint": fp}
+def _h(gate, failing=None, fp="a", ok=False, sig=None):
+    return {"ok": ok, "gate": gate, "failing": failing, "signature": sig or gate, "fingerprint": fp}
 
 
 def _go(history, llm=True, tokens=0):
@@ -107,3 +117,9 @@ def test_safety_limit_is_only_a_seatbelt():
     history = [_h("tests", 100 - i, fp=str(i)) for i in range(13)]  # always improving
     keep, reason = _go(history)
     assert not keep and "safety limit" in reason
+
+
+def test_a_new_error_counts_as_progress_but_a_returning_one_does_not():
+    a, b = _h("import", fp="1", sig="import: A"), _h("import", fp="2", sig="import: B")
+    assert repair_rung([a, b], True) == "cheap"  # A was fixed, B is new
+    assert repair_rung([a, b, _h("import", fp="3", sig="import: A")], True) == "strong"  # A is back

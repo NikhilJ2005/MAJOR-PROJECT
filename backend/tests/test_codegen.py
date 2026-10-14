@@ -5,22 +5,15 @@ import pytest
 from agent.codegen import plan_files, render_project
 from agent.sandbox import LocalSandbox
 from agent.state import ProjectSpec
+from tests.specs import ALL_SPECS, NO_AUTH
 
-from agent.fake_llm import BLOG_SPEC
-
-NO_AUTH = {
-    "project_name": "inventory",
-    "entities": [
-        {"name": "Warehouse", "fields": [{"name": "name", "unique": True}, {"name": "capacity", "type": "int", "required": False}]},
-        {"name": "Item", "fields": [{"name": "sku"}, {"name": "price", "type": "float"}, {"name": "active", "type": "bool"},
-                                     {"name": "restock_at", "type": "datetime", "required": False}, {"name": "warehouse_id", "references": "Warehouse"}]},
-    ],
-}
+STACKS = ["fastapi", "flask", "django"]
 
 
-@pytest.mark.parametrize("raw", [BLOG_SPEC, NO_AUTH], ids=["auth", "no-auth"])
-def test_rendered_project_is_valid_python_and_matches_plan(raw):
-    spec = ProjectSpec.model_validate(raw)
+@pytest.mark.parametrize("stack", STACKS)
+@pytest.mark.parametrize("name", sorted(ALL_SPECS))
+def test_rendered_project_is_valid_python_and_matches_plan(stack, name):
+    spec = ProjectSpec.model_validate({**ALL_SPECS[name], "stack": stack})
     files = render_project(spec)
     assert {f["path"] for f in plan_files(spec)} == set(files)
     for path, src in files.items():
@@ -28,10 +21,21 @@ def test_rendered_project_is_valid_python_and_matches_plan(raw):
             ast.parse(src, filename=path)
 
 
-@pytest.mark.parametrize("raw", [BLOG_SPEC, NO_AUTH], ids=["auth", "no-auth"])
-def test_rendered_project_passes_all_gates(raw):
-    result = LocalSandbox().validate(render_project(ProjectSpec.model_validate(raw)))
+@pytest.mark.parametrize("stack", STACKS)
+@pytest.mark.parametrize("name", sorted(ALL_SPECS))
+def test_rendered_project_passes_all_gates(stack, name):
+    """The same spec-derived contract tests pass on every framework."""
+    result = LocalSandbox().validate(render_project(ProjectSpec.model_validate({**ALL_SPECS[name], "stack": stack})), stack)
     assert result.ok, result.log
+    assert "skipped" not in result.log.splitlines()[-1] or "passed" in result.log.splitlines()[-1]
+
+
+@pytest.mark.parametrize("stack", STACKS)
+def test_migrations_are_generated_and_apply(stack):
+    files = render_project(ProjectSpec.model_validate({**ALL_SPECS["shop"], "stack": stack}))
+    new, note = LocalSandbox().make_migrations(files, stack)
+    assert new, note
+    assert any("orders" in body for body in new.values())
 
 
 def test_contract_violation_fails_tests_gate_and_is_located():
