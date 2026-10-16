@@ -11,6 +11,31 @@ export type LedgerEntry = {
   diff?: Record<string, string>;
 };
 
+export type Version = {
+  run_id: string;
+  version: number;
+  prompt: string;
+  status: string;
+  parent_run_id?: string | null;
+  created_at: number;
+  finished_at?: number | null;
+  repairs?: number;
+  bugs_found?: number;
+  bugs_fixed?: number;
+  cost_usd?: number;
+};
+export type Project = {
+  id: string;
+  name: string;
+  stack: string;
+  current_run_id?: string | null;
+  created_at: number;
+  updated_at: number;
+  versions?: number;
+  latest_status?: string | null;
+};
+export type ProjectDetail = Omit<Project, "versions"> & { versions: Version[]; busy: boolean };
+
 export type Field = {
   name: string;
   type: string;
@@ -20,8 +45,11 @@ export type Field = {
   choices?: string[];
   min?: number | null;
   max?: number | null;
+  transitions?: Record<string, string[]>;
+  on_delete?: string | null;
+  index?: boolean;
 };
-export type Entity = { name: string; fields: Field[]; write_access?: "any_user" | "owner" | "admin"; requirement_ids?: string[] };
+export type Entity = { name: string; fields: Field[]; write_access?: "any_user" | "owner" | "admin"; requirement_ids?: string[]; realtime?: boolean };
 export type Action = {
   name: string;
   entity: string;
@@ -50,9 +78,13 @@ export type ReviewNote = { path: string; line: number; rule: string; severity: s
 
 export type Snapshot = {
   run_id: string;
+  project_id?: string | null;
+  version?: number | null;
+  base_run_id?: string | null;
+  changes?: { added: string[]; changed: string[]; removed: string[] } | null;
   prompt?: string;
   status: string;
-  options?: { stack?: string; bug_hunt?: boolean; codegen_mode?: string; plugins?: string[] };
+  options?: { stack?: string; codegen_mode?: string; plugins?: string[] };
   spec?: Spec;
   file_plan?: { path: string; owner: string; purpose: string }[];
   files?: string[];
@@ -64,7 +96,6 @@ export type Snapshot = {
   bugs?: Bug[];
   review?: ReviewNote[];
   stop_reason?: string | null;
-  phase?: string | null;
   report?: string | null;
   has_artifact?: boolean;
 };
@@ -77,6 +108,7 @@ export type ServerConfig = {
   codegen_mode: string;
   sandbox: string;
   invite_required: boolean;
+  provider?: string;
   max_heal_safety: number;
   max_runs_per_day: number;
   stacks: { name: string; label: string }[];
@@ -96,14 +128,13 @@ export type RunEvent = {
   error_class?: string | null;
   iteration?: number | null;
   bugs?: Bug[] | null;
-  phase?: string | null;
   stop_reason?: string | null;
 };
 
 export type RunSummary = { run_id: string; prompt: string; stack: string; status: string; created_at: number };
 export type Stats = { runs: number; succeeded: number; success_rate: number; avg_repairs: number; bugs_found: number; bugs_fixed: number; cost_usd: number };
 export type PreviewInfo = { running: boolean; base: string | null; docs: string | null };
-export type StartRun = { prompt: string; stack: string; codegen_mode?: string; bug_hunt: boolean; plugins: string[] };
+export type StartRun = { prompt: string; stack: string; codegen_mode?: string; plugins: string[] };
 
 // --- login token (kept in this browser only) -------------------------------------------
 const TOKEN_KEY = "vibestack-token";
@@ -162,7 +193,11 @@ export const api = {
   runs: () => request<RunSummary[]>("/api/runs"),
   stats: () => request<{ mine: Stats; everyone?: Stats }>("/api/stats"),
   snapshot: (id: string) => request<Snapshot>(`/api/runs/${id}`),
-  start: (body: StartRun) => request<{ run_id: string }>("/api/runs", post(body)),
+  start: (body: StartRun) => request<{ run_id: string; project_id: string }>("/api/projects", post(body)),
+  projects: () => request<Project[]>("/api/projects"),
+  project: (id: string) => request<ProjectDetail>(`/api/projects/${id}`),
+  message: (id: string, prompt: string) => request<{ run_id: string; project_id: string }>(`/api/projects/${id}/messages`, post({ prompt })),
+  restore: (id: string, run_id: string) => request<{ current_run_id: string }>(`/api/projects/${id}/current`, post({ run_id })),
   file: async (id: string, path: string) => {
     const res = await fetch(`${API}/api/runs/${id}/files/${path}`, { headers: { Authorization: `Bearer ${getToken()}` } });
     if (!res.ok) throw new Error(`${res.status}`);
