@@ -104,6 +104,8 @@ cd frontend && npm install && npm run dev        # http://localhost:3000, then c
 python scripts/check_llm.py                      # checks that the configured models answer
 ```
 
+The backend serves the UI from `frontend/out/` (a static export). After every `git pull`, run `npm run build` in `frontend/`, or you will see an old build; the header shows the UI version (v3). The server logs a warning when the build is out of date.
+
 CLI only:
 
 ```bash

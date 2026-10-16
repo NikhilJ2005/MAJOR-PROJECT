@@ -35,6 +35,7 @@ from .runs import TERMINAL, RunManager
 from .store import IntegrityError, Store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("vibestack")
 
 previews = PreviewManager()
 
@@ -414,5 +415,16 @@ app.mount("/mcp", mcp_endpoint)
 
 # Serve the exported Next.js frontend from the same origin when it is present (Railway, Docker).
 _frontend = Path(os.getenv("FRONTEND_DIR", Path(__file__).resolve().parents[2] / "frontend" / "out"))
+
+
+def frontend_is_stale(out: Path) -> bool:
+    """True when the exported UI is older than the frontend source next to it (a local run after git pull)."""
+    index = out / "index.html"
+    sources = [p for d in ("app", "components", "lib") for p in (out.parent / d).rglob("*") if p.is_file()]
+    return index.is_file() and bool(sources) and max(p.stat().st_mtime for p in sources) > index.stat().st_mtime
+
+
+if _frontend.is_dir() and frontend_is_stale(_frontend):
+    log.warning("%s is older than the frontend source: run `npm run build` in frontend/ to see the current UI", _frontend)
 if _frontend.is_dir():
     app.mount("/", StaticFiles(directory=_frontend, html=True), name="frontend")
