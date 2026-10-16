@@ -52,6 +52,8 @@ class GateResult:
 class Sandbox(Protocol):
     def validate(self, files: dict[str, str], stack: str = "fastapi") -> GateResult: ...
 
+    def run_tests(self, files: dict[str, str], stack: str, selection: list[str]) -> tuple[bool, str]: ...
+
     def make_migrations(self, files: dict[str, str], stack: str) -> tuple[dict[str, str], str]: ...
 
 
@@ -241,6 +243,25 @@ class LocalSandbox:
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
 
+
+    def run_tests(self, files: dict[str, str], stack: str, selection: list[str]) -> tuple[bool, str]:
+        """Run some of the project's tests (the Reflector's run_tests tool); all of them when selection is empty."""
+        chosen = get_stack(stack)
+        workdir = Path(tempfile.mkdtemp(prefix="vibestack-tool-"))
+        try:
+            write_tree(workdir, files)
+            self.hand_over(workdir)
+            ok, out = self.prepare(workdir, chosen)
+            if ok:
+                code, out = self._run(
+                    [sys.executable, "-m", "pytest", "-q", "-rfE", "--tb=short", "--no-header", "-p", "no:cacheprovider",
+                     *(selection or ["tests"])],
+                    workdir,
+                )
+                ok = code == 0
+            return ok, self._clean(out, workdir)
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
 
     def make_migrations(self, files: dict[str, str], stack: str) -> tuple[dict[str, str], str]:
         """Create the initial migration with the framework's own tool and apply it once.

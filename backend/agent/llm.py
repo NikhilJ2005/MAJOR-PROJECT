@@ -175,6 +175,32 @@ class ProviderLLM:
             return _content(msg), _usage(name, msg)
         raise LLMError(f"all models failed: {last}")
 
+    def complete_with_tools(self, role: Role, system: str, user: str, toolbox: Any) -> tuple[str, Usage]:
+        """Let the model call tools (function calling) until it answers, at most toolbox.max_calls calls.
+
+        Each round: the model either asks for tools, we run them and send back the results, or it
+        gives its final answer. When the budget is used up, the last round forbids tools.
+        """
+        from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+
+        name, chat = self._models[role]
+        schemas = [t.schema() for t in toolbox.tools]
+        with_tools = chat.bind_tools(schemas)
+        answer_now = chat.bind_tools(schemas, tool_choice="none")
+        messages: list[Any] = [SystemMessage(system), HumanMessage(user)]
+        usage = Usage()
+        for _ in range(toolbox.max_calls + 2):  # a safety net in case a provider ignores tool_choice
+            model = answer_now if len(toolbox.calls) >= toolbox.max_calls else with_tools
+            with self._slots:
+                msg = model.invoke(messages)
+            usage.add(_usage(name, msg))
+            messages.append(msg)
+            if not msg.tool_calls:
+                return _content(msg), usage
+            for call in msg.tool_calls:
+                messages.append(ToolMessage(toolbox.call(call["name"], call["args"]), tool_call_id=call["id"]))
+        return _content(msg), usage  # the last reply; the caller also keeps the staged write_file changes
+
 
 OpenRouterLLM = ProviderLLM  # old name, kept for scripts
 

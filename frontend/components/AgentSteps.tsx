@@ -12,7 +12,7 @@ const AGENTS: [string, string, string][] = [
   ["generate", "Code Generator", "backend, frontend and the app's look"],
   ["validate", "Validator", "static, frontend, import, boot and tests"],
   ["classify", "Error Classifier", "what failed, and where"],
-  ["reflect", "Reflector", "repairs while it makes progress"],
+  ["reflect", "Reflector", "reads, fixes and re-runs tests with tools"],
   ["package", "Packager", "migrations, zip and live app"],
   ["failure_report", "Circuit Breaker", "stops when repairs stop helping"],
 ];

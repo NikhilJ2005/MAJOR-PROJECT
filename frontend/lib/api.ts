@@ -9,7 +9,10 @@ export type LedgerEntry = {
   iteration?: number;
   model?: string;
   diff?: Record<string, string>;
+  tools?: ToolCall[];
 };
+
+export type ToolCall = { tool: string; args: Record<string, unknown>; result: string };
 
 export type Version = {
   run_id: string;

@@ -215,6 +215,16 @@ Rules:
   `DISPUTE: <test function name>: <why the test is wrong>` instead. A judge will decide."""
 
 
+REFLECT_TOOLS = """
+
+You can use tools, like a developer at a terminal (at most {max_calls} calls):
+- read_file / list_files / search_code to look at code that is not shown to you,
+- list_routes for the routes the design promises, check_frontend for the frontend contract,
+- write_file to stage your fix, then run_tests with the failing tests to check it.
+Check your fix with run_tests before answering. Your final answer keeps the format above:
+`DIAGNOSIS: ...` and the full replacement files (files you staged with write_file count too)."""
+
+
 REFLECT_USER = """Failed gate: {gate}
 Error class: {error_class} - {hint}
 Repair attempt: {attempt}

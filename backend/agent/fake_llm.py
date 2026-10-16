@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import re
 
-from .llm import Usage
+from .llm import Usage, parse_file_blocks
 
 BLOG_SPEC = {
     "project_name": "blog_api",
@@ -103,6 +103,21 @@ class FakeLLM:
         else:
             content += "\n# attempted fix (still broken)\n"
         return f"DIAGNOSIS: the code does not match the expected behaviour\n### FILE: {path}\n```python\n{content}```"
+
+    def complete_with_tools(self, role, system, user, toolbox):
+        """The Reflector with tools: read the file, stage the fix, run the failing tests, answer."""
+        text, usage = self.complete(role, system, user)
+        path = re.search(r"File most likely at fault: (\S+)", user)
+        if path:
+            toolbox.call("read_file", {"path": path.group(1)})
+        for p, body in parse_file_blocks(text).items():
+            toolbox.call("write_file", {"path": p, "content": body})
+        failing = re.findall(r"^# (tests/\S+\.py::\S+)$", user, re.MULTILINE)
+        if failing:
+            toolbox.call("run_tests", {"selection": " ".join(failing[:2])})
+        else:
+            toolbox.call("list_routes", {})
+        return text, usage
 
     # -- entry point ---------------------------------------------------------------------
 

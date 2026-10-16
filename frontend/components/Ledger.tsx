@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { Bug, LedgerEntry, ReviewNote } from "@/lib/api";
+import type { Bug, LedgerEntry, ReviewNote, ToolCall } from "@/lib/api";
 
 const colors: Record<string, string> = {
   architect: "text-signal-300",
@@ -69,6 +69,7 @@ export function Ledger({ entries, showDiffs = false }: { entries: LedgerEntry[];
             {e.tokens ? <span className="font-mono text-[11px] text-ink-500">{e.tokens} tok</span> : null}
           </div>
           {e.rationale && <p className="text-sm text-ink-400">{e.rationale}</p>}
+          {e.tools && e.tools.length > 0 && <ToolCalls calls={e.tools} />}
           {showDiffs && e.diff && Object.entries(e.diff).map(([path, d]) => <Diff key={path} text={d} />)}
           {!showDiffs && e.files && e.files.length > 0 && e.files.length <= 6 && (
             <div className="mt-1 flex flex-wrap gap-1">
@@ -184,6 +185,24 @@ export function ActivityFeed({ entries, running }: { entries: (LedgerEntry & { t
         <div ref={end} />
       </div>
     </div>
+  );
+}
+
+function ToolCalls({ calls }: { calls: ToolCall[] }) {
+  return (
+    <ol className="mt-2 space-y-1 rounded-lg border border-ink-800 bg-ink-950/70 px-3 py-2 font-mono text-xs" aria-label="Tools the agent used">
+      {calls.map((c, i) => {
+        const arg = Object.values(c.args)[0];
+        const tone = c.result.startsWith("PASSED") ? "text-emerald-300" : c.result.startsWith("FAILED") || c.result.startsWith("refused") ? "text-rose-300" : "text-ink-500";
+        return (
+          <li key={i} className="flex gap-2">
+            <span className="shrink-0 text-signal-300">{c.tool}</span>
+            {arg !== undefined && <span className="truncate text-ink-300">{String(arg)}</span>}
+            <span className={`ml-auto shrink-0 truncate ${tone}`}>{c.tool === "run_tests" || c.result.startsWith("refused") ? c.result : ""}</span>
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 

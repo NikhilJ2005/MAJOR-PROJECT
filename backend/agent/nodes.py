@@ -37,6 +37,7 @@ from .healing import (
 )
 from .ledger import diff, entry, ledger_markdown, model_names, write_artifact
 from .llm import LLMError, Usage, check_budget, get_llm, parse_file_blocks, structured
+from .mcp_tools import load_tools as load_mcp_tools
 from .sandbox import GateResult, get_sandbox
 from .stacks import entity_files, get_stack
 from .state import AgentState, EntitySpec, ProjectSpec
@@ -51,6 +52,7 @@ from .testwriter import (
     remove_test,
     write_rule_tests,
 )
+from .tools import Toolbox
 
 log = logging.getLogger(__name__)
 
@@ -190,6 +192,9 @@ def plan(state: AgentState) -> dict[str, Any]:
     spec = _spec(state)
     file_plan = plan_files(spec)
     template_files = render_project(spec)
+    if _opts(state).get("edge_tests") is False:  # ablation study: run without the spec-derived edge-case tests
+        template_files.pop(EDGE_TESTS, None)
+        file_plan = [f for f in file_plan if f["path"] != EDGE_TESTS]
     ledger = [
         entry(
             "planner",
@@ -338,7 +343,16 @@ def validate(state: AgentState) -> dict[str, Any]:
 
 
 def _keep_healing(state: AgentState) -> tuple[bool, str]:
-    """Ask healing.should_continue with this run's numbers."""
+    """Ask healing.should_continue with this run's numbers.
+
+    The ablation study can replace the dynamic rule with the usual fixed retry count
+    (option fixed_repairs=N): then the run gets exactly N repairs, progress or not.
+    """
+    fixed = _opts(state).get("fixed_repairs")
+    if fixed is not None:
+        attempts = max(len(state.get("heal_history", [])) - 1, 0)
+        return (True, f"fixed policy: repair {attempts + 1} of {fixed}") if attempts < fixed else (
+            False, f"fixed limit of {fixed} repair attempts reached")
     return should_continue(
         state.get("heal_history", []),
         tokens_used=int((state.get("usage") or {}).get("total_tokens", 0)),
@@ -395,15 +409,19 @@ def reflect(state: AgentState) -> dict[str, Any]:
     changed: dict[str, str] = {}
     diagnosis = ""
     agent = "reflector"
+    tool_calls: list[dict[str, Any]] = []
 
     llm = get_llm()
     rung = repair_rung(state.get("heal_history", []), llm is not None)
     if llm is not None and path and rung in ("cheap", "strong"):
         try:
             check_budget(state.get("usage"))
-            text, usage = _llm_repair(llm, rung, state, path, attempt)
+            text, usage, box = _llm_repair(llm, rung, state, path, attempt)
             agent = f"reflector ({rung})"
             changed, diagnosis = _parse_repair(text, files)
+            if box is not None:
+                changed = {**box.changes(), **changed}  # staged with write_file, unless the answer repeats it
+                tool_calls = box.calls
             dispute = parse_dispute(text)
             if not changed and dispute:
                 changed, diagnosis, agent, more = _settle_dispute(llm, state, *dispute)
@@ -433,6 +451,7 @@ def reflect(state: AgentState) -> dict[str, Any]:
                 iteration=attempt,
                 model=model_names(usage),
                 diff={p: diff(p, files.get(p, ""), body) for p, body in changed.items()},
+                tools=tool_calls,
             )
         ],
     }
@@ -451,7 +470,8 @@ def _failing_test_sources(log: str, files: dict[str, str], limit: int = 3) -> st
     return "\n\n".join(parts) or "(none)"
 
 
-def _llm_repair(llm: Any, role: str, state: AgentState, path: str, attempt: int) -> tuple[str, Usage]:
+def _llm_repair(llm: Any, role: str, state: AgentState, path: str, attempt: int) -> tuple[str, Usage, Toolbox | None]:
+    """Ask the model for a repair; with tools (the default) it can read, search and run tests first."""
     spec = _spec(state)
     v = state["validation"]
     files = state["files"]
@@ -473,7 +493,17 @@ def _llm_repair(llm: Any, role: str, state: AgentState, path: str, attempt: int)
     notes = plugins.prompt_notes(_plugins(state), spec.stack)
     if notes:
         system += f"\n- Also follow these project rules:\n{notes}"
-    return llm.complete(role, system, user)
+    if _opts(state).get("tools", True) and hasattr(llm, "complete_with_tools"):
+        box = Toolbox(files, spec, extra=plugins.tools(_plugins(state)) + load_mcp_tools())
+        try:
+            text, usage = llm.complete_with_tools(role, system + prompts.REFLECT_TOOLS.format(max_calls=box.max_calls), user, box)
+            return text, usage, box
+        except LLMError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - e.g. a model without function calling: repair without tools
+            log.warning("tool-using repair failed (%s); repairing without tools", exc)
+    text, usage = llm.complete(role, system, user)
+    return text, usage, None
 
 
 def _parse_repair(text: str, files: dict[str, str]) -> tuple[dict[str, str], str]:

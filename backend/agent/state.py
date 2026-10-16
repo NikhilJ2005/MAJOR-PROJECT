@@ -319,6 +319,10 @@ class Options(TypedDict, total=False):
     stack: str  # "fastapi" | "flask" | "django"
     codegen_mode: str  # "llm" | "template"
     plugins: list[str]  # plugin names from backend/plugins/ (default: the PLUGINS env var)
+    # Ablation study switches (evals/run.py --ablation); normal runs leave them unset.
+    tools: bool  # the Reflector may call tools (default True)
+    edge_tests: bool  # include the spec-derived edge-case tests (default True)
+    fixed_repairs: int  # stop after exactly N repairs instead of the progress-based rule
 
 
 class AgentState(TypedDict, total=False):
