@@ -56,6 +56,7 @@ export default function Page() {
         <button onClick={() => go(null)} aria-label="Home">
           <Logo />
         </button>
+        <span className="text-xs text-ink-500" title="Version of this UI build">v{process.env.NEXT_PUBLIC_UI_VERSION?.split(".")[0]}</span>
         <div className="ml-auto flex items-center gap-3 text-sm">
           {config?.fake_llm && <span className="rounded-md bg-signal-400/15 px-2 py-1 text-xs text-signal-300">Offline demo model</span>}
           {config && !config.llm_enabled && <span className="rounded-md bg-rose-500/15 px-2 py-1 text-xs text-rose-300">No AI provider configured</span>}

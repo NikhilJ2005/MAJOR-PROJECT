@@ -13,15 +13,15 @@
 - [x] **Dynamic self-healing**: it stops when repairs stop making progress, not after a fixed count.
 - [x] **Complex architectures**: state machines, delete rules, indexes, JSON fields, live updates (SSE) and custom actions, in FastAPI, Flask and Django.
 - [x] **Full-stack apps**: the live link is a working React app connected to the generated backend, and a frontend contract check is part of validation.
-- [x] **Any model provider**: Groq, Gemini, OpenRouter or any OpenAI-compatible API, with rate-limit handling.
+- [x] **Any model provider**: Gemini (default), Groq, OpenRouter or any OpenAI-compatible API, with rate-limit handling.
 - [x] **Projects and versions**: follow-up edits rebuild only what changed, and earlier versions can be restored. Storage is SQLite locally and Postgres on Railway.
 - [x] **Lovable-style UI**: a prompt-first home page, and a workspace with the chat on the left and the live app on the right.
 - [x] **Tool-using Reflector**: it reads, searches, stages a fix and runs the failing tests itself. Tools can also come from MCP servers and plugins.
 - [x] **Ablation evals** with a held-out escaped-bug check, written as CSV and Markdown.
 
 ## Still to do (team)
-1. **Provider:** create a free Groq key (console.groq.com), then run `python scripts/check_llm.py --full`.
-2. **Real-model numbers for the slides and paper.** Each command takes about 30–60 minutes on Groq's free tier.
+1. **Provider:** create a Gemini key (aistudio.google.com/apikey). Run `python scripts/check_llm.py --list` to see the model ids, then `python scripts/check_llm.py --full`.
+2. **Real-model numbers for the slides and paper.** Each command takes about 30–60 minutes on a free tier.
    ```bash
    cd backend
    python -m evals.run --stack fastapi
@@ -32,7 +32,8 @@
    If a hard prompt keeps failing, read its ledger (`VIBESTACK_LEDGER.md` in the zip) and tune `prompts.py`.
 3. **Railway:**
    - Add a Postgres service and set `PLATFORM_DATABASE_URL=${{Postgres.DATABASE_URL}}`.
-   - Set `LLM_PROVIDER=groq`, `GROQ_API_KEY`, `SECRET_KEY`, `ADMIN_EMAILS` and `ACCESS_CODE`.
+   - Set `LLM_PROVIDER=gemini`, `GEMINI_API_KEY`, `SECRET_KEY`, `ADMIN_EMAILS` and `ACCESS_CODE`.
+   - Delete `OPENROUTER_API_KEY`, `STRONG_MODEL`, `CHEAP_MODEL` and `FALLBACK_MODEL` if they are set.
    - Keep the `/data` volume.
    - Build one project per framework, including one follow-up edit.
 4. **Demo-day budget:** a $5–10 top-up (OpenRouter, or Gemini paid Flash) gives a stronger model and no rate limits on the day.

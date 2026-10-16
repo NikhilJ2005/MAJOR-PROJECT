@@ -118,22 +118,27 @@ function ChatPanel({
   const [error, setError] = useState<string | null>(null);
   const end = useRef<HTMLDivElement>(null);
   const busy = project.versions.some((v) => v.status === "running");
-  const canEdit = !!project.current_run_id && !busy;
+  const canEdit = project.versions.length > 0 && !busy;
+  const lastFailed = !busy && !project.current_run_id && project.versions.length > 0;
 
   const progress = liveSteps?.map((s) => s.state).join() ?? "";
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end", behavior: "smooth" });
   }, [project.versions.length, progress]);
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  async function send(prompt: string) {
     setError(null);
     try {
-      await onSend(text.trim());
+      await onSend(prompt);
       setText("");
     } catch (err) {
       setError((err as Error).message.replace(/^\d+: /, ""));
     }
+  }
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    send(text.trim());
   }
 
   return (
@@ -159,6 +164,15 @@ function ChatPanel({
         <div ref={end} />
       </div>
       <form onSubmit={submit} className="border-t border-ink-800 p-3">
+        {lastFailed && (
+          <button
+            type="button"
+            onClick={() => send("Try again: rebuild this app and fix whatever stopped it.")}
+            className="mb-2 rounded-full border border-signal-400/50 px-3 py-1 text-sm text-signal-300 hover:bg-signal-400/10"
+          >
+            Try again
+          </button>
+        )}
         <div className="rounded-xl border border-ink-700 bg-ink-900 p-2 focus-within:border-signal-400">
           <label htmlFor="followup" className="sr-only">Ask for a change</label>
           <textarea
@@ -170,7 +184,7 @@ function ChatPanel({
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && text.trim().length >= 3 && canEdit) submit(e);
             }}
-            placeholder={busy ? "The agents are working…" : canEdit ? "Ask for a change, e.g. “add product reviews with a 1–5 rating”" : "Edits start from a working version"}
+            placeholder={busy ? "The agents are working…" : lastFailed ? "Describe a change, or press Try again" : "Ask for a change, e.g. “add product reviews with a 1–5 rating”"}
             className="w-full resize-none bg-transparent px-1.5 py-1 text-sm text-ink-50 outline-none placeholder:text-ink-500 disabled:opacity-60"
           />
           <div className="flex items-center justify-between">

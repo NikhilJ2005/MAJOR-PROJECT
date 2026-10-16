@@ -69,3 +69,41 @@ def test_project_build_edit_restore():
             assert listing[0]["id"] == project_id and listing[0]["versions"] == 2
     finally:
         llm_mod.set_llm(None)
+
+
+def test_a_failed_build_can_be_edited_or_retried(monkeypatch):
+    """Edits are not blocked by a failed version: the next version rebuilds every entity."""
+    from agent import nodes
+    from agent.sandbox import GateResult, LocalSandbox
+    from app.main import app
+
+    real = LocalSandbox()
+    broken = {"on": True}
+
+    class Sandbox:
+        def validate(self, files, stack="fastapi"):
+            if broken["on"]:
+                return GateResult(False, "tests", "FAILED tests/test_smoke.py::test_health - assert 500 == 200\n1 failed", 0.1)
+            return real.validate(files, stack)
+
+        def make_migrations(self, files, stack):
+            return real.make_migrations(files, stack)
+
+    monkeypatch.setattr(nodes, "get_sandbox", lambda: Sandbox())
+    llm_mod.set_llm(FakeLLM())
+    try:
+        with TestClient(app) as client:
+            me = _login(client)
+            r = client.post("/api/projects", json={"prompt": "A blog with posts and comments", "stack": "fastapi"}, headers=me)
+            project_id, v1 = r.json()["project_id"], r.json()["run_id"]
+            assert _wait(client, v1, me)["status"] == "failed"
+
+            broken["on"] = False
+            r = client.post(f"/api/projects/{project_id}/messages", json={"prompt": "Try again: rebuild this app and fix whatever stopped it."}, headers=me)
+            assert r.status_code == 201, r.text
+            snap = _wait(client, r.json()["run_id"], me)
+            assert snap["status"] == "succeeded" and snap["version"] == 2 and snap["base_run_id"] == v1
+            assert any("every entity is rebuilt" in e["action"] for e in snap["ledger"])
+            assert client.get(f"/api/projects/{project_id}", headers=me).json()["current_run_id"] == snap["run_id"]
+    finally:
+        llm_mod.set_llm(None)

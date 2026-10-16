@@ -93,6 +93,9 @@ def _sandbox_identity() -> tuple[int, int] | None:
     return pw.pw_uid, pw.pw_gid
 
 
+NPROC_LIMIT = 1024  # processes + threads of the sandbox user
+
+
 def resource_limits(cpu_seconds: int, memory_mb: int, limit_processes: bool):
     """Build the function the child process runs before the generated code starts.
 
@@ -105,8 +108,13 @@ def resource_limits(cpu_seconds: int, memory_mb: int, limit_processes: bool):
         resource.setrlimit(resource.RLIMIT_AS, (memory_mb * 1024 * 1024,) * 2)
         resource.setrlimit(resource.RLIMIT_FSIZE, (100 * 1024 * 1024,) * 2)  # 100 MB per file
         resource.setrlimit(resource.RLIMIT_NOFILE, (512, 512))
+        # Every thread reserves its stack inside the memory limit above: 4 MB instead of the
+        # usual 8 MB lets a server start hundreds of threads (with MALLOC_ARENA_MAX, see _env).
+        resource.setrlimit(resource.RLIMIT_STACK, (4 * 1024 * 1024,) * 2)
         if limit_processes:  # only as the dedicated sandbox user: the limit is per user
-            resource.setrlimit(resource.RLIMIT_NPROC, (128, 128))
+            # Linux counts every thread of every process of the user (previews, tests, servers),
+            # so this must leave room for threads while still stopping a fork bomb.
+            resource.setrlimit(resource.RLIMIT_NPROC, (NPROC_LIMIT, NPROC_LIMIT))
 
     return apply
 
@@ -151,6 +159,9 @@ class LocalSandbox:
             "PYTHONDONTWRITEBYTECODE": "1",
             "DATABASE_URL": f"sqlite:///{workdir}/sandbox.db",
             "LANG": "C.UTF-8",
+            # glibc gives each thread its own 64 MB malloc arena; on a many-core host that
+            # exhausts the address-space limit and new threads fail. Two arenas are plenty.
+            "MALLOC_ARENA_MAX": "2",
             "ENV": "test",  # generated apps: create tables on start, throwaway SECRET_KEY
             "ADMIN_EMAILS": "admin@vibestack.dev",  # the live preview's demo admin account
             "DJANGO_SETTINGS_MODULE": "app.settings",
@@ -189,7 +200,7 @@ class LocalSandbox:
         if not ok:
             return False, out
         port = free_port()
-        proc = self.spawn([sys.executable, *stack.boot_args(port)], workdir)
+        proc = self.spawn([sys.executable, *stack.boot_args(port, threaded=False)], workdir)
         deadline = time.monotonic() + min(self.timeout_s, 30)
         ok, detail = False, ""
         try:

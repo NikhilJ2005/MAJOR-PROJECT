@@ -35,6 +35,7 @@ from .runs import TERMINAL, RunManager
 from .store import IntegrityError, Store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("vibestack")
 
 previews = PreviewManager()
 
@@ -241,10 +242,14 @@ def get_project(project_id: str, user: CurrentUser) -> dict[str, Any]:
 def send_message(project_id: str, body: Message, user: CurrentUser) -> dict[str, str]:
     """A follow-up prompt: the agents change the current version and validate the result as version N+1."""
     project = own_project(project_id, user)
-    if not project["current_run_id"]:
-        raise HTTPException(status_code=409, detail="the project has no working version yet; start a new build instead")
+    if manager.project_busy(project_id):
+        raise HTTPException(status_code=409, detail="the agents are still working on this project")
+    # Start from the working version; with none yet, from the latest attempt (an edit or "try again").
+    base = project["current_run_id"] or next((v["run_id"] for v in reversed(store.versions(project_id))), None)
+    if base is None:
+        raise HTTPException(status_code=409, detail="the project has no version yet")
     options = {"stack": project["stack"], "codegen_mode": "llm"}
-    run_id = start_run(user, body.prompt, options, project_id=project_id, base_run_id=project["current_run_id"])
+    run_id = start_run(user, body.prompt, options, project_id=project_id, base_run_id=base)
     return {"run_id": run_id, "project_id": project_id}
 
 
@@ -414,5 +419,27 @@ app.mount("/mcp", mcp_endpoint)
 
 # Serve the exported Next.js frontend from the same origin when it is present (Railway, Docker).
 _frontend = Path(os.getenv("FRONTEND_DIR", Path(__file__).resolve().parents[2] / "frontend" / "out"))
+
+
+def frontend_is_stale(out: Path) -> bool:
+    """True when the exported UI is older than the frontend source next to it (a local run after git pull)."""
+    index = out / "index.html"
+    sources = [p for d in ("app", "components", "lib") for p in (out.parent / d).rglob("*") if p.is_file()]
+    return index.is_file() and bool(sources) and max(p.stat().st_mtime for p in sources) > index.stat().st_mtime
+
+
+class UIFiles(StaticFiles):
+    """The exported UI. Pages are re-checked on every visit, so a new deploy shows up at once;
+    the hashed files in /_next/static never change, so browsers may keep them for a year."""
+
+    async def get_response(self, path: str, scope: Any) -> Any:
+        response = await super().get_response(path, scope)
+        immutable = path.startswith("_next/static/")
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable" if immutable else "no-cache"
+        return response
+
+
+if _frontend.is_dir() and frontend_is_stale(_frontend):
+    log.warning("%s is older than the frontend source: run `npm run build` in frontend/ to see the current UI", _frontend)
 if _frontend.is_dir():
-    app.mount("/", StaticFiles(directory=_frontend, html=True), name="frontend")
+    app.mount("/", UIFiles(directory=_frontend, html=True), name="frontend")

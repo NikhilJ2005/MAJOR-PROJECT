@@ -29,14 +29,19 @@ class Stack:
     migration_steps: list[list[str]]  # python commands that create + apply the first migration
     migration_dir: str  # where those migration files appear
 
-    def boot_args(self, port: int, root_path: str = "") -> list[str]:
-        """Arguments after `python` that start a development server on 127.0.0.1:<port>."""
+    def boot_args(self, port: int, root_path: str = "", threaded: bool = True) -> list[str]:
+        """Arguments after `python` that start a development server on 127.0.0.1:<port>.
+
+        The boot gate only asks for /health, so it runs Flask and Django single-threaded
+        (fewer threads in the sandbox); the live preview keeps threads for live updates.
+        """
         if self.name == "fastapi":
             args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port)]
             return args + (["--root-path", root_path] if root_path else [])
         if self.name == "flask":
-            return ["-m", "flask", "--app", "app.main:app", "run", "--host", "127.0.0.1", "--port", str(port)]
-        return ["manage.py", "runserver", f"127.0.0.1:{port}", "--noreload"]
+            args = ["-m", "flask", "--app", "app.main:app", "run", "--host", "127.0.0.1", "--port", str(port)]
+            return args + ([] if threaded else ["--without-threads"])
+        return ["manage.py", "runserver", f"127.0.0.1:{port}", "--noreload"] + ([] if threaded else ["--nothreading"])
 
     def dependencies(self, spec: ProjectSpec) -> list[str]:
         """Runtime packages of the generated project."""

@@ -11,8 +11,14 @@ import re
 
 from .state import ProjectSpec
 
+SANDBOX_LIMIT = re.compile(
+    r"can't start new thread|Resource temporarily unavailable|BlockingIOError: \[Errno 11\]|Too many open files"
+)
+
 # Order matters: the first matching rule wins.
 _RULES: list[tuple[str, re.Pattern[str]]] = [
+    # The sandbox itself ran out of threads, processes or files: not a bug in the generated code.
+    ("sandbox", SANDBOX_LIMIT),
     ("frontend", re.compile(r"FrontendContractError")),
     ("static", re.compile(r"StaticCheckError")),
     ("timeout", re.compile(r"TimeoutError")),

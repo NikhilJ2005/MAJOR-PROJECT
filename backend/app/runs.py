@@ -78,7 +78,11 @@ class RunManager:
             base = None
             if base_run_id:
                 values = self.graph.get_state(self._config(base_run_id)).values
-                base = {"run_id": base_run_id, "spec": values["spec"], "files": dict(values.get("files") or {})}
+                if values.get("spec"):
+                    base = {"run_id": base_run_id, "spec": values["spec"], "files": dict(values.get("files") or {}),
+                            "failed": values.get("status") != "succeeded"}
+                elif values.get("prompt"):  # it stopped before a design existed: start over with both requests
+                    prompt = f"{values['prompt']}\n\nAlso: {prompt}"
             state = initial_state(prompt, options, spec, base)
             run = Run(id=state["run_id"], prompt=prompt)
             self.runs[run.id] = run

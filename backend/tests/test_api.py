@@ -145,3 +145,19 @@ def test_django_preview_boots_after_migrate(fake_llm):
             assert client.get(f"{base}/posts/").json() == []
         finally:
             previews.stop_all()
+
+
+def test_ui_pages_are_revalidated_but_hashed_assets_are_cached(tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.main import UIFiles
+
+    (tmp_path / "_next" / "static").mkdir(parents=True)
+    (tmp_path / "index.html").write_text("<html>v3</html>")
+    (tmp_path / "_next" / "static" / "a1b2.js").write_text("1")
+    ui = FastAPI()
+    ui.mount("/", UIFiles(directory=tmp_path, html=True))
+    client = TestClient(ui)
+    assert client.get("/").headers["cache-control"] == "no-cache"
+    assert "immutable" in client.get("/_next/static/a1b2.js").headers["cache-control"]
