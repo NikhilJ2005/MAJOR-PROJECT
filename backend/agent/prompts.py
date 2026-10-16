@@ -98,7 +98,8 @@ Change request:
 {prompt}
 
 Return the complete updated design. Keep existing names, add requirements for the change (next free
-ids), and keep the old requirement ids."""
+ids), and keep the old requirement ids. If the request only asks to try again or rebuild, return the
+design unchanged."""
 
 RULE_TESTS_SYSTEM = """You are the Architect of VibeStack. The code has NOT been written yet. Before anyone writes it,
 you write pytest tests from your requirements and design, so the code cannot mark its own homework.
@@ -268,6 +269,7 @@ Failure log (tail):
 ```"""
 
 ERROR_HINTS = {
+    "sandbox": "the sandbox ran out of threads, processes or files; this is a server limit, not a bug in the code",
     "frontend": "the frontend refers to something the backend does not have; fix app/static/ui.json to use real entity and field names",
     "static": "the static checker found unsafe code (eval, shell commands, hardcoded secrets, SQL built from strings); remove it",
     "syntax": "a Python syntax/indentation error; fix the exact line reported",

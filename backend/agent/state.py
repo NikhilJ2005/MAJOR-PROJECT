@@ -332,6 +332,7 @@ class AgentState(TypedDict, total=False):
     base_run_id: str  # follow-up edits: the version this run starts from
     base_spec: dict[str, Any]
     base_files: dict[str, str]
+    base_failed: bool  # the version being edited never passed validation: none of its code is reused
     changes: dict[str, list[str]]  # follow-up edits: entities added / changed / removed by the Architect
     spec: dict[str, Any]
     file_plan: list[dict[str, str]]

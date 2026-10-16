@@ -242,10 +242,14 @@ def get_project(project_id: str, user: CurrentUser) -> dict[str, Any]:
 def send_message(project_id: str, body: Message, user: CurrentUser) -> dict[str, str]:
     """A follow-up prompt: the agents change the current version and validate the result as version N+1."""
     project = own_project(project_id, user)
-    if not project["current_run_id"]:
-        raise HTTPException(status_code=409, detail="the project has no working version yet; start a new build instead")
+    if manager.project_busy(project_id):
+        raise HTTPException(status_code=409, detail="the agents are still working on this project")
+    # Start from the working version; with none yet, from the latest attempt (an edit or "try again").
+    base = project["current_run_id"] or next((v["run_id"] for v in reversed(store.versions(project_id))), None)
+    if base is None:
+        raise HTTPException(status_code=409, detail="the project has no version yet")
     options = {"stack": project["stack"], "codegen_mode": "llm"}
-    run_id = start_run(user, body.prompt, options, project_id=project_id, base_run_id=project["current_run_id"])
+    run_id = start_run(user, body.prompt, options, project_id=project_id, base_run_id=base)
     return {"run_id": run_id, "project_id": project_id}
 
 

@@ -17,6 +17,8 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from .healing import SANDBOX_LIMIT
+
 # --------------------------------------------------------------------------- static checks
 
 
@@ -150,6 +152,8 @@ def problems_in(validation: dict[str, Any]) -> list[dict[str, str]]:
     """What is wrong according to one validation result, and who found it."""
     log = validation.get("log", "")
     gate = validation.get("gate", "")
+    if SANDBOX_LIMIT.search(log):
+        return []  # the server ran out of a resource; the generated code is not at fault
     if gate == "static":
         found = []
         for line in log.splitlines():

@@ -82,3 +82,15 @@ def test_memory_bomb_is_stopped_by_the_os_limit():
     result = LocalSandbox().validate(files)
     assert not result.ok and result.gate == "import"
     assert "MemoryError" in result.log
+
+
+def test_sandboxed_code_can_still_start_many_threads(tmp_path):
+    """Dev servers start a thread per request. Under the memory limit each thread's malloc arena
+    and stack count too; without MALLOC_ARENA_MAX and a smaller stack only ~30 threads fit."""
+    import sys
+
+    code = "import threading, time\nts = [threading.Thread(target=time.sleep, args=(1,)) for _ in range(200)]\n" \
+           "[t.start() for t in ts]\nprint('started', len(ts))\n"
+    proc = LocalSandbox().spawn([sys.executable, "-c", code], tmp_path)
+    out, _ = proc.communicate(timeout=60)
+    assert "started 200" in out, out

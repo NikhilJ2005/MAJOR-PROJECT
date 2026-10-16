@@ -104,3 +104,31 @@ def test_complex_spec_end_to_end_on_every_framework(stack):
     assert fake.calls.index("rule_tests") < fake.calls.index("entity")  # tests before code
     migrations = [p for p in values["files"] if "migrations/" in p and p.endswith(".py") and "env.py" not in p]
     assert migrations, "packager should ship real migration files"
+
+
+def test_sandbox_limit_is_retried_not_repaired(monkeypatch):
+    """`can't start new thread` is the server's limit, not a bug: no code change, no bug, validate again."""
+    from agent import nodes
+    from agent.sandbox import LocalSandbox
+
+    real = LocalSandbox()
+    calls = []
+
+    class Busy:
+        def validate(self, files, stack="fastapi"):
+            calls.append(1)
+            if len(calls) == 1:
+                return GateResult(False, "boot", "RuntimeError: can't start new thread\nTimeoutError: /health did not respond", 0.1)
+            return real.validate(files, stack)
+
+        def make_migrations(self, files, stack):
+            return real.make_migrations(files, stack)
+
+    monkeypatch.setattr(nodes, "get_sandbox", lambda: Busy())
+    monkeypatch.setattr(nodes, "SANDBOX_RETRY_WAIT_S", 0)
+    values = _run(initial_state("blog", {"codegen_mode": "template"}, BLOG_SPEC))
+    assert values["status"] == "succeeded"
+    assert values["error_class"] == "sandbox"
+    retry = next(e for e in values["ledger"] if e["agent"] == "reflector")
+    assert "sandbox limit" in retry["action"] and "diff" not in retry
+    assert values["bugs"] == []

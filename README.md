@@ -57,7 +57,7 @@ Every generated project contains:
 - **Projects and versions:** stored with SQLAlchemy Core. SQLite locally and Postgres in production (`PLATFORM_DATABASE_URL`); LangGraph checkpoints use the same database.
 - **Live preview:** the generated app runs in a sandbox behind a private `/preview/<key>/` link and is shown in the workspace as a real app, with desktop and phone views.
 - **Sandbox:** generated code runs as an unprivileged user, with a scrubbed environment and OS limits on memory, CPU, processes and files.
-- **Any model provider:** `LLM_PROVIDER` can be Groq, Gemini, OpenRouter or any OpenAI-compatible API. Rate limits (429) are retried with backoff, and `LLM_MAX_PARALLEL` keeps free tiers happy.
+- **Any model provider:** `LLM_PROVIDER` can be Gemini (the default), Groq, OpenRouter or any OpenAI-compatible API. Rate limits (429) are retried with backoff, and `LLM_MAX_PARALLEL` keeps free tiers happy.
 - **MCP:**
   - **Server:** at `/mcp/`, so Claude Desktop, Cursor or VS Code can build and edit projects ([docs/MCP.md](docs/MCP.md)).
   - **Client:** the Reflector can use other MCP servers' tools.
@@ -97,7 +97,7 @@ frontend/             Next.js UI (static export, served by the backend)
 ```bash
 cd backend
 pip install -e ".[dev]"
-export LLM_PROVIDER=groq GROQ_API_KEY=gsk_...    # or FAKE_LLM=1 to run without a key
+export LLM_PROVIDER=gemini GEMINI_API_KEY=...    # or FAKE_LLM=1 to run without a key
 uvicorn app.main:app --reload --port 8000
 
 cd frontend && npm install && npm run dev        # http://localhost:3000, then create an account

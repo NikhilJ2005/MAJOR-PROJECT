@@ -128,3 +128,12 @@ def test_a_new_error_counts_as_progress_but_a_returning_one_does_not():
 def test_a_repair_that_changes_nothing_climbs_the_ladder_instead_of_stopping():
     keep, reason = _go([_h("tests", 2, "a"), _h("tests", 2, "a")])
     assert keep and reason == "next repair level: strong"
+
+
+def test_sandbox_limits_are_not_code_bugs():
+    from agent.bughunt import problems_in
+    from agent.healing import classify_error
+
+    log = "Traceback ...\nRuntimeError: can't start new thread\nTimeoutError: /health did not respond"
+    assert classify_error(log) == "sandbox"
+    assert problems_in({"gate": "boot", "log": log}) == []

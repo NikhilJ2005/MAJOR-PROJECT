@@ -93,7 +93,8 @@ def initial_state(
     if spec:
         state["spec"] = spec
     if base:
-        state.update(base_run_id=base["run_id"], base_spec=base["spec"], base_files=base["files"])
+        state.update(base_run_id=base["run_id"], base_spec=base["spec"], base_files=base["files"],
+                     base_failed=bool(base.get("failed")))
     return state
 
 

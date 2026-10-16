@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -55,6 +56,7 @@ from .testwriter import (
 from .tools import Toolbox
 
 log = logging.getLogger(__name__)
+SANDBOX_RETRY_WAIT_S = 2
 
 
 def _spec(state: AgentState) -> ProjectSpec:
@@ -174,6 +176,9 @@ def parse_spec(state: AgentState) -> dict[str, Any]:
     if changes is not None:
         summary = "; ".join(f"{kind}: {', '.join(names)}" for kind, names in changes.items() if names) or "no entity changed"
         action = f"updated the design ({summary})"
+        if state.get("base_failed"):  # never reuse code from a version that did not work
+            action += "; the previous version failed, so every entity is rebuilt"
+            changes = None
     ledger = [entry("architect", action, coverage, model=model_names(usage))]
     files = _rule_tests(llm, spec, ledger, usage)
     ledger[0]["tokens"] = usage.total_tokens
@@ -404,6 +409,12 @@ def reflect(state: AgentState) -> dict[str, Any]:
     v = state["validation"]
     files = state["files"]
     attempt = state.get("iteration", 0) + 1
+    if state.get("error_class") == "sandbox":
+        # The server ran out of threads/processes, not the code: change nothing, wait, validate again.
+        time.sleep(SANDBOX_RETRY_WAIT_S)
+        note = entry("reflector", f"attempt {attempt}: sandbox limit hit; re-running validation",
+                     prompts.ERROR_HINTS["sandbox"], iteration=attempt)
+        return {"files": {}, "iteration": attempt, "status": "repaired", "ledger": [note]}
     path = v.get("failing_file")
     usage = Usage()
     changed: dict[str, str] = {}
@@ -561,6 +572,8 @@ def package(state: AgentState) -> dict[str, Any]:
 def failure_report(state: AgentState) -> dict[str, Any]:
     v = state["validation"]
     _, reason = _keep_healing(state)
+    if state.get("error_class") == "sandbox":
+        reason = "the sandbox ran out of threads or processes (a server limit, not a bug in your app); try again"
     report = (
         f"# Generation failed validation\n\n"
         f"Self-healing stopped after {state.get('iteration', 0)} repair attempts: **{reason}**.\n\n"
