@@ -114,6 +114,9 @@ class FakeLLM:
         if "Architect of VibeStack" in system:
             self.calls.append("spec")
             return self._architect(user), usage
+        if "web app's look" in system:
+            self.calls.append("ui")
+            return user.split("Default (improve on it):\n", 1)[1], usage
         if "Code Generator" in system:
             self.calls.append("entity")
             return self._entity(user), usage

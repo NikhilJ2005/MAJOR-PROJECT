@@ -31,6 +31,8 @@ def summary(snap: dict[str, Any]) -> dict[str, Any]:
     bugs = snap.get("bugs") or []
     return {
         "run_id": snap["run_id"],
+        "project_id": snap.get("project_id"),
+        "version": snap.get("version"),
         "status": snap["status"],
         "stack": spec.get("stack"),
         "entities": [e["name"] for e in spec.get("entities", [])],
@@ -44,7 +46,7 @@ def summary(snap: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_mcp(manager: RunManager, store: Store, start_run: Callable[[dict[str, Any], str, dict[str, Any]], str]) -> MCPServer:
+def build_mcp(manager: RunManager, store: Store, start_run: Callable[..., str]) -> MCPServer:
     """Create the MCP server. `start_run(user, prompt, options)` is the same function the HTTP API uses."""
     server = MCPServer(name="VibeStack", instructions=INSTRUCTIONS, version="2.0.0")
 
@@ -75,6 +77,9 @@ def build_mcp(manager: RunManager, store: Store, start_run: Callable[[dict[str, 
             run_id = start_run(user, prompt, {"stack": stack})
         except HTTPException as exc:  # quota, bad stack, too short: tell the assistant why
             raise ToolError(str(exc.detail)) from None
+        return await finish(run_id, wait)
+
+    async def finish(run_id: str, wait: bool) -> dict[str, Any]:
         waited = 0.0
         while wait and manager.runs[run_id].active and waited < MAX_WAIT_S:
             await asyncio.sleep(1.0)
@@ -82,16 +87,31 @@ def build_mcp(manager: RunManager, store: Store, start_run: Callable[[dict[str, 
         return summary(manager.snapshot(run_id))
 
     @server.tool()
+    async def edit_project(project_id: str, prompt: str, ctx: Context, wait: bool = True) -> dict[str, Any]:
+        """Change an existing project ("add product reviews"); the agents build and validate the next version."""
+        user = user_from(ctx)
+        project = store.project(project_id, user["id"])
+        if project is None or not project["current_run_id"]:
+            raise ToolError(f"project {project_id} not found or has no working version yet")
+        try:
+            run_id = start_run(user, prompt, {"stack": project["stack"], "codegen_mode": "llm"},
+                               project_id=project_id, base_run_id=project["current_run_id"])
+        except HTTPException as exc:
+            raise ToolError(str(exc.detail)) from None
+        return await finish(run_id, wait)
+
+    @server.tool()
     async def run_status(run_id: str, ctx: Context) -> dict[str, Any]:
         """Status and results of one of your runs."""
         return summary(owned(ctx, run_id))
 
     @server.tool()
-    async def list_runs(ctx: Context) -> list[dict[str, Any]]:
-        """Your 20 most recent runs."""
+    async def list_projects(ctx: Context) -> list[dict[str, Any]]:
+        """Your projects with their current version."""
         user = user_from(ctx)
-        return [{"run_id": r["id"], "status": r["status"], "stack": r["stack"], "prompt": r["prompt"][:120]}
-                for r in store.runs_for(user["id"])]
+        return [{"project_id": p["id"], "name": p["name"], "stack": p["stack"], "versions": p["versions"],
+                 "current_run_id": p["current_run_id"], "status": p["latest_status"]}
+                for p in store.projects_for(user["id"])]
 
     @server.tool()
     async def list_files(run_id: str, ctx: Context) -> list[str]:

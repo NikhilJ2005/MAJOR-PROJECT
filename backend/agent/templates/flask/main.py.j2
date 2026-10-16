@@ -5,7 +5,7 @@ import logging
 import time
 from pathlib import Path
 
-from flask import Flask, Response, g, jsonify, request
+from flask import Flask, Response, g, jsonify, request, send_from_directory
 from pydantic import ValidationError
 from werkzeug.exceptions import HTTPException
 
@@ -76,6 +76,12 @@ def close_db(_exc) -> None:
     db = g.pop("db", None)
     if db is not None:
         db.close()
+
+
+@app.get("/")
+def frontend():
+    """The generated web app (Flask serves app/static/ at /static/ by itself)."""
+    return send_from_directory(app.static_folder, "index.html")
 
 
 @app.get("/health")

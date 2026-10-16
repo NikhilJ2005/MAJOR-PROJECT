@@ -197,6 +197,12 @@ def render_project(spec: ProjectSpec, **extra: Any) -> dict[str, str]:
             continue
         if template is None:
             files[path] = ""
+        elif template.startswith("@static:"):
+            files[path] = (TEMPLATE_ROOT / "frontend" / template[8:]).read_text()
+        elif template.startswith("@frontend:"):
+            from .frontend import frontend_files
+
+            files.update(frontend_files(spec))
         elif template == "@openapi":
             files[path] = json.dumps(openapi_document(spec), indent=1) + "\n"
         else:

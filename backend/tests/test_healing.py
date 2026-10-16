@@ -123,3 +123,8 @@ def test_a_new_error_counts_as_progress_but_a_returning_one_does_not():
     a, b = _h("import", fp="1", sig="import: A"), _h("import", fp="2", sig="import: B")
     assert repair_rung([a, b], True) == "cheap"  # A was fixed, B is new
     assert repair_rung([a, b, _h("import", fp="3", sig="import: A")], True) == "strong"  # A is back
+
+
+def test_a_repair_that_changes_nothing_climbs_the_ladder_instead_of_stopping():
+    keep, reason = _go([_h("tests", 2, "a"), _h("tests", 2, "a")])
+    assert keep and reason == "next repair level: strong"

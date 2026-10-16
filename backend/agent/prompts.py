@@ -128,6 +128,26 @@ RULE_TESTS_USER = """Requirements:
 Design (JSON):
 {spec}"""
 
+# --------------------------------------------------------------------------- Code Generator: the web app's look
+
+UI_SYSTEM = """You are the Code Generator of VibeStack, designing the generated web app's look and navigation.
+The app (React) is already written; you only choose its presentation:
+- app_name: a short product name for this domain; tagline: one sentence.
+- accent: one of indigo, violet, emerald, sky, rose, amber, teal, slate (fit the domain).
+- entities: for EVERY entity name, a plural label, one emoji icon and a one-line description.
+- dashboard: 2-6 cards. Each card has a title and an existing entity name; add group_by only with a field
+  of that entity that has choices (e.g. status), to show counts per value.
+Use only entity and field names from the design."""
+
+UI_USER = """Application description:
+{prompt}
+
+Design (entities and fields):
+{spec}
+
+Default (improve on it):
+{default}"""
+
 # --------------------------------------------------------------------------- Code Generator
 
 
@@ -238,6 +258,7 @@ Failure log (tail):
 ```"""
 
 ERROR_HINTS = {
+    "frontend": "the frontend refers to something the backend does not have; fix app/static/ui.json to use real entity and field names",
     "static": "the static checker found unsafe code (eval, shell commands, hardcoded secrets, SQL built from strings); remove it",
     "syntax": "a Python syntax/indentation error; fix the exact line reported",
     "import": "a bad import or misspelled name; check the symbol exists in the imported module",

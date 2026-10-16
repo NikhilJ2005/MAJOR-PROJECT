@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent.config import settings
-from agent.graph import build_graph, initial_state, sqlite_checkpointer
+from agent.graph import build_graph, checkpointer, initial_state
 
 from .store import Store
 
@@ -51,7 +51,7 @@ class Run:
 
 class RunManager:
     def __init__(self, store: Store) -> None:
-        self.graph = build_graph(sqlite_checkpointer())
+        self.graph = build_graph(checkpointer())
         self.store = store
         self.runs: dict[str, Run] = {}
         self._lock = threading.Lock()
@@ -62,16 +62,32 @@ class RunManager:
     def active_count(self) -> int:
         return sum(1 for r in self.runs.values() if r.active)
 
-    def start(self, prompt: str, options: dict[str, Any], owner_id: int, spec: dict | None = None) -> Run:
+    def start(
+        self,
+        prompt: str,
+        options: dict[str, Any],
+        owner_id: int,
+        spec: dict | None = None,
+        project_id: str | None = None,
+        base_run_id: str | None = None,
+    ) -> Run:
+        """Start a run; with base_run_id it is a follow-up edit of that version of the project."""
         with self._lock:
             if self.active_count() >= settings.max_concurrent_runs:
                 raise RuntimeError("too many runs in progress, try again shortly")
-            state = initial_state(prompt, options, spec)
+            base = None
+            if base_run_id:
+                values = self.graph.get_state(self._config(base_run_id)).values
+                base = {"run_id": base_run_id, "spec": values["spec"], "files": dict(values.get("files") or {})}
+            state = initial_state(prompt, options, spec, base)
             run = Run(id=state["run_id"], prompt=prompt)
             self.runs[run.id] = run
-            self.store.add_run(run.id, owner_id, prompt, options.get("stack", "fastapi"))
+            self.store.add_run(run.id, owner_id, prompt, options.get("stack", "fastapi"), project_id, base_run_id)
             self._launch(run, state)
         return run
+
+    def project_busy(self, project_id: str) -> bool:
+        return any(r.active and self.store.run(r.id)["project_id"] == project_id for r in self.runs.values())
 
     def _launch(self, run: Run, graph_input: Any) -> None:
         run.status = "running"
@@ -96,7 +112,6 @@ class RunManager:
                             "error_class": delta.get("error_class"),
                             "iteration": delta.get("iteration"),
                             "bugs": delta.get("bugs"),
-                            "phase": delta.get("phase"),
                             "stop_reason": delta.get("stop_reason"),
                         }
                     )
@@ -121,8 +136,11 @@ class RunManager:
             # Started, but the first checkpoint has not been written yet.
             values = {"prompt": run.prompt, "status": run.status}
         status = run.status if run else values.get("status")
+        record = self.store.run(run_id) or {}
         return {
             "run_id": run_id,
+            "project_id": record.get("project_id"),
+            "version": record.get("version"),
             "prompt": values.get("prompt"),
             "status": status,
             "options": values.get("options"),
@@ -133,12 +151,13 @@ class RunManager:
             "validation": _trim_validation(values.get("validation")),
             "iteration": values.get("iteration", 0),
             "usage": values.get("usage", {}),
-            "requirements": values.get("requirements") or (values.get("spec") or {}).get("requirements", []),
+            "requirements": (values.get("spec") or {}).get("requirements", []),
+            "changes": values.get("changes"),
+            "base_run_id": values.get("base_run_id"),
             "bugs": values.get("bugs", []),
             "review": values.get("review", []),
             "heal_history": values.get("heal_history", []),
             "stop_reason": values.get("stop_reason"),
-            "phase": values.get("phase"),
             "report": values.get("report"),
             "has_artifact": bool(values.get("artifact_path")),
         }

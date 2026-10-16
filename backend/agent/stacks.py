@@ -91,6 +91,16 @@ class Stack:
                 ("app/openapi.json", "@openapi", "API description (FastAPI builds its own)"),
                 ("app/docs.html", "docs.html.j2", "Swagger UI page"),
             ]
+        rows += [
+            ("app/static/index.html", "@static:index.html", "frontend page"),
+            ("app/static/app.js", "@static:app.js", "frontend app (React, no build step)"),
+            ("app/static/vendor/app.css", "@static:vendor/app.css", "styles (Tailwind, prebuilt)"),
+            ("app/static/vendor/react.production.min.js", "@static:vendor/react.production.min.js", "React"),
+            ("app/static/vendor/react-dom.production.min.js", "@static:vendor/react-dom.production.min.js", "ReactDOM"),
+            ("app/static/vendor/htm.umd.js", "@static:vendor/htm.umd.js", "JSX-like templates without a build step"),
+            ("app/static/config.json", "@frontend:config", "what the frontend knows about the API"),
+            ("app/static/ui.json", "@frontend:ui", "the app's look, written by the Code Generator"),
+        ]
         if self.uses_sqlalchemy:
             rows += [
                 ("alembic.ini", "alembic.ini.j2", "migration settings"),

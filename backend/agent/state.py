@@ -325,6 +325,10 @@ class AgentState(TypedDict, total=False):
     run_id: str
     prompt: str
     options: Options
+    base_run_id: str  # follow-up edits: the version this run starts from
+    base_spec: dict[str, Any]
+    base_files: dict[str, str]
+    changes: dict[str, list[str]]  # follow-up edits: entities added / changed / removed by the Architect
     spec: dict[str, Any]
     file_plan: list[dict[str, str]]
     files: Annotated[dict[str, str], merge_files]

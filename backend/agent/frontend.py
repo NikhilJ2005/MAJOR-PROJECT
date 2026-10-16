@@ -49,6 +49,19 @@ class UIConfig(BaseModel):
     dashboard: list[Card] = Field(default_factory=list, description="2-6 summary cards")
 
 
+_ICONS = {"user": "👤", "customer": "👤", "member": "👤", "patient": "🧑", "doctor": "🩺", "order": "🧾",
+          "item": "📦", "product": "📦", "category": "🏷️", "task": "✅", "issue": "🐞", "project": "📁",
+          "log": "📜", "agent": "🤖", "graph": "🕸️", "workflow": "🔀", "post": "📝", "comment": "💬",
+          "book": "📚", "loan": "🔁", "event": "📅", "booking": "🎟️", "ticket": "🎟️", "venue": "🏟️",
+          "appointment": "📅", "invoice": "🧾", "payment": "💳", "review": "⭐", "message": "✉️"}
+
+
+def _icon(e: EntitySpec) -> str:
+    """A fitting emoji from words in the entity name (the Code Generator may choose better ones)."""
+    words = [w.lower() for w in re.findall(r"[A-Z][a-z]*", e.name)]
+    return next((_ICONS[w] for w in reversed(words) if w in _ICONS), "▪️")
+
+
 def _label(e: EntitySpec) -> str:
     words = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", e.name)
     return words + ("es" if words.endswith(("s", "x", "ch", "sh")) else "s")
@@ -83,7 +96,7 @@ def default_ui(spec: ProjectSpec) -> dict[str, Any]:
     ui = UIConfig(
         app_name=spec.project_name.replace("_", " ").title(),
         tagline=spec.description,
-        entities={e.name: EntityUI(label=_label(e)) for e in spec.entities},
+        entities={e.name: EntityUI(label=_label(e), icon=_icon(e)) for e in spec.entities},
         dashboard=cards,
     )
     return ui.model_dump()

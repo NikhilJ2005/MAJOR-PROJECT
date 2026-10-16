@@ -37,6 +37,21 @@ def docs(request):
     return HttpResponse((HERE / "docs.html").read_text(), content_type="text/html")
 
 
+CONTENT_TYPES = {".js": "text/javascript", ".json": "application/json", ".html": "text/html", ".css": "text/css"}
+
+
+def frontend(request):
+    """The generated web app; it calls this API with relative URLs."""
+    return HttpResponse((HERE / "static" / "index.html").read_text(), content_type="text/html")
+
+
+def static_file(request, name: str):
+    path = (HERE / "static" / name).resolve()
+    if (HERE / "static").resolve() not in path.parents or not path.is_file():
+        return not_found(request)
+    return HttpResponse(path.read_bytes(), content_type=CONTENT_TYPES.get(path.suffix, "application/octet-stream"))
+
+
 def not_found(request, exception=None):
     return JsonResponse({"detail": "not found"}, status=404)
 
@@ -44,6 +59,8 @@ def not_found(request, exception=None):
 handler404 = not_found
 
 urlpatterns = [
+    path("", frontend),
+    path("static/<path:name>", static_file),
     path("health", health),
     path("ready", ready),
     path("openapi.json", openapi),

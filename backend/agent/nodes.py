@@ -14,6 +14,7 @@ Every node appends to the change ledger, which makes a run explainable after the
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections import Counter
@@ -25,6 +26,7 @@ from .analysis import check_coverage, requirements_text
 from .bughunt import failing_tests, static_check, update_bugs
 from .codegen import plan_files, render_project
 from .config import settings
+from .frontend import UI, UIConfig, check_frontend, default_ui
 from .healing import (
     classify_error,
     history_entry,
@@ -87,19 +89,46 @@ def _with_stack(spec: ProjectSpec, stack: str | None) -> ProjectSpec:
 
 
 def _design(llm: Any, state: AgentState) -> tuple[ProjectSpec, list[str], Usage]:
-    """Call 1: requirements + design in one reply, with one retry if a requirement is not covered."""
-    stack = _opts(state).get("stack")
-    user = prompts.SPEC_USER.format(prompt=state["prompt"])
-    spec, usage = structured(llm, "strong", prompts.SPEC_SYSTEM, user, ProjectSpec)
-    spec = _with_stack(spec, stack)
+    """Call 1: requirements + design in one reply, with one retry if a requirement is not covered.
+
+    For a follow-up edit the Architect gets the current design plus the change request.
+    """
+    base = ProjectSpec.model_validate(state["base_spec"]) if state.get("base_spec") else None
+    stack = base.stack if base else _opts(state).get("stack")
+    if base:
+        user = prompts.EDIT_USER.format(spec=base.model_dump_json(indent=1, exclude={"stack"}), prompt=state["prompt"])
+    else:
+        user = prompts.SPEC_USER.format(prompt=state["prompt"])
+
+    def ask(text: str, usage: Usage | None = None) -> tuple[ProjectSpec, Usage]:
+        spec, used = structured(llm, "strong", prompts.SPEC_SYSTEM, text, ProjectSpec)
+        if usage:
+            used.add(usage)
+        raw = spec.model_dump()
+        if base:
+            raw["project_name"] = base.project_name  # an edit never renames the project
+        return _with_stack(ProjectSpec.model_validate(raw), stack), used
+
+    spec, usage = ask(user)
     missing = check_coverage(spec)
     if missing:
-        retry = user + "\n\n" + prompts.SPEC_COVERAGE_RETRY.format(missing=", ".join(missing))
-        second, more = structured(llm, "strong", prompts.SPEC_SYSTEM, retry, ProjectSpec)
-        usage.add(more)
-        spec = _with_stack(second, stack)
+        spec, usage = ask(user + "\n\n" + prompts.SPEC_COVERAGE_RETRY.format(missing=", ".join(missing)), usage)
         missing = check_coverage(spec)
     return spec, missing, usage
+
+
+def design_changes(old: ProjectSpec, new: ProjectSpec) -> dict[str, list[str]]:
+    """Which entities a follow-up edit added, changed or removed (actions count as part of their entity)."""
+    def shape(spec: ProjectSpec) -> dict[str, str]:
+        return {e.name: json.dumps([e.model_dump(exclude={"requirement_ids"}), [a.model_dump() for a in spec.actions_for(e)],
+                                    spec.auth]) for e in spec.entities}
+
+    before, after = shape(old), shape(new)
+    return {
+        "added": [n for n in after if n not in before],
+        "changed": [n for n in after if n in before and before[n] != after[n]],
+        "removed": [n for n in before if n not in after],
+    }
 
 
 def _rule_tests(llm: Any, spec: ProjectSpec, ledger: list[dict[str, Any]], usage: Usage) -> dict[str, str]:
@@ -132,6 +161,7 @@ def parse_spec(state: AgentState) -> dict[str, Any]:
         }
     llm = _require_llm()
     spec, missing, usage = _design(llm, state)
+    changes = design_changes(ProjectSpec.model_validate(state["base_spec"]), spec) if state.get("base_spec") else None
     kinds = Counter(r.kind for r in spec.requirements)
     names = ", ".join(e.name for e in spec.entities)
     action = f"listed {len(spec.requirements)} requirements ({', '.join(f'{n} {k}' for k, n in kinds.most_common())}); "
@@ -139,12 +169,17 @@ def parse_spec(state: AgentState) -> dict[str, Any]:
     action += f", {len(spec.actions)} custom actions" if spec.actions else ""
     action += " + JWT auth" if spec.auth else ""
     coverage = "all requirements covered" if not missing else f"not covered: {', '.join(missing)}"
+    if changes is not None:
+        summary = "; ".join(f"{kind}: {', '.join(names)}" for kind, names in changes.items() if names) or "no entity changed"
+        action = f"updated the design ({summary})"
     ledger = [entry("architect", action, coverage, model=model_names(usage))]
     files = _rule_tests(llm, spec, ledger, usage)
     ledger[0]["tokens"] = usage.total_tokens
     out: dict[str, Any] = {"spec": spec.model_dump(), "status": "spec_ready", "usage": usage.as_state(), "ledger": ledger}
     if files:
         out["files"] = files
+    if changes is not None:
+        out["changes"] = changes
     return out
 
 
@@ -184,19 +219,32 @@ def generate(state: AgentState) -> dict[str, Any]:
     mode = _opts(state).get("codegen_mode") or settings.codegen_mode
     llm = get_llm() if mode == "llm" else None
 
+    # Follow-up edit: entities the Architect did not touch keep the code of the previous version.
+    changes, base_files = state.get("changes"), state.get("base_files") or {}
+    todo = spec.entities
+    if changes is not None:
+        touched = set(changes["added"]) | set(changes["changed"])
+        kept = [e for e in spec.entities if e.name not in touched]
+        for e in kept:
+            files.update({p: base_files[p] for p in entity_files(e) if p in base_files})
+        todo = [e for e in spec.entities if e.name in touched]
+        if kept:
+            ledger.append(entry("code_generator", f"kept {', '.join(e.name for e in kept)} from version before",
+                                "unchanged by the edit, so their code (and its fixes) is reused"))
+
     if llm is None:
-        ledger.append(entry("api_engineer", f"rendered {len(files)} files from templates", "deterministic codegen", files=sorted(files)))
+        ledger.append(entry("code_generator", f"rendered {len(files)} files from templates", "deterministic codegen", files=sorted(files)))
     else:
         def work(e: EntitySpec) -> tuple[EntitySpec, dict[str, str], str, Usage]:
             return (e, *_generate_entity(llm, state, spec, e, files))
 
         with ThreadPoolExecutor(max_workers=4) as pool:
-            for e, new_files, rationale, usage in pool.map(work, spec.entities):
+            for e, new_files, rationale, usage in pool.map(work, todo):
                 total.add(usage)
                 files.update(new_files)
                 ledger.append(
                     entry(
-                        "api_engineer",
+                        "code_generator",
                         f"wrote {e.name} model/schema/service/router" if new_files else f"kept template for {e.name}",
                         rationale,
                         files=sorted(new_files),
@@ -205,10 +253,32 @@ def generate(state: AgentState) -> dict[str, Any]:
                     )
                 )
 
+        same_entities = changes is not None and not changes["added"] and not changes["removed"]
+        if same_entities and UI in base_files:
+            ui, rationale, usage = base_files[UI], "same entities as before: the app keeps its look", Usage()
+        else:
+            ui, rationale, usage = _design_ui(llm, state, spec)
+        total.add(usage)
+        if ui:
+            files[UI] = ui
+        ledger.append(entry("code_generator", "designed the web app (name, colours, menu, dashboard)" if ui else "kept the default web app look",
+                            rationale, files=[UI] if ui else [], tokens=usage.total_tokens, model=model_names(usage)))
+
     out: dict[str, Any] = {"files": files, "status": "generated", "iteration": 0, "ledger": ledger}
     if total.calls:
         out["usage"] = total.as_state()
     return out
+
+
+def _design_ui(llm: Any, state: AgentState, spec: ProjectSpec) -> tuple[str | None, str, Usage]:
+    """The look of the generated web app, as validated JSON (the app code itself is fixed and tested)."""
+    user = prompts.UI_USER.format(prompt=state["prompt"], spec=spec.model_dump_json(include={"project_name", "entities"}),
+                                  default=json.dumps(default_ui(spec)))
+    try:
+        ui, usage = structured(llm, "cheap", prompts.UI_SYSTEM, user, UIConfig)
+    except LLMError as exc:
+        return None, f"kept the default look ({exc})", Usage()
+    return json.dumps(ui.model_dump(), indent=1) + "\n", "the app's name, colours and dashboard fit the domain", usage
 
 
 def _generate_entity(
@@ -246,9 +316,9 @@ def validate(state: AgentState) -> dict[str, Any]:
     spec = _spec(state)
     files = state["files"]
     findings = static_check(files) + plugins.extra_checks(_plugins(state), files)
-    blocking = [f for f in findings if f.severity == "high"]
+    blocking = [f.log_line() for f in findings if f.severity == "high"] + check_frontend(files, spec)
     if blocking:
-        result = GateResult(False, "static", "\n".join(f.log_line() for f in blocking), 0.0)
+        result = GateResult(False, "static", "\n".join(blocking), 0.0)
     else:
         result = get_sandbox().validate(files, spec.stack)
     validation = result.as_state()

@@ -76,7 +76,7 @@ def test_escalates_only_when_stalled_cheap_then_strong_then_templates():
     assert any(e["agent"] == "template_repair" for e in values["ledger"])
 
 
-def test_stops_when_going_in_circles(monkeypatch):
+def test_stops_when_no_repair_level_helps(monkeypatch):
     """Templates are already in place, so a repair changes nothing: stop instead of looping."""
 
     class AlwaysFails:
@@ -88,7 +88,7 @@ def test_stops_when_going_in_circles(monkeypatch):
     values = _run(initial_state("blog", {"codegen_mode": "template"}, BLOG_SPEC))
     assert values["status"] == "failed"
     assert values["iteration"] == 1
-    assert "circles" in values["stop_reason"]
+    assert "no progress" in values["stop_reason"]
     assert values["ledger"][-1]["agent"] == "circuit_breaker"
 
 

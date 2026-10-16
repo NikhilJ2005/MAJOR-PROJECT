@@ -151,8 +151,12 @@ def problems_in(validation: dict[str, Any]) -> list[dict[str, str]]:
     log = validation.get("log", "")
     gate = validation.get("gate", "")
     if gate == "static":
-        return [{"id": line.split(" StaticCheckError ")[-1][:120], "found_by": "static checker", "detail": line}
-                for line in log.splitlines() if "StaticCheckError" in line]
+        found = []
+        for line in log.splitlines():
+            for marker, finder in ((" StaticCheckError ", "static checker"), (" FrontendContractError ", "frontend check")):
+                if marker in line:
+                    found.append({"id": line.split(marker)[-1][:120], "found_by": finder, "detail": line})
+        return found
     if gate == "tests" and failing_tests(log):
         return [{"id": f"{path}::{name}", "found_by": _FINDERS.get(path, "tests"), "detail": name}
                 for path, name in failing_tests(log)]

@@ -9,7 +9,6 @@ import asyncio
 import json
 import logging
 import os
-import sqlite3
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -23,6 +22,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from agent import plugins
 from agent.config import settings
@@ -32,7 +32,7 @@ from .accounts import create_token, hash_password, user_id_from_token, verify_pa
 from .mcp_server import build_mcp
 from .preview import PreviewError, PreviewManager
 from .runs import TERMINAL, RunManager
-from .store import Store
+from .store import IntegrityError, Store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -71,7 +71,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-store = Store(settings.platform_db)
+store = Store(settings.platform_database_url)
 manager = RunManager(store)
 
 
@@ -112,7 +112,7 @@ def register(body: Credentials) -> dict[str, Any]:
     email = body.email.lower()
     try:
         user_id = store.add_user(email, hash_password(body.password))
-    except sqlite3.IntegrityError:
+    except IntegrityError:
         raise HTTPException(status_code=409, detail="email already registered") from None
     return {"token": create_token(user_id), "email": email}
 
@@ -137,8 +137,11 @@ class RunRequest(BaseModel):
     prompt: str = Field(min_length=10, max_length=6000)
     stack: Literal["fastapi", "flask", "django"] = "fastapi"
     codegen_mode: str | None = Field(default=None, pattern="^(llm|template)$")
-    bug_hunt: bool = True
     plugins: list[str] | None = None  # None: the server's default plugins
+
+
+class Message(BaseModel):
+    prompt: str = Field(min_length=3, max_length=6000)
 
 
 @app.get("/api/health")
@@ -163,8 +166,13 @@ def config() -> dict[str, Any]:
     }
 
 
-def start_run(user: dict[str, Any], prompt: str, options: dict[str, Any]) -> str:
-    """Checks and starts a run for a user. Shared by the HTTP API and the MCP server."""
+def start_run(
+    user: dict[str, Any], prompt: str, options: dict[str, Any], project_id: str | None = None, base_run_id: str | None = None
+) -> str:
+    """Checks and starts a run for a user. Shared by the HTTP API and the MCP server.
+
+    Without a project_id a new project is created, so every run belongs to a project's history.
+    """
     if not settings.llm_enabled:
         raise HTTPException(status_code=503, detail="no LLM API key is configured on the server")
     if not 10 <= len(prompt) <= 6000:
@@ -174,22 +182,85 @@ def start_run(user: dict[str, Any], prompt: str, options: dict[str, Any]) -> str
     is_admin = user.get("is_admin") or user["email"] in settings.admin_emails
     if store.runs_since(user["id"], time.time() - 86400) >= settings.max_runs_per_day and not is_admin:
         raise HTTPException(status_code=429, detail=f"daily limit of {settings.max_runs_per_day} runs reached")
-    options = {"codegen_mode": settings.codegen_mode, "bug_hunt": True, **options}
+    options = {"codegen_mode": settings.codegen_mode, **options}
+    if project_id is None:
+        project_id = store.add_project(user["id"], " ".join(prompt.split()[:6]), options.get("stack", "fastapi"))
+    elif manager.project_busy(project_id):
+        raise HTTPException(status_code=409, detail="this project is already being built; wait for it to finish")
     try:
-        return manager.start(prompt, options, owner_id=user["id"]).id
+        return manager.start(prompt, options, owner_id=user["id"], project_id=project_id, base_run_id=base_run_id).id
     except RuntimeError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
 
 
-@app.post("/api/runs", status_code=201)
-def create_run(body: RunRequest, user: CurrentUser) -> dict[str, str]:
-    options = {"stack": body.stack, "codegen_mode": body.codegen_mode or settings.codegen_mode, "bug_hunt": body.bug_hunt}
+def _options(body: RunRequest) -> dict[str, Any]:
+    options: dict[str, Any] = {"stack": body.stack, "codegen_mode": body.codegen_mode or settings.codegen_mode}
     if body.plugins is not None:
         unknown = set(body.plugins) - {p["name"] for p in plugins.describe()}
         if unknown:
             raise HTTPException(status_code=422, detail=f"unknown plugins: {', '.join(sorted(unknown))}")
         options["plugins"] = body.plugins
-    return {"run_id": start_run(user, body.prompt, options)}
+    return options
+
+
+@app.post("/api/runs", status_code=201)
+def create_run(body: RunRequest, user: CurrentUser) -> dict[str, str]:
+    run_id = start_run(user, body.prompt, _options(body))
+    return {"run_id": run_id, "project_id": store.run(run_id)["project_id"]}
+
+
+# --------------------------------------------------------------------------- projects (Lovable-style sessions)
+
+
+def own_project(project_id: str, user: dict[str, Any]) -> dict[str, Any]:
+    project = store.project(project_id, user["id"])
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    return project
+
+
+@app.post("/api/projects", status_code=201)
+def create_project(body: RunRequest, user: CurrentUser) -> dict[str, str]:
+    """A new project: the first prompt builds version 1."""
+    return create_run(body, user)
+
+
+@app.get("/api/projects")
+def list_projects(user: CurrentUser) -> list[dict[str, Any]]:
+    return store.projects_for(user["id"])
+
+
+@app.get("/api/projects/{project_id}")
+def get_project(project_id: str, user: CurrentUser) -> dict[str, Any]:
+    """The project, its versions (the chat history) and which version is current."""
+    project = own_project(project_id, user)
+    return {**project, "versions": store.versions(project_id), "busy": manager.project_busy(project_id)}
+
+
+@app.post("/api/projects/{project_id}/messages", status_code=201)
+def send_message(project_id: str, body: Message, user: CurrentUser) -> dict[str, str]:
+    """A follow-up prompt: the agents change the current version and validate the result as version N+1."""
+    project = own_project(project_id, user)
+    if not project["current_run_id"]:
+        raise HTTPException(status_code=409, detail="the project has no working version yet; start a new build instead")
+    options = {"stack": project["stack"], "codegen_mode": "llm"}
+    run_id = start_run(user, body.prompt, options, project_id=project_id, base_run_id=project["current_run_id"])
+    return {"run_id": run_id, "project_id": project_id}
+
+
+class Restore(BaseModel):
+    run_id: str
+
+
+@app.post("/api/projects/{project_id}/current")
+def restore_version(project_id: str, body: Restore, user: CurrentUser) -> dict[str, Any]:
+    """Make an earlier working version the current one (the next edit starts from it)."""
+    own_project(project_id, user)
+    run = store.run(body.run_id)
+    if run is None or run["project_id"] != project_id or run["status"] != "succeeded":
+        raise HTTPException(status_code=409, detail="only a working version of this project can be restored")
+    store.set_current(project_id, body.run_id)
+    return {"current_run_id": body.run_id}
 
 
 @app.get("/api/runs")
@@ -312,23 +383,25 @@ _HOP_HEADERS = {"connection", "keep-alive", "transfer-encoding", "content-encodi
 
 @app.api_route("/preview/{key}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 async def preview_proxy(key: str, path: str, request: Request) -> Response:
-    """Reverse proxy to the generated app, so it is reachable on the platform's single public port."""
+    """Reverse proxy to the generated app, so it is reachable on the platform's single public port.
+
+    Responses are streamed, so the generated app's live updates (Server-Sent Events) work too.
+    """
     p = previews.by_key(key)
     if p is None:
         raise HTTPException(status_code=404, detail="preview not running; start it from the Live App tab")
     forward = {k: v for k, v in request.headers.items() if k.lower() in ("content-type", "authorization", "accept")}
+    proxy: httpx.AsyncClient = request.app.state.proxy
+    outgoing = proxy.build_request(
+        request.method, f"{p.base_url}/{path}", params=request.query_params, content=await request.body(), headers=forward
+    )
     try:
-        upstream = await request.app.state.proxy.request(
-            request.method,
-            f"{p.base_url}/{path}",
-            params=request.query_params,
-            content=await request.body(),
-            headers=forward,
-        )
+        upstream = await proxy.send(outgoing, stream=True)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"preview unreachable: {exc}") from exc
     headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _HOP_HEADERS}
-    return Response(upstream.content, status_code=upstream.status_code, headers=headers)
+    return StreamingResponse(upstream.aiter_bytes(), status_code=upstream.status_code, headers=headers,
+                             background=BackgroundTask(upstream.aclose))
 
 
 async def mcp_endpoint(scope, receive, send) -> None:

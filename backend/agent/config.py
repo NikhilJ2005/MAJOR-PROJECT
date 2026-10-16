@@ -106,5 +106,18 @@ class Settings:
     def platform_db(self) -> Path:
         return self.data_dir / "platform.sqlite"
 
+    @property
+    def platform_database_url(self) -> str:
+        """Accounts, projects and run state: SQLite in DATA_DIR, or Postgres (PLATFORM_DATABASE_URL)."""
+        url = os.environ.get("PLATFORM_DATABASE_URL", "")
+        if not url:
+            return f"sqlite:///{self.platform_db}"
+        # Railway gives postgres:// or postgresql://; SQLAlchemy needs the psycopg (v3) driver named.
+        return url.replace("postgres://", "postgresql://", 1).replace("postgresql://", "postgresql+psycopg://", 1)
+
+    @property
+    def uses_postgres(self) -> bool:
+        return self.platform_database_url.startswith("postgresql")
+
 
 settings = Settings()

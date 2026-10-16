@@ -48,7 +48,7 @@ def test_generate_backend_through_mcp(fake_llm):
     server, thread, port = _serve(app)
     try:
         tools, result = asyncio.run(_call(port, token, "generate_backend", {"prompt": "A blog with posts and comments", "stack": "flask"}))
-        assert tools == ["generate_backend", "list_files", "list_runs", "read_file", "run_status"]
+        assert tools == ["edit_project", "generate_backend", "list_files", "list_projects", "read_file", "run_status"]
         assert not result.is_error, result
         data = result.structured_content
         assert data["status"] == "succeeded" and data["stack"] == "flask"
@@ -57,7 +57,7 @@ def test_generate_backend_through_mcp(fake_llm):
         _, readme = asyncio.run(_call(port, token, "read_file", {"run_id": data["run_id"], "path": "README.md"}))
         assert "Flask" in readme.content[0].text
 
-        _, denied = asyncio.run(_call(port, None, "list_runs", {}))
+        _, denied = asyncio.run(_call(port, None, "list_projects", {}))
         assert denied.is_error and "Bearer" in denied.content[0].text
     finally:
         server.should_exit = True
