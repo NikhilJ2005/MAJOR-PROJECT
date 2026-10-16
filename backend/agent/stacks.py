@@ -53,7 +53,8 @@ class Stack:
         rows: list[FileRow] = [
             ("app/__init__.py", None, "package marker"),
             ("app/config.py", "config.py.j2", "settings from environment variables"),
-            ("app/errors.py", "errors.py.j2", "ApiError -> JSON error responses"),
+            ("app/errors.py", "errors.py.j2", "ApiError -> JSON error responses, state-machine check"),
+            ("app/events.py", "events.py.j2", "live updates (Server-Sent Events)"),
         ]
         if self.name == "django":
             rows += [
@@ -100,6 +101,7 @@ class Stack:
             ("tests/__init__.py", None, "package marker"),
             ("tests/conftest.py", "conftest.py.j2", "test client + login helpers"),
             ("tests/test_smoke.py", "test_smoke.py.j2", "spec-derived contract tests"),
+            ("tests/test_edge_cases.py", "test_edge_cases.py.j2", "spec-derived edge-case tests (no AI)"),
             ("pyproject.toml", "pyproject.toml.j2", "dependencies"),
             ("Dockerfile", "Dockerfile.j2", "container image (non-root)"),
             ("docker-compose.yml", "docker-compose.yml.j2", "api + postgres"),

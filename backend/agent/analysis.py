@@ -1,14 +1,8 @@
-"""Requirements: the Analyst's numbered list, and the check that the design covers all of it."""
+"""Requirements: the Architect's numbered list, and the check that the design covers all of it."""
 
 from __future__ import annotations
 
-from pydantic import BaseModel
-
 from .state import ProjectSpec, Requirement
-
-
-class RequirementList(BaseModel):
-    requirements: list[Requirement]
 
 
 def check_coverage(spec: ProjectSpec) -> list[str]:

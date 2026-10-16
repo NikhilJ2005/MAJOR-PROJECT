@@ -5,3 +5,11 @@ class ApiError(Exception):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
+
+
+def check_transition(field: str, current: str | None, new: str | None, allowed: dict[str, list[str]]) -> None:
+    """State machines: only the changes listed in `allowed` are permitted (409 otherwise)."""
+    if new is None or new == current:
+        return
+    if new not in allowed.get(current or "", []):
+        raise ApiError(409, f"{field} cannot change from {current} to {new}")

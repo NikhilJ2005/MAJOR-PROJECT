@@ -23,6 +23,12 @@ def _agents(values):
     return [e["agent"] for e in values["ledger"]]
 
 
+def test_graph_has_the_eight_original_agents():
+    from agent.graph import NODE_ORDER
+
+    assert NODE_ORDER == ["parse_spec", "plan", "generate", "validate", "classify", "reflect", "package", "failure_report"]
+
+
 def test_model_mistake_is_found_and_healed():
     """Nobody plants a bug: the (fake) model makes a typo, the validator finds it, the cheap model fixes it."""
     fake = FakeLLM(mistake="typo")
@@ -31,7 +37,7 @@ def test_model_mistake_is_found_and_healed():
     assert values["status"] == "succeeded"
     assert values["iteration"] == 1
     agents = _agents(values)
-    assert agents[:2] == ["analyst", "architect"]
+    assert agents[0] == "architect"
     assert agents.index("error_classifier") < agents.index("reflector (cheap)")
     reflector = next(e for e in values["ledger"] if e["agent"].startswith("reflector"))
     diff = "\n".join(reflector["diff"].values())
@@ -40,46 +46,30 @@ def test_model_mistake_is_found_and_healed():
     assert all(b["fixed"] for b in values["bugs"])
 
 
-def test_clean_run_still_gets_a_bug_hunt():
+def test_clean_run_needs_no_healing():
     fake = FakeLLM()
     values = _run(initial_state("blog", {"codegen_mode": "llm"}), fake)
     assert values["status"] == "succeeded"
     assert values["iteration"] == 0
-    assert "bug_hunter" in fake.calls
     assert not any(c.startswith("reflect") for c in fake.calls)
     assert "tests/test_edge_cases.py" in values["files"]
-    assert any(e["agent"] == "bug_hunter" and "every edge case passed" in e["action"] for e in values["ledger"])
+    assert values["spec"]["requirements"]  # the Architect lists requirements itself
 
 
-def test_bug_hunter_finds_a_bug_the_contract_tests_miss():
-    """The model forgets to turn constraint errors into 409: only the Bug Hunter's test notices."""
+def test_edge_case_tests_find_a_bug_the_contract_tests_miss():
+    """The model forgets to turn constraint errors into 409: the spec-derived edge-case test notices."""
     fake = FakeLLM(mistake="swallow_fk")
     values = _run(initial_state("blog", {"codegen_mode": "llm"}), fake)
     assert values["status"] == "succeeded", values.get("report")
-    hunter = [b for b in values["bugs"] if b["found_by"] == "bug hunter"]
-    assert hunter and all(b["fixed"] for b in hunter)
-    assert any(e["agent"] == "bug_hunter" and "found 1 bug" in e["action"] for e in values["ledger"])
+    found = [b for b in values["bugs"] if b["found_by"] == "edge-case tests"]
+    assert found and all(b["fixed"] for b in found)
     assert "reflect:cheap" in fake.calls
-    assert "except IntegrityError" in values["files"]["app/routers/post.py"]
-
-
-def test_unfixable_edge_case_keeps_last_passing_code():
-    class ImpossibleHunter(FakeLLM):
-        def _edge_tests(self, user):
-            return ("### FILE: tests/test_edge_cases.py\n```python\n"
-                    "def test_teapot(client):\n    assert client.get('/health').status_code == 418\n```\n")
-
-    values = _run(initial_state("blog", {"codegen_mode": "llm"}), ImpossibleHunter())
-    assert values["status"] == "succeeded"
-    assert "test_teapot" not in values["files"]["tests/test_edge_cases.py"]
-    assert any(b.get("open") and not b["fixed"] for b in values["bugs"])
-    assert any("left open" in e["action"] for e in values["ledger"])
 
 
 def test_escalates_only_when_stalled_cheap_then_strong_then_templates():
     """A reflector whose fixes never work: each stall climbs one rung."""
     fake = FakeLLM(mistake="typo", fix_reflection=False)
-    values = _run(initial_state("blog", {"codegen_mode": "llm", "bug_hunt": False}), fake)
+    values = _run(initial_state("blog", {"codegen_mode": "llm"}), fake)
     assert [c for c in fake.calls if c.startswith("reflect")] == ["reflect:cheap", "reflect:strong"]
     assert values["status"] == "succeeded"
     assert values["iteration"] == 3
@@ -110,7 +100,7 @@ def test_complex_spec_end_to_end_on_every_framework(stack):
     assert values["status"] == "succeeded", values.get("report")
     assert values["spec"]["stack"] == stack
     assert len(values["spec"]["requirements"]) == 3
-    assert "tests/test_rules.py" in values["files"]  # the shop has actions, so the Test Engineer wrote tests
-    assert fake.calls.index("test_engineer") < fake.calls.index("entity")  # tests before code
+    assert "tests/test_rules.py" in values["files"]  # the shop has actions, so the Architect wrote rule tests
+    assert fake.calls.index("rule_tests") < fake.calls.index("entity")  # tests before code
     migrations = [p for p in values["files"] if "migrations/" in p and p.endswith(".py") and "env.py" not in p]
     assert migrations, "packager should ship real migration files"

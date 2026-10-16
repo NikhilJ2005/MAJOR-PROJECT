@@ -7,8 +7,8 @@ makes a typical model slip, so tests can watch the agents find and repair a
 bug that nobody planted in the pipeline:
 
     "typo"        a misspelled import (caught when the app is imported)
-    "swallow_fk"  constraint errors are not turned into 409 (only the Bug Hunter's
-                  "unknown foreign key" test notices: a 500 instead of 409)
+    "swallow_fk"  constraint errors are not turned into 409 (only the spec-derived
+                  "unknown foreign key" edge-case test notices: a 500 instead of 409)
 """
 
 from __future__ import annotations
@@ -41,10 +41,11 @@ def _section(text: str, start: str, end: str | None = None) -> str:
 
 
 class FakeLLM:
-    """Plays analyst, architect, test engineer, API engineer, bug hunter, reflector and judge."""
+    """Plays the Architect (design + rule tests), Code Generator, Reflector and its judge step."""
 
-    def __init__(self, spec=None, fix_reflection=True, mistake: str | None = None, buggy: bool = False):
+    def __init__(self, spec=None, fix_reflection=True, mistake: str | None = None, buggy: bool = False, edit_spec=None):
         self.spec = spec or BLOG_SPEC
+        self.edit_spec = edit_spec  # the design to return for a follow-up change request
         self.fix_reflection = fix_reflection
         self.mistake = MISTAKES.get(mistake or ("typo" if buggy else ""))
         self.mistake_name = mistake or ("typo" if buggy else None)
@@ -53,18 +54,16 @@ class FakeLLM:
 
     # -- roles -------------------------------------------------------------------------
 
-    def _requirements(self) -> list[dict]:
-        return self.spec.get("requirements") or [
-            {"id": f"R{i}", "text": f"Store and manage {e['name']} records", "kind": "data"}
-            for i, e in enumerate(self.spec["entities"], 1)
-        ]
-
-    def _architect(self) -> str:
-        spec = json.loads(json.dumps(self.spec))
+    def _architect(self, user: str) -> str:
+        """The design, with requirements (one per entity when the test spec has none)."""
+        spec = json.loads(json.dumps(self.edit_spec if self.edit_spec and "Change request:" in user else self.spec))
         if not spec.get("requirements"):
+            spec["requirements"] = [
+                {"id": f"R{i}", "text": f"Store and manage {e['name']} records", "kind": "data"}
+                for i, e in enumerate(spec["entities"], 1)
+            ]
             for i, e in enumerate(spec["entities"], 1):
                 e.setdefault("requirement_ids", [f"R{i}"])
-        spec.pop("requirements", None)
         return json.dumps(spec)
 
     def _entity(self, user: str) -> str:
@@ -95,20 +94,6 @@ class FakeLLM:
             "    assert len(r.json()) <= 1\n```\n"
         )
 
-    def _edge_tests(self, user: str) -> str:
-        case, _ = self._first_entity(user)
-        payload = {k: (999999 if isinstance(v, str) and v.startswith("@ref:") else v) for k, v in case["payload"].items()}
-        headers = "admin_headers" if case["access"] == "admin" else "user_headers"
-        return (
-            "FOCUS: unknown foreign keys and pagination limits\n"
-            "### FILE: tests/test_edge_cases.py\n```python\n"
-            f"def test_unknown_reference_is_rejected(client, {headers}):\n"
-            f"    r = client.post('/{case['table']}/', json={payload!r}, headers={headers})\n"
-            "    assert r.status_code in (409, 422), r.text\n\n\n"
-            f"def test_limit_above_maximum_is_rejected(client, {headers}):\n"
-            f"    assert client.get('/{case['table']}/', params={{'limit': 1000}}, headers={headers}).status_code == 422\n```\n"
-        )
-
     def _reflect(self, user: str) -> str:
         m = re.search(r"File most likely at fault: (\S+)\n```python\n(.*?)```", user, re.DOTALL)
         path, content = m.group(1), m.group(2)
@@ -123,21 +108,15 @@ class FakeLLM:
 
     def complete(self, role, system, user):
         usage = Usage(prompt_tokens=100, completion_tokens=50, cost_usd=0.0001, calls=1, models={role: 1})
-        if "Requirements Analyst" in system:
-            self.calls.append("analyst")
-            return json.dumps({"requirements": self._requirements()}), usage
+        if "Write tests/test_rules.py" in system:
+            self.calls.append("rule_tests")
+            return self._rule_tests(user), usage
         if "Architect of VibeStack" in system:
             self.calls.append("spec")
-            return self._architect(), usage
-        if "Test Engineer" in system:
-            self.calls.append("test_engineer")
-            return self._rule_tests(user), usage
-        if "API Engineer" in system:
+            return self._architect(user), usage
+        if "Code Generator" in system:
             self.calls.append("entity")
             return self._entity(user), usage
-        if "Bug Hunter" in system:
-            self.calls.append("bug_hunter")
-            return self._edge_tests(user), usage
         if "Reflector" in system:
             self.calls.append(f"reflect:{role}")
             return self._reflect(user), usage

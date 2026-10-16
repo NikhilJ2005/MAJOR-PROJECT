@@ -4,18 +4,20 @@ Who may do what: {{ access_text(e) }}.
 """
 
 from fastapi import APIRouter, Body, Depends, Query, Request, Response, status  # noqa: F401
+from fastapi.responses import StreamingResponse  # noqa: F401
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.errors import ApiError
+from app import events  # noqa: F401
+from app.errors import ApiError, check_transition  # noqa: F401
 from app.models.{{ e.module }} import {{ e.name }}
 from app.schemas.{{ e.module }} import {{ e.name }}Create, {{ e.name }}Read, {{ e.name }}Update
 from app.services import {{ e.module }} as service  # noqa: F401
 {% if spec.auth %}
 from app.models.user import User
-from app.security import get_current_user, require_admin  # noqa: F401
+from app.security import get_current_user, require_admin, user_id_from_header  # noqa: F401
 {% endif %}
 
 router = APIRouter(prefix="/{{ e.table }}", tags=["{{ e.name }}"])
@@ -30,6 +32,10 @@ def _get_or_404(db: Session, item_id: int{% if e.owned %}, user: User{% endif %}
 {% endif %}
         raise ApiError(404, "{{ e.name }} not found")
     return obj
+
+
+def _row(obj: {{ e.name }}) -> dict:
+    return {{ e.name }}Read.model_validate(obj).model_dump(mode="json")
 
 
 def _commit(db: Session) -> None:
@@ -69,6 +75,21 @@ def {{ a.name }}_{{ e.module }}(
 {% endfor %}
 
 
+{% if e.realtime %}
+@router.get("/stream")
+def stream_{{ e.table }}(replay: bool = False{% if e.owned %}, token: str = ""{% endif %}):
+    """Live changes as Server-Sent Events. ?replay=1 returns the recent events and ends."""
+{% if e.owned %}
+    owner_id = user_id_from_header(f"Bearer {token}")  # browsers can't send headers on EventSource
+    if owner_id is None:
+        raise ApiError(401, "pass your login token as ?token=")
+{% endif %}
+    return StreamingResponse(
+        events.stream("{{ e.table }}", {% if e.owned %}owner_id{% else %}None{% endif %}, replay), media_type="text/event-stream"
+    )
+
+
+{% endif %}
 @router.post("/", response_model={{ e.name }}Read, status_code=status.HTTP_201_CREATED)
 def create_{{ e.module }}(
     payload: {{ e.name }}Create,
@@ -84,6 +105,9 @@ def create_{{ e.module }}(
     db.add(obj)
     _commit(db)
     db.refresh(obj)
+{% if e.realtime %}
+    events.publish("{{ e.table }}", "created", _row(obj))
+{% endif %}
     return obj
 
 
@@ -143,10 +167,17 @@ def update_{{ e.module }}(
     require_admin(user)
 {% endif %}
     obj = _get_or_404(db, item_id{% if e.owned %}, user{% endif %})
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+{% for f in transition_fields(e) %}
+    check_transition("{{ f.name }}", obj.{{ f.name }}, changes.get("{{ f.name }}"), {{ tojson(f.transitions) }})
+{% endfor %}
+    for key, value in changes.items():
         setattr(obj, key, value)
     _commit(db)
     db.refresh(obj)
+{% if e.realtime %}
+    events.publish("{{ e.table }}", "updated", _row(obj))
+{% endif %}
     return obj
 
 
@@ -162,6 +193,12 @@ def delete_{{ e.module }}(
     require_admin(user)
 {% endif %}
     obj = _get_or_404(db, item_id{% if e.owned %}, user{% endif %})
+{% if e.realtime %}
+    row = _row(obj)
+{% endif %}
     db.delete(obj)
     _commit(db)
+{% if e.realtime %}
+    events.publish("{{ e.table }}", "deleted", row)
+{% endif %}
     return Response(status_code=status.HTTP_204_NO_CONTENT)

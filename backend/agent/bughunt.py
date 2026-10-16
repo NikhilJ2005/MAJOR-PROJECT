@@ -1,13 +1,11 @@
-"""Finding bugs without planting them.
+"""Finding bugs without planting them (all part of the Validator agent, no extra AI).
 
-Two independent hunters look at the generated code:
-
-1. A static checker built on Python's `ast` module (no AI, no tokens). It runs at every
-   validation. High-severity findings fail validation, so the normal self-healing loop
-   fixes them; low-severity findings become review notes in the ledger.
-2. The Bug Hunter agent (an LLM) reads the requirements and the code once the contract
-   tests pass, and writes adversarial tests (tests/test_edge_cases.py). Any of them that
-   fails is a real bug, which the self-healing loop then repairs.
+1. A static checker built on Python's `ast` module runs at every validation. High-severity
+   findings fail validation, so the normal self-healing loop fixes them; low-severity
+   findings become review notes in the ledger.
+2. Spec-derived edge-case tests (tests/test_edge_cases.py, rendered from the design in
+   codegen.py) probe unknown foreign keys, invalid enums, values below min, oversized pages
+   and forbidden state transitions. A failure is a real bug that the healing loop repairs.
 
 `update_bugs` keeps the list of every bug found during a run and whether it was fixed.
 """
@@ -18,12 +16,6 @@ import ast
 import re
 from dataclasses import asdict, dataclass
 from typing import Any
-
-from . import prompts
-from .analysis import requirements_text
-from .llm import Usage, parse_file_blocks
-from .state import ProjectSpec
-from .testwriter import EDGE_TESTS, valid_test_file
 
 # --------------------------------------------------------------------------- static checks
 
@@ -139,43 +131,13 @@ def static_check(files: dict[str, str]) -> list[Finding]:
     return findings
 
 
-# --------------------------------------------------------------------------- the Bug Hunter agent
-
-
-def code_for_review(spec: ProjectSpec, files: dict[str, str], limit: int = 40_000) -> str:
-    """Schemas, services and routers of every entity, cut to a size a model can read."""
-    parts = []
-    for e in spec.entities:
-        for kind in ("schemas", "services", "routers"):
-            path = f"app/{kind}/{e.module}.py"
-            if path in files:
-                parts.append(f"### {path}\n```python\n{files[path]}```")
-    text = "\n\n".join(parts)
-    return text if len(text) <= limit else text[:limit] + "\n...[truncated]"
-
-
-def write_edge_tests(llm: Any, spec: ProjectSpec, files: dict[str, str]) -> tuple[str | None, str, Usage]:
-    """Ask the Bug Hunter for tests/test_edge_cases.py. Returns (source or None, focus, usage)."""
-    system = prompts.BUG_HUNTER_SYSTEM.format(helpers=prompts.TEST_HELPERS, contract=prompts.CONTRACT)
-    user = prompts.BUG_HUNTER_USER.format(
-        requirements=requirements_text(spec.requirements),
-        spec=spec.model_dump_json(indent=1, exclude={"requirements"}),
-        code=code_for_review(spec, files),
-    )
-    text, usage = llm.complete("cheap", system, user)
-    source = parse_file_blocks(text).get(EDGE_TESTS)
-    m = re.search(r"FOCUS:\s*(.+)", text)
-    focus = m.group(1).strip() if m else "edge cases"
-    return (source if source and valid_test_file(source) else None), focus, usage
-
-
 # --------------------------------------------------------------------------- bug tracking
 
 _FAILED = re.compile(r"^(?:FAILED|ERROR) (tests/[\w/]+\.py)::(\S+)", re.MULTILINE)
 _FINDERS = {
     "tests/test_smoke.py": "contract tests",
-    "tests/test_rules.py": "test engineer",
-    "tests/test_edge_cases.py": "bug hunter",
+    "tests/test_rules.py": "rule tests",
+    "tests/test_edge_cases.py": "edge-case tests",
 }
 
 

@@ -158,6 +158,7 @@ def config() -> dict[str, Any]:
         "max_runs_per_day": settings.max_runs_per_day,
         "stacks": [{"name": s.name, "label": s.label} for s in STACKS.values()],
         "plugins": plugins.describe(),
+        "provider": settings.llm_provider,
         "models": {"strong": settings.strong_model, "cheap": settings.cheap_model, "fallback": settings.fallback_model},
     }
 
@@ -165,7 +166,7 @@ def config() -> dict[str, Any]:
 def start_run(user: dict[str, Any], prompt: str, options: dict[str, Any]) -> str:
     """Checks and starts a run for a user. Shared by the HTTP API and the MCP server."""
     if not settings.llm_enabled:
-        raise HTTPException(status_code=503, detail="OPENROUTER_API_KEY is not configured on the server")
+        raise HTTPException(status_code=503, detail="no LLM API key is configured on the server")
     if not 10 <= len(prompt) <= 6000:
         raise HTTPException(status_code=422, detail="the description must be 10-6000 characters")
     if options.get("stack", "fastapi") not in STACKS:

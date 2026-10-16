@@ -1,11 +1,8 @@
-"""The VibeStack harness as a LangGraph state machine.
+"""The VibeStack harness as a LangGraph state machine of 8 agents.
 
-    analyze -> parse_spec -> plan -> write_tests -> generate -> validate
-    validate --ok, first time---------------> bug_hunt -> validate
-    validate --ok, after the hunt-----------> package -> END
-    validate --fail, still making progress--> classify -> reflect -> validate
-    validate --fail, no more progress-------> failure_report -> END
-                                               (or hunt_giveup -> validate during the hunt)
+    Architect -> Planner -> Code Generator -> Validator --ok-----------------------> Packager -> END
+                                              Validator --fail, making progress--> Error Classifier -> Reflector -> Validator
+                                              Validator --fail, no progress------> Circuit Breaker -> END
 
 Run from the CLI:
     python -m agent.graph "a todo API with users and tasks" [--stack flask] [--template]
@@ -30,14 +27,10 @@ from .config import settings
 from .state import AgentState
 
 NODE_ORDER = [
-    "analyze",
     "parse_spec",
     "plan",
-    "write_tests",
     "generate",
     "validate",
-    "bug_hunt",
-    "hunt_giveup",
     "classify",
     "reflect",
     "package",
@@ -50,19 +43,11 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     for name in NODE_ORDER:
         g.add_node(name, getattr(nodes, name))
 
-    g.add_edge(START, "analyze")
-    g.add_edge("analyze", "parse_spec")
+    g.add_edge(START, "parse_spec")
     g.add_edge("parse_spec", "plan")
-    g.add_edge("plan", "write_tests")
-    g.add_edge("write_tests", "generate")
+    g.add_edge("plan", "generate")
     g.add_edge("generate", "validate")
-    g.add_conditional_edges(
-        "validate",
-        nodes.route_after_validate,
-        ["bug_hunt", "package", "classify", "hunt_giveup", "failure_report"],
-    )
-    g.add_conditional_edges("bug_hunt", nodes.route_after_hunt, ["validate", "package"])
-    g.add_edge("hunt_giveup", "validate")
+    g.add_conditional_edges("validate", nodes.route_after_validate, ["package", "classify", "failure_report"])
     g.add_edge("classify", "reflect")
     g.add_edge("reflect", "validate")
     g.add_edge("package", END)

@@ -42,7 +42,8 @@ class Client:
             url = f"{url}?{urlencode(params)}"
         body = "" if json is None else jsonlib.dumps(json)
         r = self._client.generic(method, url, data=body, content_type="application/json", headers=headers or {})
-        return Response(r.status_code, r.content.decode())
+        body = b"".join(r.streaming_content) if r.streaming else r.content  # streams: live-update endpoints
+        return Response(r.status_code, body.decode())
 
     def get(self, url, **kw):
         return self.request("GET", url, **kw)

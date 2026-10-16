@@ -41,7 +41,7 @@ def test_plugin_files_ship_in_the_project():
     llm_mod.set_llm(FakeLLM())
     try:
         graph = build_graph()
-        state = initial_state("blog", {"codegen_mode": "template", "plugins": ["kubernetes", "postman"], "bug_hunt": False})
+        state = initial_state("blog", {"codegen_mode": "template", "plugins": ["kubernetes", "postman"]})
         config = {"configurable": {"thread_id": state["run_id"]}}
         list(graph.stream(state, config, stream_mode="updates"))
         values = graph.get_state(config).values

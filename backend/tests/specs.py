@@ -39,4 +39,27 @@ SHOP = {
     ],
 }
 
-ALL_SPECS = {"blog": BLOG_SPEC, "no-auth": NO_AUTH, "shop": SHOP}
+# Like the multi-agent orchestration prompt that failed on the old version: state machines,
+# JSON workflow definitions, cascading deletes, indexes and live execution telemetry.
+WORKFLOW = {
+    "project_name": "agent_orchestrator",
+    "auth": True,
+    "entities": [
+        {"name": "AgentNode", "write_access": "owner", "realtime": True, "fields": [
+            {"name": "name", "unique": True}, {"name": "role", "choices": ["planner", "worker", "critic"]},
+            {"name": "status", "choices": ["idle", "busy", "offline"], "index": True,
+             "transitions": {"idle": ["busy", "offline"], "busy": ["idle"], "offline": ["idle"]}},
+            {"name": "config", "type": "json", "required": False}]},
+        {"name": "TaskGraph", "write_access": "owner", "fields": [
+            {"name": "title"}, {"name": "definition", "type": "json"},
+            {"name": "state", "choices": ["draft", "running", "done", "failed"],
+             "transitions": {"draft": ["running"], "running": ["done", "failed"]}}]},
+        {"name": "ExecutionLog", "write_access": "owner", "realtime": True, "fields": [
+            {"name": "task_graph_id", "references": "TaskGraph", "on_delete": "cascade"},
+            {"name": "agent_node_id", "references": "AgentNode", "on_delete": "set_null", "required": False},
+            {"name": "level", "choices": ["info", "warning", "error"], "index": True},
+            {"name": "message", "type": "text"}, {"name": "payload", "type": "json", "required": False}]},
+    ],
+}
+
+ALL_SPECS = {"blog": BLOG_SPEC, "no-auth": NO_AUTH, "shop": SHOP, "workflow": WORKFLOW}
