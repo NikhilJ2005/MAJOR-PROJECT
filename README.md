@@ -1,109 +1,113 @@
 # VibeStack
 
-**Describe an application in plain English. AI agents turn it into a working, tested and bug-hunted backend in FastAPI, Flask or Django.**
+**Describe an application in plain English. Eight AI agents design it, build it as a full-stack web app (a React frontend on a FastAPI, Flask or Django backend), test it, find and fix their own bugs, and run it live.**
 
-VibeStack is not a single prompt. It is a LangGraph state machine of specialised agents:
-- An **Analyst** splits the request into testable requirements.
-- An **Architect** designs the data model, access rules and custom business actions.
-- A **Test Engineer** writes tests *before any code exists*.
-- An **API Engineer** writes the code.
-- A **sandbox** proves that the code works.
-
-Once the contract passes, a **Bug Hunter** writes tests designed to break the app. Every failure goes through a self-healing loop. The loop keeps going **while it is making progress** and stops on its own when it isn't. No bug is ever planted: everything the agents fix, they found themselves.
+VibeStack is a LangGraph state machine of eight agents, not a single prompt:
 
 ```
-prompt ─▶ Analyst ─▶ Architect ─▶ Planner ─▶ Test Engineer ─▶ API Engineer ─▶ Validator ──ok──▶ Bug Hunter ─▶ Validator ──ok──▶ Packager ─▶ zip + live app
-          (requirements) (entities,   (files)   (rule tests,     (models, schemas,  │ fail            (edge-case      │ fail
-                          access,                before code)     services, routers) ▼                  tests)          ▼
-                          actions)                                         Classifier ─▶ Reflector ──▶ re-validate (while making progress)
-                                                                                         (cheap → strong model → verified templates; may dispute an AI test → Judge)
+prompt ─▶ Architect ─▶ Planner ─▶ Code Generator ─▶ Validator ──ok──▶ Packager ─▶ zip + live app
+          requirements, files in    backend +          │ static, import,
+          design, rule   build      frontend           │ boot, contract,
+          tests (before  order                         │ edge-case and
+          any code)                                    │ rule tests
+                                                       ▼ fail
+                                         Error Classifier ─▶ Reflector ─▶ Validator   (while it makes progress)
+                                                              │ reads, searches, stages a fix,
+                                                              │ runs the failing tests (tools, MCP)
+                                                              ▼ no progress
+                                                        Circuit Breaker ─▶ diagnostic report
 ```
+
+Projects work like a chat. The first message builds version 1. A follow-up such as *"add reviews with a 1–5 rating"* makes the Architect edit the design, the Code Generator rewrite only the changed entities, and the whole app is re-validated as version 2. Any version can be restored.
 
 ## The ideas worth explaining
 
 | Idea | Why it matters | Where |
 |---|---|---|
-| **One contract, three frameworks** | All three frameworks share one project layout and one HTTP contract. The spec-derived tests, error classifier and self-healing loop work unchanged for FastAPI, Flask and Django; each framework only adds a small test-client adapter. | `agent/stacks.py`, `agent/templates/` |
-| **Tests before code** | The Test Engineer writes business-rule tests from the requirements before the code is written, so the code can't grade its own homework. | `agent/testwriter.py` |
-| **Agents find bugs on their own** | Six static checks built on Python's `ast` module run first: `eval`/shell commands, hardcoded secrets, SQL built from strings, debug mode, bare `except`, and `print`. After that, the Bug Hunter's adversarial tests run. Every failure is a real bug and goes through the heal loop. | `agent/bughunt.py` |
-| **Healing stops when it stops helping** | There is no fixed "3 attempts". A repair counts as progress if validation reaches a later gate, fewer tests fail, or a new error appears (meaning the old one was fixed). With no progress it escalates: cheap model → strong model → verified templates. It stops when the ladder is used up, when the code returns to an earlier version, or when the budget runs out. A safety limit of 12 attempts is only a seatbelt. | `agent/healing.py` (`should_continue`) |
-| **AI tests are kept honest** | The Reflector may claim that an AI-written test contradicts the requirements. A Judge model then decides; a test ruled wrong is removed and logged. The contract tests can never be removed. | `agent/testwriter.py` |
-| **Everything is explainable** | Every agent writes to a change ledger: who did what, to which file, why, and the exact diff. It is shipped in every zip. | `agent/ledger.py` |
+| **Healing stops when it stops helping** | There is no fixed "3 attempts". A repair counts as progress if validation reaches a later gate, fewer tests fail, or a new error appears. Without progress the repair escalates: cheap model → strong model → verified templates. It stops when every level fails, when the code returns to an earlier version, or when the budget runs out. | `agent/healing.py` |
+| **The Reflector uses tools** | It works like a developer at a terminal: it reads files, searches the code, lists the routes, stages a fix and runs the failing tests *before* it answers. That is at most 6 calls, through the provider's function calling. External MCP servers and plugins can add tools. Every call is in the ledger. | `agent/tools.py`, `agent/mcp_tools.py` |
+| **Agents find bugs on their own** | Nothing is planted. Bugs are caught four ways: `ast` static checks (`eval`, shell commands, secrets, SQL strings, debug mode), contract tests, **edge-case tests derived from the design without AI** (unknown foreign key → 409, forbidden state change → 409, another user's row → 404, values out of range → 422 …), and business-rule tests that the Architect writes *before* the code exists. | `agent/bughunt.py`, `agent/codegen.py` |
+| **Full-stack contract check** | The generated React app is driven by `config.json` (from the design) and `ui.json` (from the Code Generator). The Validator checks that everything the frontend uses exists in the backend. A mismatch is healed like any other bug. | `agent/frontend.py` |
+| **One contract, three frameworks** | FastAPI, Flask and Django share one project layout and one HTTP contract. The tests, the error classifier and the healing loop work unchanged for all three. | `agent/stacks.py`, `agent/templates/` |
+| **AI tests are kept honest** | The Reflector may claim that an AI-written rule test contradicts the requirements. A judge (one strong-model call) decides, and every decision is logged. Contract and edge-case tests can never be removed. | `agent/testwriter.py` |
+| **Everything is explainable** | Every agent writes to a change ledger: who did what, to which file, why, which tools it used, and the exact diff. | `agent/ledger.py` |
 
 ## What it can build
 
-The spec supports:
-- typed fields: str, text, int, float, decimal, bool, date, datetime
-- enums (`choices`) and numeric `min`/`max`
-- foreign keys
-- per-entity access: `any_user`, `owner` (private rows; other users get 404), or `admin` (non-admins get 403)
-- **custom actions** with business rules, e.g. `POST /orders/{id}/checkout`: "409 if stock is insufficient". Their logic lives in `app/services/<entity>.py`.
+The design (`agent/state.py`) supports:
+- typed fields: str, text, int, float, decimal, bool, date, datetime, **json**
+- enums with **state machines**, e.g. `draft → running → done | failed`; a forbidden change returns 409
+- foreign keys with **delete rules** (`cascade`, `restrict`, `set_null`) and **indexes**
+- per-entity access: `any_user`, `owner` (private rows), `admin`
+- **custom actions** with business rules, e.g. `POST /orders/{id}/checkout`
+- **live updates**: `GET /<table>/stream` (Server-Sent Events) in all three frameworks; the frontend listens to it
 
 Every generated project contains:
 
 | | |
 |---|---|
-| Code | models, Pydantic schemas, services (business logic), routers, auth (PBKDF2 + JWT) |
-| Database | Alembic (FastAPI, Flask) or Django migrations, **generated and applied once to prove they work**; Postgres via docker-compose |
-| Config | environment variables; `SECRET_KEY` is required in production |
-| Behaviour | consistent JSON errors, CORS, a request log, `/health` and `/ready` |
-| Tests | contract tests, plus rule and edge-case tests when the agents wrote them |
-| Delivery | non-root Dockerfile with a health check, `Makefile`, GitHub Actions CI, `.gitignore`, README, and `VIBESTACK_LEDGER.md` (including the bugs found and fixed) |
+| Frontend | a complete React + Tailwind app (no build step; vendored, works offline): login, a dashboard, a page per entity, forms built from the field rules, state buttons, action buttons and live updates |
+| Backend | models, schemas, services (business logic), routers, auth (PBKDF2 + JWT), consistent JSON errors, `/health` and `/ready` |
+| Database | Alembic (FastAPI, Flask) or Django migrations, **generated and applied once to prove they work** |
+| Tests | contract tests, edge-case tests, rule tests |
+| Delivery | a non-root Dockerfile with a health check, docker-compose with Postgres, a `Makefile`, GitHub Actions CI, a README, and `VIBESTACK_LEDGER.md` |
 
 ## The platform
 
-- **Accounts.** Every run belongs to its creator. Other users get 404 for its status, files, downloads and preview. Live previews sit behind an unguessable `/preview/<key>/` link.
-- **Sandbox.** Generated code runs as an unprivileged user, with a scrubbed environment (no API keys) and a hard timeout. OS resource limits from the standard `resource` module cap memory, CPU time, file size, open files and processes; a test proves a memory bomb is stopped.
-- **Guard rails.** Per-user daily run limit, concurrent-run limit, per-run token budget, optional invite code, and `/api/stats` (success rate, repairs, bugs found and fixed, cost).
-- **MCP server** at `/mcp/`. Claude Desktop, Cursor or VS Code can call `generate_backend`. See [docs/MCP.md](docs/MCP.md).
-- **Plugins.** Drop a `.py` file in `backend/plugins/` to add files, static checks or prompt rules. See [docs/PLUGINS.md](docs/PLUGINS.md).
+- **Projects and versions:** stored with SQLAlchemy Core. SQLite locally and Postgres in production (`PLATFORM_DATABASE_URL`); LangGraph checkpoints use the same database.
+- **Live preview:** the generated app runs in a sandbox behind a private `/preview/<key>/` link and is shown in the workspace as a real app, with desktop and phone views.
+- **Sandbox:** generated code runs as an unprivileged user, with a scrubbed environment and OS limits on memory, CPU, processes and files.
+- **Any model provider:** `LLM_PROVIDER` can be Groq, Gemini, OpenRouter or any OpenAI-compatible API. Rate limits (429) are retried with backoff, and `LLM_MAX_PARALLEL` keeps free tiers happy.
+- **MCP:**
+  - **Server:** at `/mcp/`, so Claude Desktop, Cursor or VS Code can build and edit projects ([docs/MCP.md](docs/MCP.md)).
+  - **Client:** the Reflector can use other MCP servers' tools.
+- **Plugins:** one `.py` file adds files, static checks, prompt rules or tools ([docs/PLUGINS.md](docs/PLUGINS.md)).
 
 ## Repository layout
 
 ```
 backend/
   agent/              the harness (plain Python, one idea per file)
-    graph.py          LangGraph wiring + CLI
+    graph.py          LangGraph wiring (8 agents) + CLI
     nodes.py          one function per agent
-    state.py          ProjectSpec (the design) + graph state
-    stacks.py         FastAPI / Flask / Django: files, commands, dependencies
-    codegen.py        renders the templates for a spec
-    templates/        common/ (shared), sqlalchemy/ (FastAPI+Flask), fastapi/, flask/, django/
-    sandbox.py        static -> import -> boot -> tests, with OS resource limits
+    state.py          the design (ProjectSpec) + graph state
     healing.py        error taxonomy, fault localisation, when to stop
-    bughunt.py        static checks, the Bug Hunter, bug tracking
-    testwriter.py     Test Engineer, Judge, safe test removal
-    analysis.py       requirements and the coverage check
+    tools.py          the Reflector's tools and the Toolbox
+    mcp_tools.py      tools from external MCP servers
+    frontend.py       generated frontend config + contract check
+    stacks.py         FastAPI / Flask / Django: files, commands, dependencies
+    codegen.py        renders the templates; derives edge-case tests from the design
+    templates/        common/, sqlalchemy/, fastapi/, flask/, django/, frontend/
+    sandbox.py        import -> boot -> tests, with OS resource limits
+    bughunt.py        static checks, bug tracking
+    testwriter.py     rule tests, the judge, safe test removal
     plugins.py        plugin loader
-    llm.py            OpenRouter client: model tiers, fallback, structured output, cost
+    llm.py            provider client: model tiers, fallback, tool loop, cost
     prompts.py        every prompt in one place
     fake_llm.py       deterministic stand-in model for tests and offline demos
-  app/                FastAPI platform: accounts, runs, SSE, previews, MCP
+  app/                FastAPI platform: accounts, projects, runs, SSE, previews, MCP server
   plugins/            example plugins
-  evals/              15 benchmark prompts (5 hard ones with business rules) + runner
-  tests/              unit, graph, HTTP, MCP and browser-free end-to-end tests
+  evals/              15 benchmark prompts + runner with ablations
+  tests/              unit, graph, HTTP, MCP, tools and end-to-end tests
 frontend/             Next.js UI (static export, served by the backend)
 ```
 
 ## Run it
 
-### Locally
-
 ```bash
 cd backend
 pip install -e ".[dev]"
-export OPENROUTER_API_KEY=sk-or-...    # or FAKE_LLM=1 to run without a key
+export LLM_PROVIDER=groq GROQ_API_KEY=gsk_...    # or FAKE_LLM=1 to run without a key
 uvicorn app.main:app --reload --port 8000
 
-cd frontend && npm install && npm run dev    # http://localhost:3000, then create an account
+cd frontend && npm install && npm run dev        # http://localhost:3000, then create an account
+python scripts/check_llm.py                      # checks that the configured models answer
 ```
 
 CLI only:
 
 ```bash
-cd backend
 python -m agent.graph "a library where members borrow books, max 3 open loans" --stack django
-python -m agent.graph "library" --template --spec my_spec.json      # no LLM at all
 ```
 
 ### Docker / Railway
@@ -113,9 +117,10 @@ cp .env.example .env && docker compose up --build    # http://localhost:8000
 ```
 
 On Railway:
-1. Deploy from `Dockerfile`.
-2. Set `OPENROUTER_API_KEY`, `SECRET_KEY`, `ADMIN_EMAILS` and, optionally, `ACCESS_CODE` (an invite code).
-3. Mount a volume at `/data`.
+1. Deploy from the `Dockerfile`.
+2. Add a **Postgres** service and set `PLATFORM_DATABASE_URL=${{Postgres.DATABASE_URL}}`.
+3. Set `LLM_PROVIDER` and its API key, `SECRET_KEY`, `ADMIN_EMAILS`, and optionally `ACCESS_CODE`.
+4. Keep a volume at `/data` for the generated zips.
 
 The health check is `/api/health`.
 
@@ -123,34 +128,19 @@ The health check is `/api/health`.
 
 ```bash
 cd backend
-pytest -q                                        # ~90 tests: fake model, real sandbox, all three frameworks
-python -m evals.run --offline --stack flask      # harness regression, no LLM
-python -m evals.run --hard --stack django        # online: business-rule prompts, real LLM
+pytest -q                                          # ~120 tests: fake model, real sandbox, all three frameworks
+python -m evals.run --fake --ablation              # the whole eval harness offline, no tokens
+python -m evals.run --hard --stack django          # real model: business-rule prompts
+python -m evals.run --hard --ablation              # the ablation table for the paper
 ```
 
-Each eval writes a table to `evals/results/` with pass rate, repairs, bugs found and fixed (and how many by the Bug Hunter), stop reason, tokens, cost and time. GitHub Actions runs lint, tests, offline evals on every framework, the frontend build and a Docker build.
+The ablation compares the full system with three variants:
+- **fixed-3:** a fixed 3-repair limit
+- **no-tools:** a one-shot Reflector without tools
+- **no-edge-tests:** no spec-derived edge-case tests
+
+It reports pass rate, first-try passes, repairs, bugs found and fixed, **escaped bugs** (a held-out run of the edge-case tests on the final code), tool calls, tokens, cost and time. Results go to `evals/results/` as Markdown, JSON and CSV.
 
 ## Configuration
 
-See [`.env.example`](.env.example). The most important settings:
-
-| Variable | Purpose |
-|---|---|
-| `OPENROUTER_API_KEY` | LLM access |
-| `STRONG_MODEL` / `CHEAP_MODEL` / `FALLBACK_MODEL` | Tiered routing: design and code / first repairs and bug hunting / fallback |
-| `MAX_HEAL_SAFETY` | Safety limit only (default 12); healing normally stops when it stops making progress |
-| `MAX_TOKENS_PER_RUN` | Per-run token budget |
-| `MAX_RUNS_PER_DAY`, `MAX_CONCURRENT_RUNS` | Quotas |
-| `ACCESS_CODE` | Invite code required to sign up |
-| `ADMIN_EMAILS` | Platform admins (platform-wide stats, no daily limit) |
-| `SECRET_KEY` | Signs login tokens (generated into `DATA_DIR` if empty) |
-| `SANDBOX_MEMORY_MB` | Memory limit for generated code |
-| `PLUGINS` | Plugins enabled by default |
-| `FAKE_LLM=1` | Deterministic stand-in model for offline demos |
-
-## Roadmap
-
-- Iterative edits ("add reviews to my shop") on an existing project
-- A Postgres validation gate (Railway Postgres service)
-- Generated projects that ship their own MCP server
-- Long-term memory of past fixes
+See [`.env.example`](.env.example).

@@ -1,5 +1,5 @@
 """VibeStack as an MCP server, so AI assistants (Claude Desktop, Cursor, VS Code ...) can
-generate validated backends as a tool call.
+build and edit validated full-stack apps as a tool call.
 
 Served over streamable HTTP at /mcp/. Every call must carry the user's VibeStack login
 token (`Authorization: Bearer <token>`), so runs belong to that user exactly as in the web UI.
@@ -19,9 +19,10 @@ from .accounts import user_id_from_token
 from .runs import RunManager
 from .store import Store
 
-INSTRUCTIONS = """VibeStack turns a plain-English description into a working backend (FastAPI, Flask or
-Django). Agents analyse requirements, design the API, write code and tests, hunt for bugs and
-self-heal until everything passes. Call generate_backend, then read files with read_file."""
+INSTRUCTIONS = """VibeStack turns a plain-English description into a working full-stack app: a React frontend
+on a FastAPI, Flask or Django backend. Eight agents design it, write rule tests before the code, generate
+it, validate it and self-heal until everything passes. Call generate_backend for a new project and
+edit_project for follow-up changes, then read files with read_file."""
 MAX_WAIT_S = 15 * 60
 
 
