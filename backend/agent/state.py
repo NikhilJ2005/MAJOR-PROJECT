@@ -13,7 +13,8 @@ from typing import Annotated, Any, Literal, TypedDict
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-FieldType = Literal["str", "text", "int", "float", "decimal", "bool", "date", "datetime"]
+FieldType = Literal["str", "text", "int", "float", "decimal", "bool", "date", "datetime", "json"]
+OnDelete = Literal["cascade", "restrict", "set_null"]
 StackName = Literal["fastapi", "flask", "django"]
 WriteAccess = Literal["any_user", "owner", "admin"]
 
@@ -56,6 +57,11 @@ class FieldSpec(BaseModel):
     choices: list[str] = Field(default_factory=list, description="Allowed values, e.g. order status")
     min: float | None = Field(default=None, description="Smallest allowed number")
     max: float | None = Field(default=None, description="Largest allowed number")
+    transitions: dict[str, list[str]] = Field(
+        default_factory=dict, description='State machine on a choices field, e.g. {"draft": ["running"]}'
+    )
+    on_delete: OnDelete | None = Field(default=None, description="For foreign keys: cascade, restrict or set_null")
+    index: bool = Field(default=False, description="Add a database index (foreign keys always get one)")
 
     @field_validator("name")
     @classmethod
@@ -76,6 +82,7 @@ class EntitySpec(BaseModel):
         "created them (owner_id is added for you); admin: only admins may write, everyone may read",
     )
     requirement_ids: list[str] = Field(default_factory=list, description="Requirements this entity covers")
+    realtime: bool = Field(default=False, description="Stream create/update/delete events live (Server-Sent Events)")
 
     @field_validator("name")
     @classmethod
@@ -206,6 +213,7 @@ def _clean_fields(ent: EntitySpec, known: set[str]) -> list[FieldSpec]:
                 f.name = f"{f.name}_id"  # every ORM expects <name>_id for the key column
         if f.choices:
             f.type = "str"
+        _clean_rules(f)
         if f.name in RESERVED_FIELD_NAMES or f.name in names:
             continue
         if ent.owned and f.name == "owner_id":
@@ -213,6 +221,27 @@ def _clean_fields(ent: EntitySpec, known: set[str]) -> list[FieldSpec]:
         names.add(f.name)
         cleaned.append(f)
     return cleaned
+
+
+def _clean_rules(f: FieldSpec) -> None:
+    """Keep only rules that make sense for the field, so every template can rely on them."""
+    if f.references:
+        if f.on_delete is None or (f.on_delete == "set_null" and f.required):
+            f.on_delete = "restrict"  # never silently lose data, never null a required field
+    else:
+        f.on_delete = None
+    known = set(f.choices)
+    f.transitions = {
+        state: [t for t in targets if t in known and t != state]
+        for state, targets in f.transitions.items()
+        if state in known
+    }
+    if f.transitions and f.choices[0] not in f.transitions:
+        # Start new rows in a state that can move on: the first state with outgoing transitions.
+        first = next((c for c in f.choices if f.transitions.get(c)), f.choices[0])
+        f.choices = [first] + [c for c in f.choices if c != first]
+    if f.type == "json":
+        f.unique, f.index, f.min, f.max, f.choices = False, False, None, None, []
 
 
 def _clean_actions(actions: list[ActionSpec], entities: dict[str, EntitySpec]) -> list[ActionSpec]:
@@ -289,15 +318,21 @@ class Validation(TypedDict, total=False):
 class Options(TypedDict, total=False):
     stack: str  # "fastapi" | "flask" | "django"
     codegen_mode: str  # "llm" | "template"
-    bug_hunt: bool  # run the Bug Hunter after the contract passes (default on)
     plugins: list[str]  # plugin names from backend/plugins/ (default: the PLUGINS env var)
+    # Ablation study switches (evals/run.py --ablation); normal runs leave them unset.
+    tools: bool  # the Reflector may call tools (default True)
+    edge_tests: bool  # include the spec-derived edge-case tests (default True)
+    fixed_repairs: int  # stop after exactly N repairs instead of the progress-based rule
 
 
 class AgentState(TypedDict, total=False):
     run_id: str
     prompt: str
     options: Options
-    requirements: list[dict[str, Any]]  # from the Requirements Analyst
+    base_run_id: str  # follow-up edits: the version this run starts from
+    base_spec: dict[str, Any]
+    base_files: dict[str, str]
+    changes: dict[str, list[str]]  # follow-up edits: entities added / changed / removed by the Architect
     spec: dict[str, Any]
     file_plan: list[dict[str, str]]
     files: Annotated[dict[str, str], merge_files]
@@ -305,8 +340,6 @@ class AgentState(TypedDict, total=False):
     validation: Validation
     iteration: int
     heal_history: list[dict[str, Any]]  # one entry per validation, read by healing.should_continue
-    phase: str  # "build" -> "hunt" (Bug Hunter tests added) -> "final"
-    safe_files: dict[str, str]  # last code that passed, restored if an edge case can't be fixed
     bugs: list[dict[str, Any]]  # every problem found during the run, and whether it was fixed
     review: list[dict[str, Any]]  # low-severity static-check notes
     stop_reason: str

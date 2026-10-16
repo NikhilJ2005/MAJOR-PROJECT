@@ -7,6 +7,7 @@ name is its name. It may define any of these:
     def extra_files(spec) -> dict[str, str]      add files to every generated project
     def extra_checks(files) -> list[Finding]      more static checks (Finding is in agent/bughunt.py)
     def prompt_notes(stack) -> str                extra instructions for the AI code writers
+    def tools() -> list[callable]                 extra tools the Reflector may call (agent/tools.py)
 
 A run uses the plugins listed in options["plugins"] (toggled in the UI); the PLUGINS
 environment variable (comma-separated) sets the default. A broken plugin is skipped and
@@ -48,7 +49,7 @@ def available() -> dict[str, ModuleType]:
 
 def describe() -> list[dict[str, Any]]:
     """Name, description and hooks of every plugin, for /api/config and the UI."""
-    hooks = ("extra_files", "extra_checks", "prompt_notes")
+    hooks = ("extra_files", "extra_checks", "prompt_notes", "tools")
     return [
         {"name": name, "description": getattr(m, "DESCRIPTION", ""), "hooks": [h for h in hooks if hasattr(m, h)],
          "default": name in DEFAULT_PLUGINS}
@@ -86,3 +87,17 @@ def extra_checks(plugins: list[tuple[str, ModuleType]], files: dict[str, str]) -
 def prompt_notes(plugins: list[tuple[str, ModuleType]], stack: str) -> str:
     notes = [_call(name, m, "prompt_notes", stack, default="") for name, m in plugins]
     return "\n".join(f"- {n.strip()}" for n in notes if n and n.strip())
+
+
+def tools(plugins: list[tuple[str, ModuleType]]) -> list[Any]:
+    """Every plugin's tools, described for the model (name and description from the function)."""
+    from .tools import tool_from_function
+
+    found = []
+    for name, m in plugins:
+        for fn in _call(name, m, "tools", default=[]) or []:
+            try:
+                found.append(tool_from_function(fn))
+            except Exception:  # a broken plugin is skipped, never fatal
+                log.exception("plugin %s: tool %r cannot be described", name, fn)
+    return found

@@ -58,9 +58,9 @@ def test_end_to_end_over_http(fake_llm):
         token = me["Authorization"][7:]
         with client.stream("GET", f"/api/runs/{run_id}/events?token={token}") as resp:
             body = "".join(resp.iter_text())
-        assert '"node": "analyze"' in body and '"node": "bug_hunt"' in body
+        assert '"node": "parse_spec"' in body and '"node": "package"' in body
         with client.stream("GET", f"/api/runs/{run_id}/events?token={token}", headers={"Last-Event-ID": "3"}) as resp:
-            assert '"node": "analyze"' not in "".join(resp.iter_text())
+            assert '"node": "parse_spec"' not in "".join(resp.iter_text())
 
         assert "Blueprint" in client.get(f"/api/runs/{run_id}/files/app/routers/post.py", headers=me).text
         z = zipfile.ZipFile(io.BytesIO(client.get(f"/api/runs/{run_id}/download?token={token}").content))
@@ -135,7 +135,7 @@ def test_django_preview_boots_after_migrate(fake_llm):
 
     with TestClient(app) as client:
         me = _login(client)
-        run_id = client.post("/api/runs", json={"prompt": "A blog with posts and comments", "stack": "django", "bug_hunt": False},
+        run_id = client.post("/api/runs", json={"prompt": "A blog with posts and comments", "stack": "django"},
                              headers=me).json()["run_id"]
         assert _wait(client, run_id, {"succeeded", "failed", "error"}, me)["status"] == "succeeded"
         base = client.post(f"/api/runs/{run_id}/preview", headers=me).json()["base"]

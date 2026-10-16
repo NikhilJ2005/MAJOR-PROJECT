@@ -1,0 +1,44 @@
+"""Edge cases derived from the design, not from the code (and written without AI).
+
+What a careless or hostile client would send. Every one must be refused cleanly; a failure here is a
+real bug in the generated code, which the self-healing loop then repairs.
+"""
+
+import pytest
+
+EDGES = {{ edges_json }}
+AUTH = {{ spec.auth | string }}
+
+
+def _writer(edge, user_headers, admin_headers) -> dict:
+    return admin_headers if edge["access"] == "admin" else user_headers
+
+
+WITH_FKS = [e for e in EDGES if e["fk_payload"]]
+BAD = [(e, b) for e in EDGES for b in e["bad"]]
+
+
+@pytest.mark.parametrize("edge", WITH_FKS, ids=[e["name"] for e in WITH_FKS])
+def test_unknown_reference_is_refused(client, edge, user_headers, admin_headers):
+    """Pointing at a row that does not exist must give 409/422, never a 500."""
+    r = client.post(f"/{edge['table']}/", json=edge["fk_payload"], headers=_writer(edge, user_headers, admin_headers))
+    assert r.status_code in (409, 422), r.text
+
+
+@pytest.mark.parametrize("edge,bad", BAD, ids=[f"{e['name']}: {b['why']}" for e, b in BAD])
+def test_rule_breaking_value_is_refused(client, edge, bad, user_headers, admin_headers):
+    r = client.post(f"/{edge['table']}/", json=bad["payload"], headers=_writer(edge, user_headers, admin_headers))
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.parametrize("edge", EDGES, ids=[e["name"] for e in EDGES])
+def test_page_size_is_limited(client, edge, user_headers, admin_headers):
+    r = client.get(f"/{edge['table']}/", params={"limit": 1000}, headers=_writer(edge, user_headers, admin_headers))
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.parametrize("edge", EDGES, ids=[e["name"] for e in EDGES])
+def test_empty_body_is_refused_or_harmless(client, edge, user_headers, admin_headers):
+    """An empty JSON body: 422 when fields are required, otherwise a normal create (never a 500)."""
+    r = client.post(f"/{edge['table']}/", json={}, headers=_writer(edge, user_headers, admin_headers))
+    assert r.status_code in (201, 409, 422), r.text

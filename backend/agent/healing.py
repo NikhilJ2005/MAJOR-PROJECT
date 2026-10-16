@@ -13,6 +13,7 @@ from .state import ProjectSpec
 
 # Order matters: the first matching rule wins.
 _RULES: list[tuple[str, re.Pattern[str]]] = [
+    ("frontend", re.compile(r"FrontendContractError")),
     ("static", re.compile(r"StaticCheckError")),
     ("timeout", re.compile(r"TimeoutError")),
     ("syntax", re.compile(r"\b(SyntaxError|IndentationError|TabError)\b")),
@@ -34,6 +35,10 @@ def classify_error(log: str) -> str:
 
 def locate_failing_file(log: str, files: dict[str, str], spec: ProjectSpec) -> str | None:
     """Best guess at the generated file that holds the root cause."""
+    # 0. The frontend contract check names the JSON file it is about.
+    m = re.search(r"^(app/static/[\w.]+):\d+: FrontendContractError", log, re.MULTILINE)
+    if m and m.group(1) in files:
+        return m.group(1)
     # 1. Python tracebacks: the deepest frame inside generated app code.
     frames = re.findall(r'File "(app/[\w/]+\.py)", line \d+', log)
     # 2. pytest's short tracebacks: "app/routers/post.py:31: in create_post"
@@ -111,7 +116,7 @@ def related_files(path: str, files: dict[str, str]) -> list[str]:
 #      and drop back to the cheap model for the next (new) problem
 #   2. no progress -> climb one rung of the ladder: cheap -> strong -> templates
 #   3. top rung tried without progress                 -> stop
-#   4. code identical to an earlier version (circles)  -> stop
+#   4. code back to an earlier, different version (circles) -> stop
 #   5. token budget spent                               -> stop
 #   6. MAX_HEAL_SAFETY attempts (a seatbelt, not the rule) -> stop
 
@@ -198,7 +203,9 @@ def should_continue(
     if tokens_used >= token_budget:
         return False, f"token budget used up ({tokens_used} of {token_budget})"
     last = history[-1]
-    if any(h["fingerprint"] == last["fingerprint"] for h in history[:-1]):
+    # Circles: the code is back to a version before the previous one. (A repair that changed
+    # nothing is just a stall: it climbs the ladder below instead of ending the run.)
+    if any(h["fingerprint"] == last["fingerprint"] for h in history[:-2]) and history[-2]["fingerprint"] != last["fingerprint"]:
         return False, "going in circles: the code is back to an earlier version"
     rung = repair_rung(history, llm_available)
     if rung is None:

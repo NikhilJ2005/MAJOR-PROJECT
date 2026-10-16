@@ -1,8 +1,26 @@
 @import "tailwindcss";
 
+/* VibeStack: a blueprint workbench. Navy "ink" surfaces, one amber "signal" accent. */
 @theme inline {
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Bricolage Grotesque", "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --color-ink-50: #eef2f8;
+  --color-ink-100: #dce4ef;
+  --color-ink-200: #b9c6d9;
+  --color-ink-300: #8a9bb4;
+  --color-ink-400: #6b7d96;
+  --color-ink-500: #4c5d76;
+  --color-ink-600: #36475f;
+  --color-ink-700: #27374f;
+  --color-ink-800: #1b2a42;
+  --color-ink-900: #142035;
+  --color-ink-950: #0e1828;
+
+  --color-signal-300: #f7d082;
+  --color-signal-400: #f2b544;
+  --color-signal-500: #e09a1c;
 }
 
 html {
@@ -10,8 +28,29 @@ html {
 }
 
 body {
-  background-image: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(56, 189, 248, 0.08), transparent);
-  background-attachment: fixed;
+  background: var(--color-ink-950);
+}
+
+/* The blueprint grid, used once: behind the prompt on the home page. */
+.blueprint {
+  background-image:
+    linear-gradient(rgba(138, 155, 180, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(138, 155, 180, 0.07) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-signal-400);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 ::-webkit-scrollbar {
@@ -19,6 +58,6 @@ body {
   height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #3f3f46;
+  background: var(--color-ink-700);
   border-radius: 4px;
 }

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypeVar
@@ -32,6 +33,12 @@ _PRICE_TABLE: dict[str, tuple[float, float]] = {
     "qwen/qwen3-coder": (0.22, 0.95),
     "deepseek/deepseek-chat-v3.1": (0.20, 0.80),
     "openai/gpt-4o-mini": (0.15, 0.60),
+    # Estimates; free tiers cost nothing within their limits.
+    "openai/gpt-oss-120b": (0.15, 0.60),
+    "openai/gpt-oss-20b": (0.075, 0.30),
+    "gemini-3-flash-preview": (0.50, 3.00),
+    "gemini-2.5-flash": (0.30, 2.50),
+    "gemini-2.5-flash-lite": (0.10, 0.40),
 }
 
 
@@ -119,20 +126,27 @@ def parse_file_blocks(text: str) -> dict[str, str]:
     return files
 
 
-class OpenRouterLLM:
+class ProviderLLM:
+    """Chat models of the configured provider (OpenRouter, Groq, Gemini or any OpenAI-compatible API)."""
+
     def __init__(self) -> None:
         from langchain_openai import ChatOpenAI
+
+        extra = {}
+        if settings.llm_provider == "openrouter":
+            extra = {"extra_body": {"usage": {"include": True}}, "default_headers": {"X-Title": "VibeStack"}}
 
         def make(model: str) -> Any:
             return ChatOpenAI(
                 model=model,
-                api_key=settings.openrouter_api_key,
-                base_url=settings.openrouter_base_url,
+                api_key=settings.llm_api_key,
+                base_url=settings.llm_base_url,
                 temperature=0.1,
-                timeout=120,
-                max_retries=2,  # transient errors: exponential backoff inside the SDK
-                extra_body={"usage": {"include": True}},
-                default_headers={"X-Title": "VibeStack"},
+                timeout=180,
+                # The OpenAI SDK retries rate limits (429) and server errors with exponential
+                # backoff and honours the provider's retry-after header.
+                max_retries=settings.llm_max_retries,
+                **extra,
             )
 
         self._models = {
@@ -140,6 +154,11 @@ class OpenRouterLLM:
             "cheap": (settings.cheap_model, make(settings.cheap_model)),
         }
         self._fallback = (settings.fallback_model, make(settings.fallback_model))
+        self._slots = threading.BoundedSemaphore(max(1, settings.llm_max_parallel))
+
+    def chat(self, role: Role) -> Any:
+        """The LangChain chat model for a role (used by the tool-using Reflector)."""
+        return self._models[role][1]
 
     def complete(self, role: Role, system: str, user: str) -> tuple[str, Usage]:
         attempts = [self._models[role], self._fallback]
@@ -147,13 +166,43 @@ class OpenRouterLLM:
         for name, chat in attempts:
             t0 = time.monotonic()
             try:
-                msg = chat.invoke([("system", system), ("user", user)])
+                with self._slots:  # at most LLM_MAX_PARALLEL calls at once
+                    msg = chat.invoke([("system", system), ("user", user)])
             except Exception as exc:  # noqa: BLE001 - any provider failure triggers fallback
                 log.warning("model %s failed after %.1fs: %s", name, time.monotonic() - t0, exc)
                 last = exc
                 continue
             return _content(msg), _usage(name, msg)
         raise LLMError(f"all models failed: {last}")
+
+    def complete_with_tools(self, role: Role, system: str, user: str, toolbox: Any) -> tuple[str, Usage]:
+        """Let the model call tools (function calling) until it answers, at most toolbox.max_calls calls.
+
+        Each round: the model either asks for tools, we run them and send back the results, or it
+        gives its final answer. When the budget is used up, the last round forbids tools.
+        """
+        from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+
+        name, chat = self._models[role]
+        schemas = [t.schema() for t in toolbox.tools]
+        with_tools = chat.bind_tools(schemas)
+        answer_now = chat.bind_tools(schemas, tool_choice="none")
+        messages: list[Any] = [SystemMessage(system), HumanMessage(user)]
+        usage = Usage()
+        for _ in range(toolbox.max_calls + 2):  # a safety net in case a provider ignores tool_choice
+            model = answer_now if len(toolbox.calls) >= toolbox.max_calls else with_tools
+            with self._slots:
+                msg = model.invoke(messages)
+            usage.add(_usage(name, msg))
+            messages.append(msg)
+            if not msg.tool_calls:
+                return _content(msg), usage
+            for call in msg.tool_calls:
+                messages.append(ToolMessage(toolbox.call(call["name"], call["args"]), tool_call_id=call["id"]))
+        return _content(msg), usage  # the last reply; the caller also keeps the staged write_file changes
+
+
+OpenRouterLLM = ProviderLLM  # old name, kept for scripts
 
 
 def _content(msg: Any) -> str:
@@ -188,7 +237,7 @@ def get_llm() -> LLM | None:
 
             _llm = FakeLLM()
         else:
-            _llm = OpenRouterLLM()
+            _llm = ProviderLLM()
     return _llm
 
 

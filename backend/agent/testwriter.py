@@ -1,9 +1,10 @@
-"""Tests written by AI agents, and the rules that keep them honest.
+"""Business-rule tests written by the Architect, and the rules that keep them honest.
 
-- The Test Engineer writes tests/test_rules.py from the requirements *before* any code exists.
-- The Bug Hunter (bughunt.py) writes tests/test_edge_cases.py after the contract passes.
-- If the Reflector believes one of these tests is wrong, the Judge decides; a test ruled wrong is
-  removed (and logged), the contract tests in tests/test_smoke.py can never be removed.
+- The Architect writes tests/test_rules.py from its requirements *before* any code exists.
+- If the Reflector believes one of those tests is wrong, a strong-model verdict (the "judge" step
+  of the Reflector) decides; a test ruled wrong is removed and logged. The contract tests
+  (tests/test_smoke.py) and the spec-derived edge-case tests (tests/test_edge_cases.py) are
+  generated without AI and can never be removed.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from .state import ProjectSpec
 
 RULE_TESTS = "tests/test_rules.py"
 EDGE_TESTS = "tests/test_edge_cases.py"
-AI_TEST_FILES = (RULE_TESTS, EDGE_TESTS)
+AI_TEST_FILES = (RULE_TESTS,)
 
 
 def valid_test_file(source: str) -> bool:
@@ -32,9 +33,9 @@ def valid_test_file(source: str) -> bool:
 
 
 def write_rule_tests(llm: Any, spec: ProjectSpec) -> tuple[str | None, Usage]:
-    """Ask the Test Engineer for tests/test_rules.py. None if the reply is unusable."""
-    system = prompts.TEST_ENGINEER_SYSTEM.format(helpers=prompts.TEST_HELPERS, contract=prompts.CONTRACT)
-    user = prompts.TEST_ENGINEER_USER.format(
+    """Ask the Architect for tests/test_rules.py. None if the reply is unusable."""
+    system = prompts.RULE_TESTS_SYSTEM.format(helpers=prompts.TEST_HELPERS, contract=prompts.CONTRACT)
+    user = prompts.RULE_TESTS_USER.format(
         requirements=requirements_text(spec.requirements),
         spec=spec.model_dump_json(indent=1, exclude={"requirements"}),
     )

@@ -1,7 +1,13 @@
-# Using VibeStack from an AI assistant (MCP)
+# VibeStack and MCP
 
-VibeStack is an [MCP](https://modelcontextprotocol.io) server. Any MCP client (Claude Desktop, Cursor,
-VS Code, or your own agent) can generate a validated backend as a tool call.
+VibeStack speaks [MCP](https://modelcontextprotocol.io) in both directions:
+
+- **As a server**, AI assistants (Claude Desktop, Cursor, VS Code, or your own agent) can build and edit
+  full-stack apps as a tool call.
+- **As a client**, the Reflector can call the tools of other MCP servers (documentation search, an internal
+  API catalogue, a linter service ...) while it repairs code. See the end of this page.
+
+## VibeStack as an MCP server
 
 - Endpoint: `https://<your-vibestack>/mcp/` (streamable HTTP)
 - Authentication: your VibeStack login token, sent as `Authorization: Bearer <token>`. Get it from
@@ -11,9 +17,10 @@ VS Code, or your own agent) can generate a validated backend as a tool call.
 
 | Tool | What it does |
 |---|---|
-| `generate_backend(prompt, stack="fastapi", wait=true)` | Runs the whole pipeline (requirements, design, tests, code, bug hunt, self-healing) and returns a summary: entities, actions, bugs found and fixed, stop reason, download path |
-| `run_status(run_id)` | The same summary for an earlier run |
-| `list_runs()` | Your 20 most recent runs |
+| `generate_backend(prompt, stack="fastapi", wait=true)` | Creates a project and runs the whole pipeline (design, rule tests, code, validation, self-healing). Returns a summary: project id, version, entities, actions, bugs found and fixed, stop reason, download path |
+| `edit_project(project_id, prompt, wait=true)` | A follow-up change, e.g. "add reviews with a 1-5 rating": builds the next version from the current one |
+| `list_projects()` | Your projects with their latest status |
+| `run_status(run_id)` | The summary of one run (one version) |
 | `list_files(run_id)` | Every file path in the generated project |
 | `read_file(run_id, path)` | One file, e.g. `app/services/order.py` |
 
@@ -47,3 +54,19 @@ async with httpx2.AsyncClient(headers={"Authorization": f"Bearer {token}"}, time
 ```
 
 `backend/tests/test_mcp.py` does exactly this against a real server.
+
+## VibeStack as an MCP client (tools for the Reflector)
+
+When a build fails validation, the Reflector repairs it with tools: `read_file`, `list_files`,
+`search_code`, `list_routes`, `write_file` (stage a fix), `run_tests` and `check_frontend`.
+Any MCP server can add more. List the servers in `MCP_SERVERS`:
+
+```bash
+MCP_SERVERS='[{"name": "docs", "url": "https://example.com/mcp", "headers": {"Authorization": "Bearer ..."}}]'
+```
+
+At the start of each repair, VibeStack asks every server for its tools and offers them to the model as
+`<server>__<tool>` (for example `docs__search`). A server that cannot be reached is skipped and logged.
+Every call (tool, arguments, first line of the result) is written to the ledger and shown under the
+Reflector in the UI. The code is in `backend/agent/mcp_tools.py`; `backend/tests/test_tools.py` runs it
+against an in-process MCP server.

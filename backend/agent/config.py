@@ -14,20 +14,51 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+# Every provider speaks the OpenAI chat API, so switching is just a different URL, key and models.
+# name: (base URL, API-key variable, strong model, cheap model, fallback model)
+PROVIDERS: dict[str, tuple[str, str, str, str, str]] = {
+    "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY",
+                   "anthropic/claude-sonnet-4.6", "qwen/qwen3-coder", "deepseek/deepseek-chat-v3.1"),
+    "groq": ("https://api.groq.com/openai/v1", "GROQ_API_KEY",
+             "openai/gpt-oss-120b", "openai/gpt-oss-20b", "openai/gpt-oss-20b"),
+    "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai/", "GEMINI_API_KEY",
+               "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"),
+    "openai_compatible": ("", "LLM_API_KEY", "", "", ""),
+}
+
+
+def _provider() -> str:
+    """LLM_PROVIDER, or else the first provider whose API key is set."""
+    chosen = os.environ.get("LLM_PROVIDER", "").strip().lower()
+    if chosen in PROVIDERS:
+        return chosen
+    for name, (_, key_var, *_) in PROVIDERS.items():
+        if os.environ.get(key_var):
+            return name
+    return "openrouter"
+
+
+def _from_provider(index: int, override: str) -> str:
+    """A provider default (URL/model) that an environment variable may override."""
+    return os.environ.get(override) or PROVIDERS[_provider()][index]
+
+
 @dataclass(frozen=True)
 class Settings:
-    openrouter_api_key: str = field(default_factory=lambda: os.environ.get("OPENROUTER_API_KEY", ""))
-    openrouter_base_url: str = field(
-        default_factory=lambda: os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    llm_provider: str = field(default_factory=_provider)
+    llm_base_url: str = field(default_factory=lambda: _from_provider(0, "LLM_BASE_URL"))
+    llm_api_key: str = field(
+        default_factory=lambda: os.environ.get(PROVIDERS[_provider()][1]) or os.environ.get("LLM_API_KEY", "")
     )
-    # Tiered routing: strong model for spec + codegen, cheap model for review + healing.
-    strong_model: str = field(
-        default_factory=lambda: os.environ.get("STRONG_MODEL", "anthropic/claude-sonnet-4.6")
+    # Tiered routing: strong model for design + code, cheap model for the first repairs.
+    strong_model: str = field(default_factory=lambda: _from_provider(2, "STRONG_MODEL"))
+    cheap_model: str = field(default_factory=lambda: _from_provider(3, "CHEAP_MODEL"))
+    fallback_model: str = field(default_factory=lambda: _from_provider(4, "FALLBACK_MODEL"))
+    # Free tiers allow few tokens per minute: call the model fewer times at once, and retry 429s.
+    llm_max_parallel: int = field(
+        default_factory=lambda: _env_int("LLM_MAX_PARALLEL", 4 if _provider() == "openrouter" else 1)
     )
-    cheap_model: str = field(default_factory=lambda: os.environ.get("CHEAP_MODEL", "qwen/qwen3-coder"))
-    fallback_model: str = field(
-        default_factory=lambda: os.environ.get("FALLBACK_MODEL", "deepseek/deepseek-chat-v3.1")
-    )
+    llm_max_retries: int = field(default_factory=lambda: _env_int("LLM_MAX_RETRIES", 6))
 
     # "llm" lets the model write entity files; "template" is fully deterministic.
     codegen_mode: str = field(default_factory=lambda: os.environ.get("CODEGEN_MODE", "llm"))
@@ -61,7 +92,7 @@ class Settings:
 
     @property
     def llm_enabled(self) -> bool:
-        return bool(self.openrouter_api_key) or self.fake_llm
+        return bool(self.llm_api_key) or self.fake_llm
 
     @property
     def runs_dir(self) -> Path:
@@ -74,6 +105,19 @@ class Settings:
     @property
     def platform_db(self) -> Path:
         return self.data_dir / "platform.sqlite"
+
+    @property
+    def platform_database_url(self) -> str:
+        """Accounts, projects and run state: SQLite in DATA_DIR, or Postgres (PLATFORM_DATABASE_URL)."""
+        url = os.environ.get("PLATFORM_DATABASE_URL", "")
+        if not url:
+            return f"sqlite:///{self.platform_db}"
+        # Railway gives postgres:// or postgresql://; SQLAlchemy needs the psycopg (v3) driver named.
+        return url.replace("postgres://", "postgresql://", 1).replace("postgresql://", "postgresql+psycopg://", 1)
+
+    @property
+    def uses_postgres(self) -> bool:
+        return self.platform_database_url.startswith("postgresql")
 
 
 settings = Settings()

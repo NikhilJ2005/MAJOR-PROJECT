@@ -54,7 +54,7 @@ def test_bug_list_tracks_who_found_what_and_marks_fixes():
            "FAILED tests/test_smoke.py::test_crud[Post] - assert 200 == 201\n2 failed")
     assert failing_tests(log) == [("tests/test_edge_cases.py", "test_unknown_fk"), ("tests/test_smoke.py", "test_crud[Post]")]
     bugs = update_bugs([], {"ok": False, "gate": "tests", "log": log})
-    assert [(b["found_by"], b["fixed"]) for b in bugs] == [("bug hunter", False), ("contract tests", False)]
+    assert [(b["found_by"], b["fixed"]) for b in bugs] == [("edge-case tests", False), ("contract tests", False)]
     bugs = update_bugs(bugs, {"ok": False, "gate": "tests", "log": log})
     assert len(bugs) == 2  # the same failure is not counted twice
     bugs = update_bugs(bugs, {"ok": True, "gate": "tests", "log": "5 passed"})

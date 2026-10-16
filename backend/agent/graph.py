@@ -1,11 +1,8 @@
-"""The VibeStack harness as a LangGraph state machine.
+"""The VibeStack harness as a LangGraph state machine of 8 agents.
 
-    analyze -> parse_spec -> plan -> write_tests -> generate -> validate
-    validate --ok, first time---------------> bug_hunt -> validate
-    validate --ok, after the hunt-----------> package -> END
-    validate --fail, still making progress--> classify -> reflect -> validate
-    validate --fail, no more progress-------> failure_report -> END
-                                               (or hunt_giveup -> validate during the hunt)
+    Architect -> Planner -> Code Generator -> Validator --ok-----------------------> Packager -> END
+                                              Validator --fail, making progress--> Error Classifier -> Reflector -> Validator
+                                              Validator --fail, no progress------> Circuit Breaker -> END
 
 Run from the CLI:
     python -m agent.graph "a todo API with users and tasks" [--stack flask] [--template]
@@ -30,14 +27,10 @@ from .config import settings
 from .state import AgentState
 
 NODE_ORDER = [
-    "analyze",
     "parse_spec",
     "plan",
-    "write_tests",
     "generate",
     "validate",
-    "bug_hunt",
-    "hunt_giveup",
     "classify",
     "reflect",
     "package",
@@ -50,19 +43,11 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     for name in NODE_ORDER:
         g.add_node(name, getattr(nodes, name))
 
-    g.add_edge(START, "analyze")
-    g.add_edge("analyze", "parse_spec")
+    g.add_edge(START, "parse_spec")
     g.add_edge("parse_spec", "plan")
-    g.add_edge("plan", "write_tests")
-    g.add_edge("write_tests", "generate")
+    g.add_edge("plan", "generate")
     g.add_edge("generate", "validate")
-    g.add_conditional_edges(
-        "validate",
-        nodes.route_after_validate,
-        ["bug_hunt", "package", "classify", "hunt_giveup", "failure_report"],
-    )
-    g.add_conditional_edges("bug_hunt", nodes.route_after_hunt, ["validate", "package"])
-    g.add_edge("hunt_giveup", "validate")
+    g.add_conditional_edges("validate", nodes.route_after_validate, ["package", "classify", "failure_report"])
     g.add_edge("classify", "reflect")
     g.add_edge("reflect", "validate")
     g.add_edge("package", END)
@@ -70,7 +55,18 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     return g.compile(checkpointer=checkpointer or InMemorySaver())
 
 
-def sqlite_checkpointer():
+def checkpointer():
+    """Where every step of every run is saved: Postgres when configured, else SQLite in DATA_DIR."""
+    if settings.uses_postgres:
+        import psycopg
+        from langgraph.checkpoint.postgres import PostgresSaver
+        from psycopg.rows import dict_row
+
+        url = settings.platform_database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+        conn = psycopg.connect(url, autocommit=True, prepare_threshold=0, row_factory=dict_row)
+        saver = PostgresSaver(conn)
+        saver.setup()  # creates its tables the first time
+        return saver
     from langgraph.checkpoint.sqlite import SqliteSaver
 
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -78,7 +74,13 @@ def sqlite_checkpointer():
     return SqliteSaver(conn)
 
 
-def initial_state(prompt: str, options: dict[str, Any] | None = None, spec: dict | None = None) -> dict[str, Any]:
+sqlite_checkpointer = checkpointer  # old name
+
+
+def initial_state(
+    prompt: str, options: dict[str, Any] | None = None, spec: dict | None = None, base: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """The input of a run. `base` (run_id, spec, files) makes it a follow-up edit of that version."""
     state: dict[str, Any] = {
         "run_id": uuid.uuid4().hex[:12],
         "prompt": prompt,
@@ -90,6 +92,8 @@ def initial_state(prompt: str, options: dict[str, Any] | None = None, spec: dict
     }
     if spec:
         state["spec"] = spec
+    if base:
+        state.update(base_run_id=base["run_id"], base_spec=base["spec"], base_files=base["files"])
     return state
 
 

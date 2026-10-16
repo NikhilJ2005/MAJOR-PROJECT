@@ -1,23 +1,20 @@
-"""LangGraph nodes: one function per agent. Each takes the state and returns the part it changed.
+"""LangGraph nodes: one function per agent (8 agents). Each takes the state and returns what it changed.
 
-    analyze      Requirements Analyst   prompt -> numbered requirements
-    parse_spec   Architect              requirements -> ProjectSpec (entities, access, actions)
-    plan         Planner                file plan + verified templates for the chosen framework
-    write_tests  Test Engineer          business-rule tests, written before any code exists
-    generate     API Engineer           per-entity code (models, schemas, services, routers)
-    validate     Validator              static checks -> import -> boot -> tests
-    bug_hunt     Bug Hunter             adversarial tests once the contract passes
-    classify     Error Classifier       which kind of failure, in which file
-    reflect      Reflector (+ Judge)    repair, escalating only when there is no progress
-    hunt_giveup                         keep the last passing code if an edge case can't be fixed
-    package      Packager               migrations, README, zip
-    failure_report  Circuit breaker     diagnostic report when healing stops making progress
+    parse_spec      Architect          prompt -> requirements + design (+ rule tests, before any code)
+    plan            Planner            file plan + verified templates for the chosen framework
+    generate        Code Generator     backend (models, schemas, services, routers) + frontend
+    validate        Validator          static checks -> import -> boot -> contract, edge-case and rule tests
+    classify        Error Classifier   which kind of failure, in which file
+    reflect         Reflector          repair with tools, escalating only when there is no progress
+    package         Packager           migrations, README, zip
+    failure_report  Circuit Breaker    diagnostic report when healing stops making progress
 
 Every node appends to the change ledger, which makes a run explainable after the fact.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections import Counter
@@ -25,10 +22,11 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from . import plugins, prompts
-from .analysis import RequirementList, check_coverage, requirements_text
-from .bughunt import failing_tests, static_check, update_bugs, write_edge_tests
+from .analysis import check_coverage, requirements_text
+from .bughunt import failing_tests, static_check, update_bugs
 from .codegen import plan_files, render_project
 from .config import settings
+from .frontend import UI, UIConfig, check_frontend, default_ui
 from .healing import (
     classify_error,
     history_entry,
@@ -39,6 +37,7 @@ from .healing import (
 )
 from .ledger import diff, entry, ledger_markdown, model_names, write_artifact
 from .llm import LLMError, Usage, check_budget, get_llm, parse_file_blocks, structured
+from .mcp_tools import load_tools as load_mcp_tools
 from .sandbox import GateResult, get_sandbox
 from .stacks import entity_files, get_stack
 from .state import AgentState, EntitySpec, ProjectSpec
@@ -53,6 +52,7 @@ from .testwriter import (
     remove_test,
     write_rule_tests,
 )
+from .tools import Toolbox
 
 log = logging.getLogger(__name__)
 
@@ -76,89 +76,125 @@ def _count_tests(source: str) -> int:
 def _require_llm() -> Any:
     llm = get_llm()
     if llm is None:
-        raise LLMError("OPENROUTER_API_KEY is not set and no spec was provided")
+        raise LLMError("no LLM API key is set (GROQ_API_KEY, GEMINI_API_KEY or OPENROUTER_API_KEY) and no spec was provided")
     return llm
 
 
-# --------------------------------------------------------------------------- requirements + design
+# --------------------------------------------------------------------------- Architect
 
 
-def analyze(state: AgentState) -> dict[str, Any]:
-    """Requirements Analyst: split the prompt into small, testable requirements."""
-    if state.get("spec"):
-        reqs = state["spec"].get("requirements") or []
-        return {
-            "requirements": reqs,
-            "status": "analyzed",
-            "ledger": [entry("analyst", f"used {len(reqs)} requirements from the provided spec", "spec supplied with the request")],
-        }
-    result, usage = structured(
-        _require_llm(), "strong", prompts.ANALYST_SYSTEM, prompts.ANALYST_USER.format(prompt=state["prompt"]), RequirementList
-    )
-    reqs = [r.model_dump() for r in result.requirements]
-    kinds = Counter(r["kind"] for r in reqs)
-    summary = ", ".join(f"{n} {kind}" for kind, n in kinds.most_common())
-    return {
-        "requirements": reqs,
-        "status": "analyzed",
-        "usage": usage.as_state(),
-        "ledger": [
-            entry("analyst", f"listed {len(reqs)} requirements ({summary})", "a long request becomes small, testable pieces",
-                  tokens=usage.total_tokens, model=model_names(usage))
-        ],
-    }
-
-
-def _finish_spec(spec: ProjectSpec, requirements: list[dict], stack: str | None) -> ProjectSpec:
-    """Attach the Analyst's requirements and the chosen framework to the Architect's design."""
+def _with_stack(spec: ProjectSpec, stack: str | None) -> ProjectSpec:
+    """The design with the framework the user picked."""
     raw = spec.model_dump()
-    raw["requirements"] = requirements
     raw["stack"] = stack or raw.get("stack") or "fastapi"
     return ProjectSpec.model_validate(raw)
 
 
+def _design(llm: Any, state: AgentState) -> tuple[ProjectSpec, list[str], Usage]:
+    """Call 1: requirements + design in one reply, with one retry if a requirement is not covered.
+
+    For a follow-up edit the Architect gets the current design plus the change request.
+    """
+    base = ProjectSpec.model_validate(state["base_spec"]) if state.get("base_spec") else None
+    stack = base.stack if base else _opts(state).get("stack")
+    if base:
+        user = prompts.EDIT_USER.format(spec=base.model_dump_json(indent=1, exclude={"stack"}), prompt=state["prompt"])
+    else:
+        user = prompts.SPEC_USER.format(prompt=state["prompt"])
+
+    def ask(text: str, usage: Usage | None = None) -> tuple[ProjectSpec, Usage]:
+        spec, used = structured(llm, "strong", prompts.SPEC_SYSTEM, text, ProjectSpec)
+        if usage:
+            used.add(usage)
+        raw = spec.model_dump()
+        if base:
+            raw["project_name"] = base.project_name  # an edit never renames the project
+        return _with_stack(ProjectSpec.model_validate(raw), stack), used
+
+    spec, usage = ask(user)
+    missing = check_coverage(spec)
+    if missing:
+        spec, usage = ask(user + "\n\n" + prompts.SPEC_COVERAGE_RETRY.format(missing=", ".join(missing)), usage)
+        missing = check_coverage(spec)
+    return spec, missing, usage
+
+
+def design_changes(old: ProjectSpec, new: ProjectSpec) -> dict[str, list[str]]:
+    """Which entities a follow-up edit added, changed or removed (actions count as part of their entity)."""
+    def shape(spec: ProjectSpec) -> dict[str, str]:
+        return {e.name: json.dumps([e.model_dump(exclude={"requirement_ids"}), [a.model_dump() for a in spec.actions_for(e)],
+                                    spec.auth]) for e in spec.entities}
+
+    before, after = shape(old), shape(new)
+    return {
+        "added": [n for n in after if n not in before],
+        "changed": [n for n in after if n in before and before[n] != after[n]],
+        "removed": [n for n in before if n not in after],
+    }
+
+
+def _rule_tests(llm: Any, spec: ProjectSpec, ledger: list[dict[str, Any]], usage: Usage) -> dict[str, str]:
+    """Call 2: business-rule tests from the requirements, written before any code exists."""
+    if not needs_rule_tests(spec):
+        return {}
+    try:
+        source, more = write_rule_tests(llm, spec)
+    except LLMError as exc:
+        ledger.append(entry("architect", "no rule tests written", str(exc)))
+        return {}
+    usage.add(more)
+    if source is None:
+        ledger.append(entry("architect", "rule-test reply was not usable", "relying on contract + edge-case tests"))
+        return {}
+    ledger.append(entry("architect", f"wrote {_count_tests(source)} business-rule tests",
+                        "from the requirements only, before any code exists", files=[RULE_TESTS]))
+    return {RULE_TESTS: source}
+
+
 def parse_spec(state: AgentState) -> dict[str, Any]:
-    """Architect: requirements -> a validated ProjectSpec, checked for full requirement coverage."""
+    """Architect: prompt -> requirements + a validated design (+ rule tests written before the code)."""
     stack = _opts(state).get("stack")
     if state.get("spec"):
-        spec = _finish_spec(ProjectSpec.model_validate(state["spec"]), state.get("requirements") or [], stack)
+        spec = _with_stack(ProjectSpec.model_validate(state["spec"]), stack)
         return {
             "spec": spec.model_dump(),
             "status": "spec_ready",
             "ledger": [entry("architect", f"used provided spec ({spec.stack})", "spec supplied with the request")],
         }
     llm = _require_llm()
-    requirements = state.get("requirements") or []
-    user = prompts.SPEC_USER.format(prompt=state["prompt"], requirements=requirements_text(requirements))
-    spec, usage = structured(llm, "strong", prompts.SPEC_SYSTEM, user, ProjectSpec)
-    spec = _finish_spec(spec, requirements, stack)
-    missing = check_coverage(spec)
-    if missing:
-        retry = user + "\n\n" + prompts.SPEC_COVERAGE_RETRY.format(missing=", ".join(missing))
-        second, more = structured(llm, "strong", prompts.SPEC_SYSTEM, retry, ProjectSpec)
-        usage.add(more)
-        spec = _finish_spec(second, requirements, stack)
-        missing = check_coverage(spec)
+    spec, missing, usage = _design(llm, state)
+    changes = design_changes(ProjectSpec.model_validate(state["base_spec"]), spec) if state.get("base_spec") else None
+    kinds = Counter(r.kind for r in spec.requirements)
     names = ", ".join(e.name for e in spec.entities)
-    action = f"designed {len(spec.entities)} entities ({names})"
+    action = f"listed {len(spec.requirements)} requirements ({', '.join(f'{n} {k}' for k, n in kinds.most_common())}); "
+    action += f"designed {len(spec.entities)} entities ({names})"
     action += f", {len(spec.actions)} custom actions" if spec.actions else ""
     action += " + JWT auth" if spec.auth else ""
     coverage = "all requirements covered" if not missing else f"not covered: {', '.join(missing)}"
-    return {
-        "spec": spec.model_dump(),
-        "status": "spec_ready",
-        "usage": usage.as_state(),
-        "ledger": [entry("architect", action, coverage, tokens=usage.total_tokens, model=model_names(usage))],
-    }
+    if changes is not None:
+        summary = "; ".join(f"{kind}: {', '.join(names)}" for kind, names in changes.items() if names) or "no entity changed"
+        action = f"updated the design ({summary})"
+    ledger = [entry("architect", action, coverage, model=model_names(usage))]
+    files = _rule_tests(llm, spec, ledger, usage)
+    ledger[0]["tokens"] = usage.total_tokens
+    out: dict[str, Any] = {"spec": spec.model_dump(), "status": "spec_ready", "usage": usage.as_state(), "ledger": ledger}
+    if files:
+        out["files"] = files
+    if changes is not None:
+        out["changes"] = changes
+    return out
 
 
-# --------------------------------------------------------------------------- plan, tests first, generate
+# --------------------------------------------------------------------------- plan + generate
 
 
 def plan(state: AgentState) -> dict[str, Any]:
     spec = _spec(state)
     file_plan = plan_files(spec)
     template_files = render_project(spec)
+    if _opts(state).get("edge_tests") is False:  # ablation study: run without the spec-derived edge-case tests
+        template_files.pop(EDGE_TESTS, None)
+        file_plan = [f for f in file_plan if f["path"] != EDGE_TESTS]
     ledger = [
         entry(
             "planner",
@@ -176,34 +212,8 @@ def plan(state: AgentState) -> dict[str, Any]:
         "file_plan": file_plan,
         "template_files": template_files,
         "status": "planned",
-        "phase": "build",
         "ledger": ledger,
     }
-
-
-def write_tests(state: AgentState) -> dict[str, Any]:
-    """Test Engineer: business-rule tests from the requirements, before any code exists."""
-    spec = _spec(state)
-    llm = get_llm()
-    if llm is None or not needs_rule_tests(spec):
-        why = "no model available" if llm is None else "plain CRUD: the contract tests cover it"
-        return {"status": "tests_written", "ledger": [entry("test_engineer", "no rule tests written", why)]}
-    try:
-        check_budget(state.get("usage"))
-        source, usage = write_rule_tests(llm, spec)
-    except LLMError as exc:
-        return {"status": "tests_written", "ledger": [entry("test_engineer", "no rule tests written", str(exc))]}
-    out: dict[str, Any] = {"status": "tests_written", "usage": usage.as_state()}
-    if source is None:
-        out["ledger"] = [entry("test_engineer", "reply was not a usable test file", "relying on the contract tests",
-                               tokens=usage.total_tokens, model=model_names(usage))]
-        return out
-    out["files"] = {RULE_TESTS: source}
-    out["ledger"] = [
-        entry("test_engineer", f"wrote {_count_tests(source)} business-rule tests", "from the requirements only, before any code exists",
-              files=[RULE_TESTS], tokens=usage.total_tokens, model=model_names(usage))
-    ]
-    return out
 
 
 def generate(state: AgentState) -> dict[str, Any]:
@@ -214,19 +224,32 @@ def generate(state: AgentState) -> dict[str, Any]:
     mode = _opts(state).get("codegen_mode") or settings.codegen_mode
     llm = get_llm() if mode == "llm" else None
 
+    # Follow-up edit: entities the Architect did not touch keep the code of the previous version.
+    changes, base_files = state.get("changes"), state.get("base_files") or {}
+    todo = spec.entities
+    if changes is not None:
+        touched = set(changes["added"]) | set(changes["changed"])
+        kept = [e for e in spec.entities if e.name not in touched]
+        for e in kept:
+            files.update({p: base_files[p] for p in entity_files(e) if p in base_files})
+        todo = [e for e in spec.entities if e.name in touched]
+        if kept:
+            ledger.append(entry("code_generator", f"kept {', '.join(e.name for e in kept)} from version before",
+                                "unchanged by the edit, so their code (and its fixes) is reused"))
+
     if llm is None:
-        ledger.append(entry("api_engineer", f"rendered {len(files)} files from templates", "deterministic codegen", files=sorted(files)))
+        ledger.append(entry("code_generator", f"rendered {len(files)} files from templates", "deterministic codegen", files=sorted(files)))
     else:
         def work(e: EntitySpec) -> tuple[EntitySpec, dict[str, str], str, Usage]:
             return (e, *_generate_entity(llm, state, spec, e, files))
 
         with ThreadPoolExecutor(max_workers=4) as pool:
-            for e, new_files, rationale, usage in pool.map(work, spec.entities):
+            for e, new_files, rationale, usage in pool.map(work, todo):
                 total.add(usage)
                 files.update(new_files)
                 ledger.append(
                     entry(
-                        "api_engineer",
+                        "code_generator",
                         f"wrote {e.name} model/schema/service/router" if new_files else f"kept template for {e.name}",
                         rationale,
                         files=sorted(new_files),
@@ -235,10 +258,32 @@ def generate(state: AgentState) -> dict[str, Any]:
                     )
                 )
 
+        same_entities = changes is not None and not changes["added"] and not changes["removed"]
+        if same_entities and UI in base_files:
+            ui, rationale, usage = base_files[UI], "same entities as before: the app keeps its look", Usage()
+        else:
+            ui, rationale, usage = _design_ui(llm, state, spec)
+        total.add(usage)
+        if ui:
+            files[UI] = ui
+        ledger.append(entry("code_generator", "designed the web app (name, colours, menu, dashboard)" if ui else "kept the default web app look",
+                            rationale, files=[UI] if ui else [], tokens=usage.total_tokens, model=model_names(usage)))
+
     out: dict[str, Any] = {"files": files, "status": "generated", "iteration": 0, "ledger": ledger}
     if total.calls:
         out["usage"] = total.as_state()
     return out
+
+
+def _design_ui(llm: Any, state: AgentState, spec: ProjectSpec) -> tuple[str | None, str, Usage]:
+    """The look of the generated web app, as validated JSON (the app code itself is fixed and tested)."""
+    user = prompts.UI_USER.format(prompt=state["prompt"], spec=spec.model_dump_json(include={"project_name", "entities"}),
+                                  default=json.dumps(default_ui(spec)))
+    try:
+        ui, usage = structured(llm, "cheap", prompts.UI_SYSTEM, user, UIConfig)
+    except LLMError as exc:
+        return None, f"kept the default look ({exc})", Usage()
+    return json.dumps(ui.model_dump(), indent=1) + "\n", "the app's name, colours and dashboard fit the domain", usage
 
 
 def _generate_entity(
@@ -276,9 +321,9 @@ def validate(state: AgentState) -> dict[str, Any]:
     spec = _spec(state)
     files = state["files"]
     findings = static_check(files) + plugins.extra_checks(_plugins(state), files)
-    blocking = [f for f in findings if f.severity == "high"]
+    blocking = [f.log_line() for f in findings if f.severity == "high"] + check_frontend(files, spec)
     if blocking:
-        result = GateResult(False, "static", "\n".join(f.log_line() for f in blocking), 0.0)
+        result = GateResult(False, "static", "\n".join(blocking), 0.0)
     else:
         result = get_sandbox().validate(files, spec.stack)
     validation = result.as_state()
@@ -286,12 +331,7 @@ def validate(state: AgentState) -> dict[str, Any]:
     bugs = update_bugs(state.get("bugs", []), validation)
     it = state.get("iteration", 0)
     action = f"all gates passed in {result.duration_s:.1f}s" if result.ok else f"failed at gate '{result.gate}' after {result.duration_s:.1f}s"
-    ledger = [entry("validator", action, "static checks -> import -> boot -> tests", iteration=it)]
-    if state.get("phase") == "hunt" and len(history) == 1:
-        found = [b for b in bugs if b["found_by"] == "bug hunter" and not b["fixed"]]
-        names = ", ".join(b["detail"] for b in found)
-        ledger.append(entry("bug_hunter", f"found {len(found)} bug(s)" + (f": {names}" if found else ": every edge case passed"),
-                            "failures of its own adversarial tests are real bugs"))
+    ledger = [entry("validator", action, "static checks -> import -> boot -> contract, edge-case and rule tests", iteration=it)]
     return {
         "validation": validation,
         "heal_history": history,
@@ -303,7 +343,16 @@ def validate(state: AgentState) -> dict[str, Any]:
 
 
 def _keep_healing(state: AgentState) -> tuple[bool, str]:
-    """Ask healing.should_continue with this run's numbers."""
+    """Ask healing.should_continue with this run's numbers.
+
+    The ablation study can replace the dynamic rule with the usual fixed retry count
+    (option fixed_repairs=N): then the run gets exactly N repairs, progress or not.
+    """
+    fixed = _opts(state).get("fixed_repairs")
+    if fixed is not None:
+        attempts = max(len(state.get("heal_history", [])) - 1, 0)
+        return (True, f"fixed policy: repair {attempts + 1} of {fixed}") if attempts < fixed else (
+            False, f"fixed limit of {fixed} repair attempts reached")
     return should_continue(
         state.get("heal_history", []),
         tokens_used=int((state.get("usage") or {}).get("total_tokens", 0)),
@@ -314,67 +363,10 @@ def _keep_healing(state: AgentState) -> tuple[bool, str]:
 
 
 def route_after_validate(state: AgentState) -> str:
-    phase = state.get("phase", "build")
     if state["validation"]["ok"]:
-        hunt = phase == "build" and get_llm() is not None and _opts(state).get("bug_hunt", True)
-        return "bug_hunt" if hunt else "package"
+        return "package"
     keep_going, _ = _keep_healing(state)
-    if keep_going:
-        return "classify"
-    return "hunt_giveup" if phase == "hunt" else "failure_report"
-
-
-# --------------------------------------------------------------------------- bug hunt
-
-
-def bug_hunt(state: AgentState) -> dict[str, Any]:
-    """Bug Hunter: adversarial tests against code that already passes its contract."""
-    spec = _spec(state)
-    out: dict[str, Any] = {"phase": "hunt", "heal_history": [], "safe_files": dict(state["files"]), "status": "hunting"}
-    try:
-        check_budget(state.get("usage"))
-        source, focus, usage = write_edge_tests(_require_llm(), spec, state["files"])
-    except LLMError as exc:
-        return {**out, "phase": "done", "ledger": [entry("bug_hunter", "skipped", str(exc))]}
-    out["usage"] = usage.as_state()
-    if source is None:
-        out.update(phase="done", ledger=[entry("bug_hunter", "reply was not a usable test file", "nothing to run",
-                                               tokens=usage.total_tokens, model=model_names(usage))])
-        return out
-    out["files"] = {EDGE_TESTS: source}
-    out["ledger"] = [
-        entry("bug_hunter", f"wrote {_count_tests(source)} adversarial tests", f"probing: {focus}", files=[EDGE_TESTS],
-              tokens=usage.total_tokens, model=model_names(usage))
-    ]
-    return out
-
-
-def route_after_hunt(state: AgentState) -> str:
-    return "validate" if state.get("phase") == "hunt" else "package"
-
-
-def hunt_giveup(state: AgentState) -> dict[str, Any]:
-    """Some edge cases could not be fixed: deliver the last passing code and list them as open issues."""
-    files = state["files"]
-    failing = [name for path, name in failing_tests(state["validation"]["log"]) if path == EDGE_TESTS]
-    edge = files.get(EDGE_TESTS, "")
-    for name in failing:
-        edge = remove_test(edge, name)
-    restored = {p: c for p, c in (state.get("safe_files") or {}).items() if files.get(p) != c}
-    restored[EDGE_TESTS] = edge if failing else ""
-    bugs = [{**b, "open": True} if b["found_by"] == "bug hunter" and not b["fixed"] else b for b in state.get("bugs", [])]
-    _, reason = _keep_healing(state)
-    return {
-        "files": restored,
-        "bugs": bugs,
-        "phase": "final",
-        "heal_history": [],
-        "status": "repaired",
-        "ledger": [
-            entry("bug_hunter", f"{len(failing) or 'some'} edge case(s) left open; kept the last passing code",
-                  f"healing stopped ({reason}); open issues are listed in the ledger", files=sorted(restored))
-        ],
-    }
+    return "classify" if keep_going else "failure_report"
 
 
 # --------------------------------------------------------------------------- heal
@@ -417,15 +409,19 @@ def reflect(state: AgentState) -> dict[str, Any]:
     changed: dict[str, str] = {}
     diagnosis = ""
     agent = "reflector"
+    tool_calls: list[dict[str, Any]] = []
 
     llm = get_llm()
     rung = repair_rung(state.get("heal_history", []), llm is not None)
     if llm is not None and path and rung in ("cheap", "strong"):
         try:
             check_budget(state.get("usage"))
-            text, usage = _llm_repair(llm, rung, state, path, attempt)
+            text, usage, box = _llm_repair(llm, rung, state, path, attempt)
             agent = f"reflector ({rung})"
             changed, diagnosis = _parse_repair(text, files)
+            if box is not None:
+                changed = {**box.changes(), **changed}  # staged with write_file, unless the answer repeats it
+                tool_calls = box.calls
             dispute = parse_dispute(text)
             if not changed and dispute:
                 changed, diagnosis, agent, more = _settle_dispute(llm, state, *dispute)
@@ -455,6 +451,7 @@ def reflect(state: AgentState) -> dict[str, Any]:
                 iteration=attempt,
                 model=model_names(usage),
                 diff={p: diff(p, files.get(p, ""), body) for p, body in changed.items()},
+                tools=tool_calls,
             )
         ],
     }
@@ -473,7 +470,8 @@ def _failing_test_sources(log: str, files: dict[str, str], limit: int = 3) -> st
     return "\n\n".join(parts) or "(none)"
 
 
-def _llm_repair(llm: Any, role: str, state: AgentState, path: str, attempt: int) -> tuple[str, Usage]:
+def _llm_repair(llm: Any, role: str, state: AgentState, path: str, attempt: int) -> tuple[str, Usage, Toolbox | None]:
+    """Ask the model for a repair; with tools (the default) it can read, search and run tests first."""
     spec = _spec(state)
     v = state["validation"]
     files = state["files"]
@@ -495,7 +493,17 @@ def _llm_repair(llm: Any, role: str, state: AgentState, path: str, attempt: int)
     notes = plugins.prompt_notes(_plugins(state), spec.stack)
     if notes:
         system += f"\n- Also follow these project rules:\n{notes}"
-    return llm.complete(role, system, user)
+    if _opts(state).get("tools", True) and hasattr(llm, "complete_with_tools"):
+        box = Toolbox(files, spec, extra=plugins.tools(_plugins(state)) + load_mcp_tools())
+        try:
+            text, usage = llm.complete_with_tools(role, system + prompts.REFLECT_TOOLS.format(max_calls=box.max_calls), user, box)
+            return text, usage, box
+        except LLMError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - e.g. a model without function calling: repair without tools
+            log.warning("tool-using repair failed (%s); repairing without tools", exc)
+    text, usage = llm.complete(role, system, user)
+    return text, usage, None
 
 
 def _parse_repair(text: str, files: dict[str, str]) -> tuple[dict[str, str], str]:
@@ -567,18 +575,13 @@ def failure_report(state: AgentState) -> dict[str, Any]:
 
 
 __all__ = [
-    "analyze",
-    "bug_hunt",
     "classify",
     "failure_report",
     "generate",
-    "hunt_giveup",
     "package",
     "parse_spec",
     "plan",
     "reflect",
-    "route_after_hunt",
     "route_after_validate",
     "validate",
-    "write_tests",
 ]

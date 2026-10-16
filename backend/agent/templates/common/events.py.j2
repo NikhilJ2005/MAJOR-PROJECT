@@ -1,0 +1,58 @@
+"""Live updates: every change is published here and streamed to browsers as Server-Sent Events.
+
+Plain standard library (queue + threading), so it works the same in FastAPI, Flask and Django.
+`?replay=1` returns the recent events and ends, which is handy for tests and for clients catching up.
+"""
+
+import json
+import queue
+import threading
+from collections import deque
+
+_lock = threading.Lock()
+_listeners: dict[str, list[queue.Queue]] = {}
+_recent: dict[str, deque] = {}
+
+
+def publish(table: str, kind: str, row: dict) -> None:
+    """Tell every listener of `table` that a row was created, updated or deleted."""
+    event = {"type": kind, "table": table, "row": row}
+    with _lock:
+        _recent.setdefault(table, deque(maxlen=50)).append(event)
+        for q in _listeners.get(table, []):
+            q.put_nowait(event)
+
+
+def _visible(event: dict, owner_id: int | None) -> bool:
+    """Private rows are only streamed to their owner."""
+    return owner_id is None or event["row"].get("owner_id") == owner_id
+
+
+def _line(event: dict) -> str:
+    return f"event: {event['type']}\ndata: {json.dumps(event, default=str)}\n\n"
+
+
+def stream(table: str, owner_id: int | None = None, replay: bool = False):
+    """Generator of SSE text: recent events, then (unless replay) new ones as they happen."""
+    with _lock:
+        backlog = list(_recent.get(table, []))
+    for event in backlog:
+        if _visible(event, owner_id):
+            yield _line(event)
+    if replay:
+        return
+    q: queue.Queue = queue.Queue()
+    with _lock:
+        _listeners.setdefault(table, []).append(q)
+    try:
+        while True:
+            try:
+                event = q.get(timeout=15)
+            except queue.Empty:
+                yield ": keep-alive\n\n"
+                continue
+            if _visible(event, owner_id):
+                yield _line(event)
+    finally:
+        with _lock:
+            _listeners[table].remove(q)

@@ -82,6 +82,19 @@ def test_crud(client, entity, user_headers, other_headers, admin_headers):
         assert all(row["id"] != item["id"] for row in client.get(f"{base}/", headers=other_headers).json())
         assert client.delete(f"{base}/{item['id']}", headers=other_headers).status_code == 404
 
+    if entity["transition"]:  # state machine: a forbidden change is refused, an allowed one works
+        t = entity["transition"]
+        r = client.patch(f"{base}/{item['id']}", json={t["field"]: t["forbidden"]}, headers=headers)
+        assert r.status_code == 409, r.text
+        r = client.patch(f"{base}/{item['id']}", json={t["field"]: t["allowed"]}, headers=headers)
+        assert r.status_code == 200, r.text
+
+    if entity["realtime"]:  # the change was published as a live event
+        stream_params = {"replay": 1, **({"token": headers["Authorization"][7:]} if headers else {})}
+        r = client.get(f"{base}/stream", params=stream_params)
+        assert r.status_code == 200, r.text
+        assert '"created"' in r.text and f'"id": {item["id"]}' in r.text
+
     r = client.patch(f"{base}/{item['id']}", json=entity["update"], headers=headers)
     assert r.status_code == 200, r.text
     for key, value in entity["update"].items():
@@ -98,6 +111,32 @@ def test_invalid_input_is_rejected(client, entity, user_headers, admin_headers):
     r = client.post(f"/{entity['table']}/", json=entity["invalid"], headers=headers)
     assert r.status_code == 422, r.text
     assert "detail" in r.json()
+
+
+DELETE_RULES = {{ delete_rules_json }}
+
+
+def test_delete_rules(client, user_headers, admin_headers):
+    """Deleting a parent that still has children: restrict -> 409, cascade -> children go too, set_null -> unlinked."""
+    by_name = {e["name"]: e for e in ENTITIES}
+    for rule in DELETE_RULES:
+        parent_id, child_id = state["ids"].get(rule["parent"]), state["ids"].get(rule["child"])
+        if parent_id is None or child_id is None:
+            continue
+        parent_headers = _writer(by_name[rule["parent"]], user_headers, admin_headers)
+        child_headers = _writer(by_name[rule["child"]], user_headers, admin_headers)
+        r = client.delete(f"/{rule['parent_table']}/{parent_id}", headers=parent_headers)
+        if rule["on_delete"] == "restrict":
+            assert r.status_code == 409, r.text
+            continue
+        assert r.status_code == 204, r.text
+        state["ids"].pop(rule["parent"])
+        child = client.get(f"/{rule['child_table']}/{child_id}", headers=child_headers)
+        if rule["on_delete"] == "cascade":
+            assert child.status_code == 404, child.text
+            state["ids"].pop(rule["child"])
+        else:
+            assert child.json()[rule["field"]] is None
 
 
 def test_delete_all(client, user_headers, admin_headers):

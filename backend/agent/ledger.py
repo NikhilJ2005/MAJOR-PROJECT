@@ -21,6 +21,7 @@ def entry(
     iteration: int | None = None,
     model: str | None = None,
     diff: dict[str, str] | None = None,
+    tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """One ledger line. Every node returns at least one, which makes a run explainable afterwards."""
     e: dict[str, Any] = {"agent": agent, "action": action, "rationale": rationale}
@@ -34,6 +35,8 @@ def entry(
         e["model"] = model
     if diff:
         e["diff"] = {p: d for p, d in diff.items() if d}
+    if tools:
+        e["tools"] = tools
     return e
 
 

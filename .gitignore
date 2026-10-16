@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 backend/data/
 backend/evals/results/*.json
+backend/evals/results/*.csv
 
 # node
 node_modules/

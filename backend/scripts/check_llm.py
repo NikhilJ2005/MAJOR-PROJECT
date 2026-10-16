@@ -1,8 +1,8 @@
 """Pre-demo check: is the key valid, does every configured model answer, what does it cost?
 
     cd backend
-    OPENROUTER_API_KEY=sk-or-... python scripts/check_llm.py          # model ping only
-    OPENROUTER_API_KEY=sk-or-... python scripts/check_llm.py --full   # + one real generation
+    GROQ_API_KEY=gsk_... python scripts/check_llm.py          # model ping only (any provider)
+    GROQ_API_KEY=gsk_... python scripts/check_llm.py --full   # + one real generation
 """
 
 from __future__ import annotations
@@ -15,19 +15,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent.config import settings
-from agent.llm import OpenRouterLLM
+from agent.llm import ProviderLLM
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--full", action="store_true", help="also run one full generation with a planted bug")
+    ap.add_argument("--full", action="store_true", help="also run one full generation")
     args = ap.parse_args()
 
-    if not settings.openrouter_api_key:
-        print("OPENROUTER_API_KEY is not set")
+    if not settings.llm_api_key:
+        print("No API key: set GROQ_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY or LLM_API_KEY + LLM_BASE_URL")
         return 1
 
-    llm = OpenRouterLLM()
+    print(f"provider: {settings.llm_provider}  ({settings.llm_base_url})")
+    llm = ProviderLLM()
     models = [("strong", settings.strong_model), ("cheap", settings.cheap_model), ("fallback", settings.fallback_model)]
     ok = True
     for role, model in models:
@@ -41,7 +42,7 @@ def main() -> int:
             ok = False
             print(f"  FAIL  {role:<8} {model:<36} {type(exc).__name__}: {str(exc)[:160]}")
     if not ok:
-        print("\nFix: check the model id on https://openrouter.ai/models and set STRONG_MODEL / CHEAP_MODEL /")
+        print("\nFix: check the model ids your provider lists and set STRONG_MODEL / CHEAP_MODEL /")
         print("FALLBACK_MODEL, or check credit balance at https://openrouter.ai/settings/credits")
         return 1
 

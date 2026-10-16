@@ -3,19 +3,20 @@
 Who may do what: {{ access_text(e) }}.
 """
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request  # noqa: F401
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import db_session
-from app.errors import ApiError
+from app import events  # noqa: F401
+from app.errors import ApiError, check_transition  # noqa: F401
 from app.models.{{ e.module }} import {{ e.name }}
 from app.schemas.{{ e.module }} import {{ e.name }}Create, {{ e.name }}Read, {{ e.name }}Update
 from app.services import {{ e.module }} as service  # noqa: F401
 {% if spec.auth %}
 from app.models.user import User
-from app.security import current_user, require_admin  # noqa: F401
+from app.security import current_user, require_admin, user_id_from_header  # noqa: F401
 {% endif %}
 
 bp = Blueprint("{{ e.module }}", __name__, url_prefix="/{{ e.table }}")
@@ -82,6 +83,20 @@ def {{ a.name }}_{{ e.module }}({% if a.on_item %}item_id: int{% endif %}):
 {% endfor %}
 
 
+{% if e.realtime %}
+@bp.get("/stream")
+def stream_{{ e.table }}():
+    """Live changes as Server-Sent Events. ?replay=1 returns the recent events and ends."""
+    replay = request.args.get("replay") in ("1", "true")
+{% if e.owned %}
+    owner_id = user_id_from_header(f"Bearer {request.args.get('token', '')}")  # EventSource can't send headers
+    if owner_id is None:
+        raise ApiError(401, "pass your login token as ?token=")
+{% endif %}
+    return Response(events.stream("{{ e.table }}", {% if e.owned %}owner_id{% else %}None{% endif %}, replay), mimetype="text/event-stream")
+
+
+{% endif %}
 @bp.post("/")
 def create_{{ e.module }}():
     db = db_session()
@@ -96,6 +111,9 @@ def create_{{ e.module }}():
     db.add(obj)
     _commit(db)
     db.refresh(obj)
+{% if e.realtime %}
+    events.publish("{{ e.table }}", "created", _json(obj))
+{% endif %}
     return _json(obj), 201
 
 
@@ -147,11 +165,17 @@ def update_{{ e.module }}(item_id: int):
     require_admin(user)
 {% endif %}
     obj = _get_or_404(db, item_id{% if e.owned %}, user{% endif %})
-    payload = {{ e.name }}Update.model_validate(_body())
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    changes = {{ e.name }}Update.model_validate(_body()).model_dump(exclude_unset=True)
+{% for f in transition_fields(e) %}
+    check_transition("{{ f.name }}", obj.{{ f.name }}, changes.get("{{ f.name }}"), {{ tojson(f.transitions) }})
+{% endfor %}
+    for key, value in changes.items():
         setattr(obj, key, value)
     _commit(db)
     db.refresh(obj)
+{% if e.realtime %}
+    events.publish("{{ e.table }}", "updated", _json(obj))
+{% endif %}
     return _json(obj)
 
 
@@ -165,6 +189,12 @@ def delete_{{ e.module }}(item_id: int):
     require_admin(user)
 {% endif %}
     obj = _get_or_404(db, item_id{% if e.owned %}, user{% endif %})
+{% if e.realtime %}
+    row = _json(obj)
+{% endif %}
     db.delete(obj)
     _commit(db)
+{% if e.realtime %}
+    events.publish("{{ e.table }}", "deleted", row)
+{% endif %}
     return "", 204

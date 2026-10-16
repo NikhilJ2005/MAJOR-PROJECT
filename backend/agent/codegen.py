@@ -23,15 +23,18 @@ TEMPLATE_ROOT = Path(__file__).parent / "templates"
 # --------------------------------------------------------------------------- field types per library
 
 _PYDANTIC = {"str": "str", "text": "str", "int": "int", "float": "float", "decimal": "float",
-             "bool": "bool", "date": "date", "datetime": "datetime"}
+             "bool": "bool", "date": "date", "datetime": "datetime", "json": "dict | list"}
 _SQLALCHEMY = {"str": "String(255)", "text": "Text", "int": "Integer", "float": "Float",
                "decimal": "Numeric(12, 2, asdecimal=False)", "bool": "Boolean", "date": "Date",
-               "datetime": "DateTime(timezone=True)"}
+               "datetime": "DateTime(timezone=True)", "json": "JSON"}
 _DJANGO = {"str": "CharField", "text": "TextField", "int": "IntegerField", "float": "FloatField",
-           "decimal": "DecimalField", "bool": "BooleanField", "date": "DateField", "datetime": "DateTimeField"}
+           "decimal": "DecimalField", "bool": "BooleanField", "date": "DateField", "datetime": "DateTimeField",
+           "json": "JSONField"}
+_ON_DELETE_SQL = {"cascade": "CASCADE", "restrict": "RESTRICT", "set_null": "SET NULL"}
+_ON_DELETE_DJANGO = {"cascade": "models.CASCADE", "restrict": "models.RESTRICT", "set_null": "models.SET_NULL"}
 _SAMPLES: dict[str, Any] = {"int": 7, "float": 1.5, "decimal": 9.99, "bool": True,
-                            "date": "2026-01-01", "datetime": "2026-01-01T00:00:00"}
-_WRONG: dict[str, Any] = {"str": {"not": "text"}, "text": {"not": "text"}, "bool": "maybe"}
+                            "date": "2026-01-01", "datetime": "2026-01-01T00:00:00", "json": {"key": "value"}}
+_WRONG: dict[str, Any] = {"str": {"not": "text"}, "text": {"not": "text"}, "bool": "maybe", "json": "not-a-json-object"}
 
 
 def pydantic_type(f: FieldSpec) -> str:
@@ -64,20 +67,42 @@ def read_type(f: FieldSpec) -> str:
     return "str" if f.choices else _PYDANTIC[f.type]
 
 
+def transition_fields(e: EntitySpec) -> list[FieldSpec]:
+    """Fields that are state machines (their allowed changes are checked on update)."""
+    return [f for f in e.fields if f.transitions]
+
+
 def sa_py_type(f: FieldSpec) -> str:
     return {"date": "date", "datetime": "datetime", "bool": "bool", "int": "int",
-            "float": "float", "decimal": "float"}.get(f.type, "str")
+            "float": "float", "decimal": "float", "json": "dict"}.get(f.type, "str")
+
+
+def sa_column_args(f: FieldSpec) -> str:
+    """Everything after the column type in a SQLAlchemy mapped_column(...)."""
+    args = []
+    if f.references:
+        target = f"{table_of(f.references)}.id"
+        args += [f'ForeignKey("{target}", ondelete="{_ON_DELETE_SQL[f.on_delete or "restrict"]}")', "index=True"]
+    elif f.index:
+        args.append("index=True")
+    if f.unique:
+        args.append("unique=True")
+    args.append(f"nullable={not f.required}")
+    return ", ".join(args)
 
 
 def django_field(f: FieldSpec) -> str:
     """The models.<Field>(...) expression for a Django model."""
     optional = [] if f.required else ["null=True", "blank=True"]
     if f.references:
-        args = [f'"{f.references}"', "on_delete=models.CASCADE", 'related_name="+"', *optional]
+        on_delete = _ON_DELETE_DJANGO[f.on_delete or "restrict"]
+        args = [f'"{f.references}"', f"on_delete={on_delete}", 'related_name="+"', *optional]
         return f"models.ForeignKey({', '.join(args)})"
     args = {"str": ["max_length=255"], "decimal": ["max_digits=12", "decimal_places=2"]}.get(f.type, [])
     if f.unique:
         args.append("unique=True")
+    if f.index:
+        args.append("db_index=True")
     return f"models.{_DJANGO[f.type]}({', '.join(args + optional)})"
 
 
@@ -115,8 +140,8 @@ def _env(stack: Stack) -> Environment:
             keep_trailing_newline=True,
         )
         env.globals.update(
-            input_decl=input_decl, read_type=read_type, sa_type=lambda f: _SQLALCHEMY[f.type],
-            sa_py_type=sa_py_type, django_field=django_field, table_of=table_of,
+            input_decl=input_decl, read_type=read_type, transition_fields=transition_fields, tojson=json.dumps, sa_type=lambda f: _SQLALCHEMY[f.type],
+            sa_py_type=sa_py_type, sa_column_args=sa_column_args, django_field=django_field, table_of=table_of,
         )
         _envs[stack.name] = env
     return _envs[stack.name]
@@ -128,6 +153,8 @@ def _context(spec: ProjectSpec, stack: Stack, **extra: Any) -> dict[str, Any]:
         "stack": stack,
         "access_text": lambda e: access_text(e, spec.auth),
         "entities_json": pprint.pformat(smoke_cases(spec), width=96),
+        "edges_json": pprint.pformat(edge_cases(spec), width=96),
+        "delete_rules_json": pprint.pformat(delete_rules(spec), width=96),
         "has_rule_tests": False,
         "has_edge_tests": False,
         **extra,
@@ -170,6 +197,12 @@ def render_project(spec: ProjectSpec, **extra: Any) -> dict[str, str]:
             continue
         if template is None:
             files[path] = ""
+        elif template.startswith("@static:"):
+            files[path] = (TEMPLATE_ROOT / "frontend" / template[8:]).read_text()
+        elif template.startswith("@frontend:"):
+            from .frontend import frontend_files
+
+            files.update(frontend_files(spec))
         elif template == "@openapi":
             files[path] = json.dumps(openapi_document(spec), indent=1) + "\n"
         else:
@@ -207,6 +240,17 @@ def _invalid_payload(e: EntitySpec) -> dict[str, Any] | None:
     return None
 
 
+def _transition_case(e: EntitySpec) -> dict[str, Any] | None:
+    """One allowed and one forbidden change of the first state machine, from its starting state."""
+    for f in transition_fields(e):
+        start = f.choices[0]
+        allowed = f.transitions.get(start, [])
+        forbidden = [c for c in f.choices if c != start and c not in allowed]
+        if allowed and forbidden:
+            return {"field": f.name, "allowed": allowed[0], "forbidden": forbidden[0]}
+    return None
+
+
 def smoke_cases(spec: ProjectSpec) -> list[dict[str, Any]]:
     cases = []
     for e in spec.entities:
@@ -216,8 +260,61 @@ def smoke_cases(spec: ProjectSpec) -> list[dict[str, Any]]:
         if sf:
             update[sf] = f"updated {e.module} {sf}"
         cases.append({"name": e.name, "table": e.table, "access": e.write_access, "payload": payload,
-                      "update": update, "invalid": _invalid_payload(e)})
+                      "update": update, "invalid": _invalid_payload(e), "transition": _transition_case(e),
+                      "realtime": e.realtime})
     return cases
+
+
+def _bad_values(e: EntitySpec, base: dict[str, Any]) -> list[dict[str, Any]]:
+    """Payloads that break one rule of the design each; every one must be rejected with 422."""
+    bad = []
+    for f in e.fields:
+        if f.choices:
+            bad.append({"why": f"{f.name} not in its choices", "payload": {**base, f.name: "not-a-valid-choice"}})
+        if f.is_number and f.min is not None:
+            bad.append({"why": f"{f.name} below {f.min:g}", "payload": {**base, f.name: f.min - 1}})
+        if f.is_number and f.max is not None:
+            bad.append({"why": f"{f.name} above {f.max:g}", "payload": {**base, f.name: f.max + 1}})
+        if f.type == "str" and not f.choices and not f.references:
+            bad.append({"why": f"{f.name} longer than 255 characters", "payload": {**base, f.name: "x" * 300}})
+        if f.type == "json":
+            bad.append({"why": f"{f.name} is not a JSON object or list", "payload": {**base, f.name: "not json"}})
+    return bad
+
+
+def edge_cases(spec: ProjectSpec) -> list[dict[str, Any]]:
+    """Edge cases derived from the design (no AI): what a careless or hostile client would send."""
+    cases = []
+    for e in spec.entities:
+        # Unknown ids everywhere: validation passes, the database must refuse it (409 or 422, never 500).
+        base = {k: (999999 if isinstance(v, str) and v.startswith("@ref:") else v)
+                for k, v in smoke_cases_for(spec, e)["payload"].items()}
+        cases.append({"name": e.name, "table": e.table, "access": e.write_access,
+                      "fk_payload": base if e.foreign_keys else None, "bad": _bad_values(e, base)})
+    return cases
+
+
+def smoke_cases_for(spec: ProjectSpec, e: EntitySpec) -> dict[str, Any]:
+    return next(c for c in smoke_cases(spec) if c["name"] == e.name)
+
+
+def delete_rules(spec: ProjectSpec) -> list[dict[str, Any]]:
+    """What must happen when a parent row is deleted while a child still points at it."""
+    children: dict[str, list[tuple[EntitySpec, FieldSpec]]] = {}
+    for e in spec.entities:
+        for f in e.foreign_keys:
+            if f.references != "User":
+                children.setdefault(f.references, []).append((e, f))
+    rules = []
+    for parent, kids in children.items():
+        restricts = [k for k in kids if k[1].on_delete == "restrict"]
+        for child, f in kids:
+            # A cascade/set_null check deletes the parent, so only when nothing else blocks it.
+            if f.on_delete != "restrict" and (restricts or len(kids) > 1):
+                continue
+            rules.append({"parent": parent, "parent_table": table_of(parent), "child": child.name,
+                          "child_table": child.table, "field": f.name, "on_delete": f.on_delete})
+    return rules
 
 
 # --------------------------------------------------------------------------- OpenAPI for Flask / Django
@@ -225,7 +322,7 @@ def smoke_cases(spec: ProjectSpec) -> list[dict[str, Any]]:
 
 def _schema(e: EntitySpec, read: bool) -> dict[str, Any]:
     kinds = {"str": "string", "text": "string", "int": "integer", "float": "number", "decimal": "number",
-             "bool": "boolean", "date": "string", "datetime": "string"}
+             "bool": "boolean", "date": "string", "datetime": "string", "json": "object"}
     props: dict[str, Any] = {f.name: {"type": kinds[f.type], **({"enum": f.choices} if f.choices else {})}
                              for f in e.fields}
     if read:

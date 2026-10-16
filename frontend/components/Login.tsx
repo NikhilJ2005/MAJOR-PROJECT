@@ -3,6 +3,18 @@
 import { useState } from "react";
 import { api, setToken } from "@/lib/api";
 
+export function Logo() {
+  return (
+    <span className="flex items-center gap-2">
+      <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden>
+        <rect x="1" y="1" width="20" height="20" rx="5" fill="none" stroke="var(--color-signal-400)" strokeWidth="2" />
+        <path d="M6 8l5 6 5-6" fill="none" stroke="var(--color-signal-400)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+      <span className="font-display text-lg font-bold tracking-tight text-ink-50">VibeStack</span>
+    </span>
+  );
+}
+
 export function Login({ inviteRequired, onDone }: { inviteRequired: boolean; onDone: (email: string) => void }) {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
@@ -26,62 +38,48 @@ export function Login({ inviteRequired, onDone }: { inviteRequired: boolean; onD
     }
   }
 
-  const input = "w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-base outline-none focus:border-sky-500";
+  const input = "mt-1.5 w-full rounded-lg border border-ink-700 bg-ink-950 px-3 py-2.5 text-ink-50 outline-none focus:border-signal-400";
   return (
-    <div className="mx-auto mt-16 max-w-md px-4">
-      <div className="mb-6 flex items-center gap-3">
-        <div className="grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br from-sky-400 to-violet-500 font-mono text-base font-bold text-zinc-950">
-          VS
-        </div>
-        <div>
-          <h1 className="text-2xl font-bold leading-tight">VibeStack</h1>
-          <p className="text-sm text-zinc-400">describe a backend · agents build, test, bug-hunt and self-heal it</p>
-        </div>
-      </div>
-      <form onSubmit={submit} className="space-y-3 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
-        <div className="flex gap-1 rounded-lg bg-zinc-950 p-1 text-sm">
-          {(["login", "register"] as const).map((m) => (
-            <button
-              type="button"
-              key={m}
-              onClick={() => setMode(m)}
-              className={`flex-1 rounded-md py-1.5 ${mode === m ? "bg-zinc-800 font-semibold text-white" : "text-zinc-400 hover:text-zinc-200"}`}
-            >
-              {m === "login" ? "Log in" : "Create account"}
-            </button>
-          ))}
-        </div>
-        <label className="block text-sm text-zinc-400">
-          Email
-          <input type="email" required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} className={`mt-1 ${input}`} />
-        </label>
-        <label className="block text-sm text-zinc-400">
-          Password <span className="text-zinc-600">(8+ characters)</span>
-          <input
-            type="password"
-            required
-            minLength={8}
-            autoComplete={mode === "login" ? "current-password" : "new-password"}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className={`mt-1 ${input}`}
-          />
-        </label>
-        {mode === "register" && inviteRequired && (
-          <label className="block text-sm text-zinc-400">
-            Invite code
-            <input required value={invite} onChange={(e) => setInvite(e.target.value)} className={`mt-1 ${input}`} />
+    <main className="blueprint grid min-h-screen place-items-center px-4">
+      <div className="w-full max-w-sm">
+        <Logo />
+        <h1 className="mt-8 font-display text-3xl font-bold leading-tight text-ink-50">
+          {mode === "login" ? "Welcome back" : "Start building"}
+        </h1>
+        <p className="mt-2 text-ink-300">Describe an app. Eight agents design it, build it, test it and run it for you.</p>
+        <form onSubmit={submit} className="mt-8 space-y-4 rounded-2xl border border-ink-700 bg-ink-900 p-6">
+          <label className="block text-sm text-ink-200">
+            Email
+            <input type="email" required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} className={input} />
           </label>
-        )}
-        {error && <p className="text-sm text-rose-400">{error}</p>}
-        <button
-          disabled={busy}
-          className="w-full rounded-xl bg-gradient-to-r from-sky-500 to-violet-500 py-2.5 text-base font-bold text-white hover:brightness-110 disabled:opacity-50"
-        >
-          {busy ? "…" : mode === "login" ? "Log in" : "Create account"}
+          <label className="block text-sm text-ink-200">
+            Password
+            <input
+              type="password"
+              required
+              minLength={8}
+              autoComplete={mode === "login" ? "current-password" : "new-password"}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className={input}
+            />
+            <span className="mt-1 block text-xs text-ink-400">At least 8 characters</span>
+          </label>
+          {mode === "register" && inviteRequired && (
+            <label className="block text-sm text-ink-200">
+              Invite code
+              <input required value={invite} onChange={(e) => setInvite(e.target.value)} className={input} />
+            </label>
+          )}
+          {error && <p className="text-sm text-rose-300">{error}</p>}
+          <button disabled={busy} className="w-full rounded-lg bg-signal-400 py-2.5 font-semibold text-ink-950 hover:bg-signal-300 disabled:opacity-50">
+            {busy ? "One moment…" : mode === "login" ? "Log in" : "Create account"}
+          </button>
+        </form>
+        <button onClick={() => setMode(mode === "login" ? "register" : "login")} className="mt-4 text-sm text-ink-300 hover:text-ink-50">
+          {mode === "login" ? "New here? Create an account" : "Already have an account? Log in"}
         </button>
-        <p className="text-xs text-zinc-500">Your runs, generated code and live previews are private to your account.</p>
-      </form>
-    </div>
+      </div>
+    </main>
   );
 }
