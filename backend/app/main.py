@@ -424,7 +424,18 @@ def frontend_is_stale(out: Path) -> bool:
     return index.is_file() and bool(sources) and max(p.stat().st_mtime for p in sources) > index.stat().st_mtime
 
 
+class UIFiles(StaticFiles):
+    """The exported UI. Pages are re-checked on every visit, so a new deploy shows up at once;
+    the hashed files in /_next/static never change, so browsers may keep them for a year."""
+
+    async def get_response(self, path: str, scope: Any) -> Any:
+        response = await super().get_response(path, scope)
+        immutable = path.startswith("_next/static/")
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable" if immutable else "no-cache"
+        return response
+
+
 if _frontend.is_dir() and frontend_is_stale(_frontend):
     log.warning("%s is older than the frontend source: run `npm run build` in frontend/ to see the current UI", _frontend)
 if _frontend.is_dir():
-    app.mount("/", StaticFiles(directory=_frontend, html=True), name="frontend")
+    app.mount("/", UIFiles(directory=_frontend, html=True), name="frontend")
