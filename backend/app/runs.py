@@ -129,8 +129,12 @@ class RunManager:
         config = self._config(run.id)
         try:
             for mode, update in self.graph.stream(graph_input, config, stream_mode=["updates", "custom"]):
-                if mode == "custom":  # what an agent is doing right now (agent.ledger.progress)
-                    run.emit({"type": "progress", "node": update.get("node"), "text": update.get("text")})
+                if mode == "custom":
+                    if update.get("kind") == "stream":  # text a model is writing right now (agent.ledger.LiveText)
+                        run.emit({"type": "stream", "agent": update.get("agent"), "label": update.get("label"),
+                                  "delta": update.get("delta", ""), "done": bool(update.get("done"))})
+                    else:  # what an agent is doing right now (agent.ledger.progress)
+                        run.emit({"type": "progress", "node": update.get("node"), "text": update.get("text")})
                     continue
                 for node, delta in update.items():
                     delta = delta or {}

@@ -30,6 +30,12 @@ with sync_playwright() as p:
     page.get_by_text("Version 1").wait_for()
     page.wait_for_timeout(2500)
     page.screenshot(path=f"{SP}/v3-building.png")
+    try:  # the Live tab shows what the agents write, while they write it
+        page.get_by_text("Design (JSON)").first.wait_for(timeout=20000)
+        page.screenshot(path=f"{SP}/v5-live-code.png")
+    except Exception:  # noqa: BLE001
+        print("live code not seen (the build was faster)")
+    page.get_by_role("button", name="Preview").click()
     try:  # with the fast offline model the build may finish before the draft is shown
         page.get_by_text("Draft: every screen already works").wait_for(timeout=20000)
         page.screenshot(path=f"{SP}/v4-draft.png")

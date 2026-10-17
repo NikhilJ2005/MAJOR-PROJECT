@@ -78,7 +78,9 @@ class Settings:
     # Healing stops when it stops making progress (see healing.should_continue);
     # this is only a seatbelt against a pathological run.
     max_heal_safety: int = field(default_factory=lambda: _env_int("MAX_HEAL_SAFETY", 12))
-    max_tokens_per_run: int = field(default_factory=lambda: _env_int("MAX_TOKENS_PER_RUN", 150000))
+    # The budget per build is money: thinking models make token counts unpredictable.
+    max_cost_per_run_usd: float = field(default_factory=lambda: float(os.environ.get("MAX_COST_PER_RUN_USD", "3.0")))
+    max_tokens_per_run: int = field(default_factory=lambda: _env_int("MAX_TOKENS_PER_RUN", 2_000_000))
     max_concurrent_runs: int = field(default_factory=lambda: _env_int("MAX_CONCURRENT_RUNS", 2))
     gate_timeout_s: int = field(default_factory=lambda: _env_int("GATE_TIMEOUT_S", 60))
 

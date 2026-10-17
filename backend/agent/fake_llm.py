@@ -9,12 +9,15 @@ bug that nobody planted in the pipeline:
     "typo"        a misspelled import in the business logic (caught when the app is imported)
     "wrong_rule"  an action answers with the wrong field (only the Architect's rule test,
                   written before the code, notices)
+    "syntax"      a typo that breaks Python syntax (fixed by the syntax self-check before validation)
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import time
 
 from .llm import Usage, parse_file_blocks
 
@@ -36,6 +39,7 @@ BLOG_SPEC = {
 MISTAKES = {
     "typo": ("from app.errors import ApiError", "from app.errors import ApiErorr"),
     "wrong_rule": ('return {"count":', 'return {"total":'),
+    "syntax": ("def stats(", "def _ stats("),
 }
 
 
@@ -140,8 +144,22 @@ class FakeLLM:
 
     # -- entry point ---------------------------------------------------------------------
 
-    def complete(self, role, system, user):
+    def complete(self, role, system, user, effort=None, stream=None):
+        text, usage = self._reply(role, system, user)
+        if stream:  # like a real model: the reply arrives in pieces (FAKE_LLM_DELAY slows it down for demos)
+            delay = float(os.environ.get("FAKE_LLM_DELAY", "0"))
+            for i in range(0, len(text), 120):
+                stream(text[i:i + 120])
+                time.sleep(delay)
+        return text, usage
+
+    def _reply(self, role, system, user):
         usage = Usage(prompt_tokens=100, completion_tokens=50, cost_usd=0.0001, calls=1, models={role: 1})
+        if "You fix Python syntax errors" in system:
+            self.calls.append("syntax_fix")
+            path = re.search(r"^(\S+) does not compile", user).group(1)
+            code = _section(user, "```python\n", "```").replace(*reversed(MISTAKES["syntax"]))
+            return f"### FILE: {path}\n```python\n{code}```", usage
         if "Write tests/test_rules.py" in system:
             self.calls.append("rule_tests")
             return self._rule_tests(user), usage

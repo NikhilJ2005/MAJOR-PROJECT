@@ -10,11 +10,13 @@ Responsibilities:
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import re
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypeVar
 
@@ -86,6 +88,21 @@ class LLM(Protocol):
     def complete(self, role: Role, system: str, user: str) -> tuple[str, Usage]: ...
 
 
+Stream = Callable[[str], None]  # receives the reply text piece by piece, as the model writes it
+
+
+def ask(llm: LLM, role: Role, system: str, user: str, *, effort: str | None = None,
+        stream: Stream | None = None) -> tuple[str, Usage]:
+    """llm.complete with a thinking level for this job and live streaming, when the client supports them.
+
+    effort: "low" | "medium" | "high" (how hard a thinking model reasons for this call).
+    stream: called with each new piece of the reply, so the UI can show code as it is written.
+    """
+    if "effort" in inspect.signature(llm.complete).parameters:
+        return llm.complete(role, system, user, effort=effort, stream=stream)
+    return llm.complete(role, system, user)
+
+
 def extract_json(text: str) -> Any:
     """Pull the first JSON object out of a model reply (tolerates ``` fences and chatter)."""
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
@@ -99,14 +116,15 @@ def extract_json(text: str) -> Any:
     return json.loads(candidate)
 
 
-def structured(llm: LLM, role: Role, system: str, user: str, model: type[T]) -> tuple[T, Usage]:
+def structured(llm: LLM, role: Role, system: str, user: str, model: type[T], *, effort: str | None = None,
+               stream: Stream | None = None) -> tuple[T, Usage]:
     schema = json.dumps(model.model_json_schema(), indent=None)
     sys = f"{system}\n\nReply with ONLY a JSON object matching this JSON schema:\n{schema}"
     total = Usage()
     prompt = user
     last_err: Exception | None = None
     for _ in range(2):
-        text, usage = llm.complete(role, sys, prompt)
+        text, usage = ask(llm, role, sys, prompt, effort=effort, stream=stream)
         total.add(usage)
         try:
             return model.model_validate(extract_json(text)), total
@@ -162,7 +180,7 @@ class ProviderLLM:
 
         def make(model: str, reasoning: str) -> Any:
             return ChatOpenAI(model=model, api_key=settings.llm_api_key, base_url=settings.llm_base_url,
-                              **model_options(model, reasoning), **extra)
+                              stream_usage=True, **model_options(model, reasoning), **extra)
 
         self._models = {
             "strong": (settings.strong_model, make(settings.strong_model, settings.strong_reasoning)),
@@ -175,20 +193,37 @@ class ProviderLLM:
         """The LangChain chat model for a role (used by the tool-using Reflector)."""
         return self._models[role][1]
 
-    def complete(self, role: Role, system: str, user: str) -> tuple[str, Usage]:
+    def complete(self, role: Role, system: str, user: str, effort: str | None = None,
+                 stream: Stream | None = None) -> tuple[str, Usage]:
         attempts = [self._models[role], self._fallback]
         last: Exception | None = None
         for name, chat in attempts:
+            if effort and "reasoning_effort" in model_options(name, effort):
+                chat = chat.bind(reasoning_effort=effort)  # this job's thinking level
             t0 = time.monotonic()
             try:
                 with self._slots:  # at most LLM_MAX_PARALLEL calls at once
-                    msg = chat.invoke([("system", system), ("user", user)])
+                    msg = self._stream(chat, system, user, stream) if stream else chat.invoke(
+                        [("system", system), ("user", user)])
             except Exception as exc:  # noqa: BLE001 - any provider failure triggers fallback
                 log.warning("model %s failed after %.1fs: %s", name, time.monotonic() - t0, exc)
                 last = exc
                 continue
             return _content(msg), _usage(name, msg)
         raise LLMError(f"all models failed: {last}")
+
+    @staticmethod
+    def _stream(chat: Any, system: str, user: str, stream: Stream) -> Any:
+        """Ask for the reply in pieces, hand each new piece of text to `stream`, return the whole message."""
+        whole = None
+        for chunk in chat.stream([("system", system), ("user", user)]):
+            whole = chunk if whole is None else whole + chunk
+            piece = _content(chunk)
+            if piece:
+                stream(piece)
+        if whole is None:
+            raise LLMError("the model returned nothing")
+        return whole
 
     def complete_with_tools(self, role: Role, system: str, user: str, toolbox: Any) -> tuple[str, Usage]:
         """Let the model call tools (function calling) until it answers, at most toolbox.max_calls calls.
@@ -263,7 +298,18 @@ def set_llm(llm: LLM | None) -> None:
     _overridden = True
 
 
+def budget_left(state_usage: dict[str, Any] | None) -> str | None:
+    """Why the run's budget is used up (money first, then tokens), or None while there is budget left."""
+    usage = state_usage or {}
+    cost, tokens = float(usage.get("cost_usd", 0.0)), int(usage.get("total_tokens", 0))
+    if cost >= settings.max_cost_per_run_usd:
+        return f"cost budget used up (${cost:.2f} of ${settings.max_cost_per_run_usd:.2f})"
+    if tokens >= settings.max_tokens_per_run:
+        return f"token budget used up ({tokens} of {settings.max_tokens_per_run})"
+    return None
+
+
 def check_budget(state_usage: dict[str, Any] | None) -> None:
-    used = int((state_usage or {}).get("total_tokens", 0))
-    if used >= settings.max_tokens_per_run:
-        raise BudgetExceeded(f"token budget exhausted ({used} >= {settings.max_tokens_per_run})")
+    reason = budget_left(state_usage)
+    if reason:
+        raise BudgetExceeded(reason)

@@ -123,9 +123,13 @@ export type ServerConfig = {
 export type RunEvent = {
   seq: number;
   ts: number;
-  type: "node" | "status" | "error" | "progress";
+  type: "node" | "status" | "error" | "progress" | "stream";
   node?: string;
   text?: string;
+  agent?: string;
+  label?: string;
+  delta?: string;
+  done?: boolean;
   status?: string;
   message?: string;
   ledger?: LedgerEntry[];

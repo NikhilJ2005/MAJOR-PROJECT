@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import shutil
+import time
 import zipfile
 from typing import Any
 
@@ -21,6 +22,44 @@ def progress(node: str, text: str) -> None:
     except RuntimeError:  # not inside a running graph
         return
     writer({"node": node, "text": text})
+
+
+def live_writer() -> Any:
+    """The graph's stream writer for this run (None outside a streamed run). Fetch it in the node's own
+    thread; it can then be used from worker threads too."""
+    from langgraph.config import get_stream_writer
+
+    try:
+        return get_stream_writer()
+    except RuntimeError:
+        return None
+
+
+class LiveText:
+    """Sends a model's reply to the UI as it is written ("live code"), a few updates a second.
+
+    Use it as the `stream` callback of llm.ask, and call `done()` when the reply is complete.
+    """
+
+    def __init__(self, writer: Any, agent: str, label: str, every_s: float = 0.25) -> None:
+        self.writer, self.agent, self.label, self.every_s = writer, agent, label, every_s
+        self.pending: list[str] = []
+        self.last = 0.0
+
+    def __call__(self, piece: str) -> None:
+        self.pending.append(piece)
+        if time.monotonic() - self.last >= self.every_s:
+            self._send()
+
+    def _send(self, final: bool = False) -> None:
+        if self.writer and (self.pending or final):
+            self.writer({"kind": "stream", "agent": self.agent, "label": self.label,
+                         "delta": "".join(self.pending), "done": final})
+        self.pending = []
+        self.last = time.monotonic()
+
+    def done(self) -> None:
+        self._send(final=True)
 
 
 def entry(

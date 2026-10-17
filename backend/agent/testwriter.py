@@ -18,7 +18,7 @@ from typing import Any
 
 from . import prompts
 from .analysis import requirements_text
-from .llm import LLMError, Usage, parse_file_blocks
+from .llm import LLMError, Usage, ask, parse_file_blocks
 from .state import ProjectSpec
 
 RULE_TESTS = "tests/test_rules.py"
@@ -35,14 +35,14 @@ def valid_test_file(source: str) -> bool:
     return any(isinstance(n, ast.FunctionDef) and n.name.startswith("test_") for n in tree.body)
 
 
-def write_rule_tests(llm: Any, spec: ProjectSpec) -> tuple[str | None, Usage]:
+def write_rule_tests(llm: Any, spec: ProjectSpec, stream: Any = None) -> tuple[str | None, Usage]:
     """Ask the Architect for tests/test_rules.py. None if the reply is unusable."""
     system = prompts.RULE_TESTS_SYSTEM.format(helpers=prompts.TEST_HELPERS, contract=prompts.CONTRACT)
     user = prompts.RULE_TESTS_USER.format(
         requirements=requirements_text(spec.requirements),
         spec=spec.model_dump_json(indent=1, exclude={"requirements"}),
     )
-    text, usage = llm.complete("strong", system, user)
+    text, usage = ask(llm, "strong", system, user, effort="medium", stream=stream)
     source = parse_file_blocks(text).get(RULE_TESTS)
     return (source if source and valid_test_file(source) else None), usage
 

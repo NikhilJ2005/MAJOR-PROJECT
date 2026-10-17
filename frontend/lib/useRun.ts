@@ -3,10 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, type RunEvent, type Snapshot } from "./api";
 
+/** What a model is writing right now, one entry per file or document (e.g. "app/services/order.py"). */
+export type LiveItem = { label: string; agent: string; text: string; done: boolean; updated: number };
+
 /** Follow one run: its snapshot, plus live events while it is running (Server-Sent Events). */
 export function useRun(runId: string | null, onFinished?: (status: string) => void) {
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
+  const [live, setLive] = useState<Record<string, LiveItem>>({});
   const lastSeq = useRef(-1);
   const finished = useRef(onFinished);
   useEffect(() => {
@@ -29,6 +33,7 @@ export function useRun(runId: string | null, onFinished?: (status: string) => vo
     lastSeq.current = -1;
     (async () => {
       setEvents([]);
+      setLive({});
       const first = await api.snapshot(runId).catch(() => null);
       if (closed) return;
       setSnap(first);
@@ -38,6 +43,16 @@ export function useRun(runId: string | null, onFinished?: (status: string) => vo
         const ev = JSON.parse(msg.data) as RunEvent;
         if (ev.seq <= lastSeq.current) return;
         lastSeq.current = ev.seq;
+        if (ev.type === "stream" && ev.label) {
+          // Text arrives in pieces: append it to its item instead of keeping every piece as an event.
+          const label = ev.label;
+          setLive((prev) => {
+            const item = prev[label];
+            const text = (item && !item.done ? item.text : "") + (ev.delta ?? "");
+            return { ...prev, [label]: { label, agent: ev.agent ?? "", text, done: !!ev.done, updated: ev.ts } };
+          });
+          return;
+        }
         setEvents((prev) => [...prev, ev]);
         if (ev.type === "node" || ev.type === "error") refresh();
         if (ev.type === "status" && ev.status && ev.status !== "running") {
@@ -46,7 +61,7 @@ export function useRun(runId: string | null, onFinished?: (status: string) => vo
           finished.current?.(ev.status);
         }
       };
-      for (const t of ["node", "status", "error"]) source.addEventListener(t, onEvent as EventListener);
+      for (const t of ["node", "status", "error", "progress", "stream"]) source.addEventListener(t, onEvent as EventListener);
       source.onerror = () => {
         source?.close(); // the server closes the stream when the run ends
         refresh();
@@ -58,5 +73,5 @@ export function useRun(runId: string | null, onFinished?: (status: string) => vo
     };
   }, [runId, refresh]);
 
-  return { snap, events, refresh };
+  return { snap, events, live, refresh };
 }

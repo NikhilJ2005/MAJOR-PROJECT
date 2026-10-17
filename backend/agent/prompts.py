@@ -210,6 +210,19 @@ The file to complete: app/services/{module}.py
 Read-only code you can rely on:
 {context}"""
 
+SYNTAX_FIX_SYSTEM = """You fix Python syntax errors. Change only what is needed to make the file valid Python;
+keep every name, signature and behaviour. Reply with exactly one block:
+### FILE: <path>
+```python
+<full file content>
+```"""
+
+SYNTAX_FIX_USER = """{path} does not compile: {error}
+
+```python
+{content}
+```"""
+
 # --------------------------------------------------------------------------- Reflector + Judge
 
 
