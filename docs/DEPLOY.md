@@ -16,13 +16,12 @@ between hosts. Builds interrupted by a restart or redeploy resume from their las
 | Variable | Value |
 |---|---|
 | `LLM_PROVIDER`, `GEMINI_API_KEY` | the AI provider (see `.env.example`) |
-| `SECRET_KEY` | a long random string: it signs logins and encrypts GitHub tokens, so keep it stable |
+| `SECRET_KEY` | a long random string that signs logins; keep it stable |
 | `ADMIN_EMAILS` | your email(s) |
 | `ACCESS_CODE` | an invite code (optional) |
 | `PLATFORM_DATABASE_URL` | Postgres connection URL |
 | `S3_*` | object storage for zips |
-| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | "Sign in with GitHub" and Push to GitHub (below) |
-| `PUBLIC_URL` | the public address, e.g. `https://vibestack.example.com` (used for the GitHub callback) |
+| `PUBLIC_URL` | the public address, e.g. `https://vibestack.example.com` (used in links the MCP server returns) |
 | `SENTRY_DSN` | error reports to Sentry (optional) |
 
 ## Railway
@@ -32,7 +31,7 @@ between hosts. Builds interrupted by a restart or redeploy resume from their las
 
 ## Render
 1. **New → Blueprint**, then pick the repository. `render.yaml` creates the web service and a Postgres.
-2. Fill in the secrets it asks for (`GEMINI_API_KEY`, `S3_*`, `GITHUB_*`). `SECRET_KEY` is generated for you.
+2. Fill in the secrets it asks for (`GEMINI_API_KEY`, `S3_*`). `SECRET_KEY` is generated for you.
 
 ## Fly.io
 ```bash
@@ -51,17 +50,6 @@ docker compose --profile full up -d --build
 This starts VibeStack, Postgres and MinIO (S3-compatible) on one machine. Put a reverse proxy with HTTPS
 in front (Caddy: `reverse_proxy localhost:8000`), and set `S3_PUBLIC_ENDPOINT_URL` to the address where
 browsers reach MinIO.
-
-## Sign in with GitHub / Push to GitHub
-1. On GitHub, go to **Settings → Developer settings → OAuth Apps → New OAuth App**.
-2. Fill in the app:
-   - **Homepage URL:** your `PUBLIC_URL`.
-   - **Authorization callback URL:** `<PUBLIC_URL>/api/auth/github/callback`.
-3. Set `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`.
-
-Users can then sign in with GitHub and press **Push to GitHub** in a project. The first push creates a
-private repository; every later version is a new commit, and the app's own CI (GitHub Actions) runs on it.
-The access token is stored encrypted with a key derived from `SECRET_KEY`.
 
 ## Backups
 - **Postgres:** use the host's automatic backups (Railway, Render and Fly all offer them), or run `pg_dump` nightly.

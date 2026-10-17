@@ -30,10 +30,6 @@ services:
         sync: false
       - key: S3_SECRET_ACCESS_KEY
         sync: false
-      - key: GITHUB_CLIENT_ID
-        sync: false
-      - key: GITHUB_CLIENT_SECRET
-        sync: false
 
 databases:
   - name: vibestack-db

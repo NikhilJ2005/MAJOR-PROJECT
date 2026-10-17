@@ -3,7 +3,7 @@
 Any MCP server (documentation search, a company's internal API catalogue, a linter service ...)
 can lend its tools to the agents. List the servers in the MCP_SERVERS environment variable:
 
-    MCP_PRESETS=docs,github            # well-known servers by name (see presets)
+    MCP_PRESETS=docs                   # well-known servers by name (see presets)
     MCP_SERVERS='[{"name": "docs", "url": "https://example.com/mcp", "headers": {"Authorization": "Bearer ..."}}]'
 
 At the start of a repair we ask each server for its tools and wrap every one as a `Tool`,
@@ -31,18 +31,14 @@ TIMEOUT_S = 30
 def presets() -> dict[str, dict[str, Any]]:
     """Well-known MCP servers that one word in MCP_PRESETS turns on (URLs can be overridden)."""
     docs_headers = {"CONTEXT7_API_KEY": os.environ["CONTEXT7_API_KEY"]} if os.environ.get("CONTEXT7_API_KEY") else {}
-    github_token = os.environ.get("GITHUB_MCP_TOKEN", "")
     return {
         # Current library documentation (FastAPI, Django, SQLAlchemy, Pydantic ...) for the repairs.
         "docs": {"name": "docs", "url": os.environ.get("MCP_DOCS_URL", "https://mcp.context7.com/mcp"), "headers": docs_headers},
-        # GitHub's own MCP server: repositories, Actions runs and logs (a read-only token is enough).
-        "github": {"name": "github", "url": os.environ.get("MCP_GITHUB_URL", "https://api.githubcopilot.com/mcp/"),
-                   "headers": {"Authorization": f"Bearer {github_token}"} if github_token else {}},
     }
 
 
 def configured_servers() -> list[dict[str, Any]]:
-    """The servers from MCP_PRESETS (e.g. "docs,github") and MCP_SERVERS (a JSON list)."""
+    """The servers from MCP_PRESETS (e.g. "docs") and MCP_SERVERS (a JSON list)."""
     known = presets()
     servers = [known[name.strip()] for name in os.environ.get("MCP_PRESETS", "").split(",") if name.strip() in known]
     raw = os.environ.get("MCP_SERVERS", "").strip()

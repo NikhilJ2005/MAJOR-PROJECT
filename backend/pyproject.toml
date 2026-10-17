@@ -23,7 +23,6 @@ dependencies = [
     "django>=5.1",
     "pydantic>=2.6",
     "pyjwt>=2.8",
-    "cryptography>=42",  # provider tokens encrypted at rest (GitHub)
     "boto3>=1.34",  # optional S3-compatible storage for generated zips (app/storage.py)
     "httpx>=0.27",
     "pytest>=8.0",

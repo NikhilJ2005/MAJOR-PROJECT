@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import os
@@ -10,7 +9,6 @@ import secrets
 import time
 
 import jwt
-from cryptography.fernet import Fernet, InvalidToken
 
 from agent.config import settings
 
@@ -55,35 +53,3 @@ def user_id_from_token(token: str | None) -> int | None:
     except (jwt.PyJWTError, KeyError, ValueError):
         return None
 
-
-# --------------------------------------------------------------------------- secrets at rest
-
-
-def _fernet() -> Fernet:
-    return Fernet(base64.urlsafe_b64encode(hashlib.sha256(f"vibestack-tokens:{_secret()}".encode()).digest()))
-
-
-def encrypt(value: str) -> str:
-    """Encrypt a provider token (e.g. GitHub) before it is stored."""
-    return _fernet().encrypt(value.encode()).decode()
-
-
-def decrypt(value: str) -> str | None:
-    """None when the key changed (SECRET_KEY rotated): the user simply connects again."""
-    try:
-        return _fernet().decrypt(value.encode()).decode()
-    except InvalidToken:
-        return None
-
-
-def signed_state(payload: dict, minutes: int = 10) -> str:
-    """A short-lived signed value for OAuth `state` (protects the callback against CSRF)."""
-    return jwt.encode({**payload, "purpose": "oauth", "exp": int(time.time()) + minutes * 60}, _secret(), algorithm="HS256")
-
-
-def read_state(state: str) -> dict | None:
-    try:
-        data = jwt.decode(state, _secret(), algorithms=["HS256"])
-    except jwt.PyJWTError:
-        return None
-    return data if data.get("purpose") == "oauth" else None

@@ -28,17 +28,7 @@ from agent import plugins, storage
 from agent.config import settings
 from agent.stacks import STACKS
 
-from . import github
-from .accounts import (
-    create_token,
-    decrypt,
-    encrypt,
-    hash_password,
-    read_state,
-    signed_state,
-    user_id_from_token,
-    verify_password,
-)
+from .accounts import create_token, hash_password, user_id_from_token, verify_password
 from .mcp_server import build_mcp
 from .ops import RateLimiter, RequestContext, client_ip, metrics_text, setup_logging, setup_sentry
 from .preview import PreviewError, PreviewManager
@@ -56,7 +46,7 @@ previews = PreviewManager()
 async def lifespan(_: FastAPI):
     app.state.proxy = httpx.AsyncClient(timeout=30, trust_env=False)
     # A fresh MCP server per lifespan: its session manager can only run once.
-    mcp = build_mcp(manager, store, start_run, push=push_project, preview=_preview_path)
+    mcp = build_mcp(manager, store, start_run, preview=_preview_path)
     app.state.mcp_app = mcp.streamable_http_app(
         streamable_http_path="/",
         stateless_http=True,
@@ -156,116 +146,6 @@ def me(user: CurrentUser) -> dict[str, Any]:
     return {"id": user["id"], "email": user["email"], "is_admin": user["is_admin"]}
 
 
-# --------------------------------------------------------------------------- GitHub: sign in, push
-
-
-def _public_url(request: Request) -> str:
-    """This server's address as the browser sees it (PUBLIC_URL, else the request's own host)."""
-    return (os.getenv("PUBLIC_URL") or str(request.base_url)).rstrip("/")
-
-
-@app.get("/api/auth/github/start")
-def github_start(request: Request, token: str | None = None, next: str = "/") -> RedirectResponse:
-    """Send the browser to GitHub. With ?token= (already logged in) GitHub is connected to that account;
-    `next` is the page to come back to (a path on this site only)."""
-    if not github.enabled():
-        raise HTTPException(status_code=404, detail="GitHub sign-in is not configured on this server")
-    state = signed_state({"uid": user_id_from_token(token), "next": next if next.startswith("/") and not next.startswith("//") else "/"})
-    return RedirectResponse(github.authorize_url(state, f"{_public_url(request)}/api/auth/github/callback"))
-
-
-@app.get("/api/auth/github/callback")
-def github_callback(request: Request, code: str = "", state: str = "") -> RedirectResponse:
-    """GitHub sends the user back here: log in (or sign up), store the encrypted token, return to the UI."""
-    ui = os.getenv("UI_URL", "").rstrip("/")
-    data = read_state(state)
-    if data is None or not code:
-        return RedirectResponse(f"{ui}/?login_error=GitHub+sign-in+expired,+please+try+again")
-    try:
-        token = github.exchange_code(code, f"{_public_url(request)}/api/auth/github/callback")
-        who = github.profile(token)
-    except github.GitHubError as exc:
-        log.warning("GitHub sign-in failed: %s", exc)
-        return RedirectResponse(f"{ui}/?login_error=GitHub+sign-in+failed")
-    user_id = data.get("uid")
-    if user_id is None:
-        existing = store.user_by_email(who["email"])
-        if existing:
-            user_id = existing["id"]
-        elif settings.access_code and who["email"] not in settings.admin_emails:
-            return RedirectResponse(f"{ui}/?login_error=This+server+is+invite-only:+create+an+account+with+the+invite+code+first")
-        else:
-            user_id = store.add_user(who["email"], "!github")  # no password: this account signs in with GitHub
-    store.save_connection(user_id, "github", who["login"], encrypt(token))
-    back = data.get("next") or "/"
-    return RedirectResponse(f"{ui}{back}{'&' if '?' in back else '?'}login={create_token(user_id)}")
-
-
-def _github_token(user: dict[str, Any]) -> tuple[str, str]:
-    """(login, token) of the user's GitHub connection, or 409 when GitHub is not connected."""
-    conn = store.connection(user["id"], "github")
-    token = decrypt(conn["token_enc"]) if conn else None
-    if not conn or not token:
-        raise HTTPException(status_code=409, detail="connect your GitHub account first")
-    return conn["login"], token
-
-
-@app.get("/api/auth/github")
-def github_connection(user: CurrentUser) -> dict[str, Any]:
-    conn = store.connection(user["id"], "github")
-    return {"enabled": github.enabled(), "connected": bool(conn), "login": conn["login"] if conn else None}
-
-
-class GitHubPush(BaseModel):
-    repo: str | None = Field(default=None, max_length=90)
-    private: bool = True
-
-
-def push_project(project_id: str, user: dict[str, Any], repo: str | None = None, private: bool = True) -> dict[str, Any]:
-    """Push a project's current version to the user's GitHub repository. Shared by the API and MCP."""
-    project = own_project(project_id, user)
-    run_id = project["current_run_id"]
-    if not run_id:
-        raise HTTPException(status_code=409, detail="the project has no working version to push yet")
-    login, token = _github_token(user)
-    name = github.repo_name(repo or (project["github_repo"] or "").split("/")[-1] or project["name"])
-    files = manager.files(run_id)
-    files["README.md"] = github.with_badge(files.get("README.md", ""), f"{login}/{name}")
-    run = store.run(run_id)
-    message = f"VibeStack v{run['version']}: {' '.join(run['prompt'].split())[:72]}"
-    try:
-        result = github.push(token, login, name, files, message, private)
-    except github.GitHubError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    store.set_github(project_id, result["repo"], run_id)
-    return {**result, "version": run["version"]}
-
-
-@app.post("/api/projects/{project_id}/github")
-async def push_to_github(project_id: str, body: GitHubPush, user: CurrentUser) -> dict[str, Any]:
-    """Push the current version to GitHub: the repository is created on the first push."""
-    return await run_in_threadpool(push_project, project_id, user, body.repo, body.private)
-
-
-@app.get("/api/projects/{project_id}/github")
-async def github_status(project_id: str, user: CurrentUser) -> dict[str, Any]:
-    """Where the project is pushed, which version is there, and its latest CI run."""
-    project = own_project(project_id, user)
-    if not project["github_repo"]:
-        return {"repo": None}
-    pushed = store.run(project["github_pushed_run_id"]) if project["github_pushed_run_id"] else None
-    ci = None
-    conn = store.connection(user["id"], "github")
-    token = decrypt(conn["token_enc"]) if conn else None
-    if token:
-        try:
-            ci = await run_in_threadpool(github.ci_status, token, project["github_repo"])
-        except github.GitHubError as exc:
-            log.info("CI status unavailable: %s", exc)
-    return {"repo": project["github_repo"], "url": f"https://github.com/{project['github_repo']}",
-            "version": pushed["version"] if pushed else None, "ci": ci}
-
-
 # --------------------------------------------------------------------------- runs
 
 
@@ -312,7 +192,6 @@ def config() -> dict[str, Any]:
         "stacks": [{"name": s.name, "label": s.label} for s in STACKS.values()],
         "plugins": plugins.describe(),
         "provider": settings.llm_provider,
-        "github_enabled": github.enabled(),
         "models": {"strong": settings.strong_model, "cheap": settings.cheap_model, "fallback": settings.fallback_model},
     }
 

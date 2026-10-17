@@ -64,14 +64,13 @@ Every generated project contains:
   - **Server:** at `/mcp/`, so Claude Desktop, Cursor or VS Code can build and edit projects ([docs/MCP.md](docs/MCP.md)).
   - **Client:** the Reflector can use other MCP servers' tools.
 - **Plugins:** one `.py` file adds files, static checks, prompt rules or tools ([docs/PLUGINS.md](docs/PLUGINS.md)). Ten are included, among them deploy configs, seed data, OpenAPI export and a secrets scan.
-- **GitHub:** sign in with GitHub, then **Push to GitHub** creates a private repository with the app, and every later version is a new commit. The workspace shows the app's own CI result.
 - **Runs anywhere:** the same Docker image runs on Railway, Render, Fly.io or any VM (`docker compose --profile full up` brings Postgres and S3-compatible MinIO). Generated zips can live in any S3-compatible bucket ([docs/DEPLOY.md](docs/DEPLOY.md)).
 - **Operations:**
   - Builds interrupted by a redeploy resume from their last checkpoint.
   - JSON logs with request ids.
   - `/api/metrics` (Prometheus).
   - Optional Sentry.
-  - Login rate limits, security headers, and GitHub tokens encrypted at rest.
+  - Login rate limits and security headers.
   - CI runs the platform tests on a real Postgres and a browser smoke test.
 
 ## Repository layout

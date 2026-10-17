@@ -49,10 +49,9 @@ def summary(snap: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_mcp(manager: RunManager, store: Store, start_run: Callable[..., str],
-              push: Callable[..., dict[str, Any]] | None = None,
               preview: Callable[[str], str] | None = None) -> MCPServer:
-    """Create the MCP server. `start_run(user, prompt, options)`, `push(project_id, user, repo)` and
-    `preview(run_id) -> path` are the same functions the HTTP API uses."""
+    """Create the MCP server. `start_run(user, prompt, options)` and `preview(run_id) -> path` are the
+    same functions the HTTP API uses."""
     server = MCPServer(name="VibeStack", instructions=INSTRUCTIONS, version="2.0.0")
 
     def user_from(ctx: Context) -> dict[str, Any]:
@@ -152,20 +151,6 @@ def build_mcp(manager: RunManager, store: Store, start_run: Callable[..., str],
         except HTTPException as exc:
             raise ToolError(str(exc.detail)) from None
         return await finish(run_id, wait)
-
-    @server.tool()
-    async def push_to_github(project_id: str, ctx: Context, repo: str = "") -> dict[str, Any]:
-        """Push the project's current version to the user's GitHub (a private repo is created on the first push).
-
-        The user must have connected GitHub in the VibeStack web app once.
-        """
-        if push is None:
-            raise ToolError("GitHub is not configured on this server")
-        user = user_from(ctx)
-        try:
-            return await asyncio.to_thread(push, project_id, user, repo or None)
-        except HTTPException as exc:
-            raise ToolError(str(exc.detail)) from None
 
     @server.tool()
     async def preview_url(run_id: str, ctx: Context) -> str:

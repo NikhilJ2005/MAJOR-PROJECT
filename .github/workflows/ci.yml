@@ -73,6 +73,7 @@ jobs:
         env:
           FAKE_LLM: "1"
         run: |
+          export DATA_DIR="$(mktemp -d)"
           uvicorn app.main:app --port 8766 &
           for i in $(seq 1 60); do curl -sf localhost:8766/api/health && break; sleep 1; done
           python scripts/ui_smoke.py /tmp
