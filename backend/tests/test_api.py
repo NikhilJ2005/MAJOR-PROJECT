@@ -1,4 +1,5 @@
 import io
+import json
 import time
 import uuid
 import zipfile
@@ -58,8 +59,12 @@ def test_end_to_end_over_http(fake_llm):
         token = me["Authorization"][7:]
         with client.stream("GET", f"/api/runs/{run_id}/events?token={token}") as resp:
             body = "".join(resp.iter_text())
-        assert '"node": "parse_spec"' in body and '"node": "package"' in body
-        with client.stream("GET", f"/api/runs/{run_id}/events?token={token}", headers={"Last-Event-ID": "3"}) as resp:
+        events = [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
+        nodes = [e["node"] for e in events if e["type"] == "node"]
+        assert nodes[0] == "parse_spec" and nodes[-1] == "package"
+        assert any(e["type"] == "progress" and e["node"] == "parse_spec" for e in events)  # live progress
+        after = next(e["seq"] for e in events if e["type"] == "node" and e["node"] == "parse_spec")
+        with client.stream("GET", f"/api/runs/{run_id}/events?token={token}", headers={"Last-Event-ID": str(after)}) as resp:
             assert '"node": "parse_spec"' not in "".join(resp.iter_text())
 
         assert "Blueprint" in client.get(f"/api/runs/{run_id}/files/app/routers/post.py", headers=me).text

@@ -30,27 +30,31 @@ from .config import settings
 from .frontend import UI, UIConfig, check_frontend, default_ui
 from .healing import (
     classify_error,
+    editable,
     history_entry,
     locate_failing_file,
     related_files,
     repair_rung,
+    repair_target,
     should_continue,
 )
-from .ledger import diff, entry, ledger_markdown, model_names, write_artifact
+from .ledger import diff, entry, ledger_markdown, model_names, progress, write_artifact
 from .llm import LLMError, Usage, check_budget, get_llm, parse_file_blocks, structured
 from .mcp_tools import load_tools as load_mcp_tools
 from .sandbox import GateResult, get_sandbox
-from .stacks import entity_files, get_stack
+from .stacks import get_stack
 from .state import AgentState, EntitySpec, ProjectSpec
 from .testwriter import (
     AI_TEST_FILES,
     EDGE_TESTS,
     RULE_TESTS,
+    calibrate,
     get_test_source,
     judge,
     needs_rule_tests,
     parse_dispute,
     remove_test,
+    touches_action,
     write_rule_tests,
 )
 from .tools import Toolbox
@@ -135,8 +139,9 @@ def design_changes(old: ProjectSpec, new: ProjectSpec) -> dict[str, list[str]]:
     }
 
 
-def _rule_tests(llm: Any, spec: ProjectSpec, ledger: list[dict[str, Any]], usage: Usage) -> dict[str, str]:
-    """Call 2: business-rule tests from the requirements, written before any code exists."""
+def _rule_tests(llm: Any, spec: ProjectSpec, ledger: list[dict[str, Any]], usage: Usage,
+                calibrated: bool = True) -> dict[str, str]:
+    """Call 2: business-rule tests from the requirements, written before any code exists, then calibrated."""
     if not needs_rule_tests(spec):
         return {}
     try:
@@ -150,7 +155,14 @@ def _rule_tests(llm: Any, spec: ProjectSpec, ledger: list[dict[str, Any]], usage
         return {}
     ledger.append(entry("architect", f"wrote {_count_tests(source)} business-rule tests",
                         "from the requirements only, before any code exists", files=[RULE_TESTS]))
-    return {RULE_TESTS: source}
+    if calibrated:
+        progress("parse_spec", "Checking the rule tests against the verified templates…")
+        source, removed = calibrate(source, spec, render_project(spec))
+        if removed:
+            ledger.append(entry("architect", f"removed {len(removed)} rule test(s) that contradict the verified contract",
+                                "calibration: the verified template code fails them, so the tests are wrong: "
+                                + ", ".join(removed)))
+    return {RULE_TESTS: source} if source else {}
 
 
 def parse_spec(state: AgentState) -> dict[str, Any]:
@@ -164,7 +176,9 @@ def parse_spec(state: AgentState) -> dict[str, Any]:
             "ledger": [entry("architect", f"used provided spec ({spec.stack})", "spec supplied with the request")],
         }
     llm = _require_llm()
+    progress("parse_spec", "Designing the data model, rules and screens…")
     spec, missing, usage = _design(llm, state)
+    progress("parse_spec", f"Designed {len(spec.entities)} entities; writing business-rule tests before any code…")
     changes = design_changes(ProjectSpec.model_validate(state["base_spec"]), spec) if state.get("base_spec") else None
     kinds = Counter(r.kind for r in spec.requirements)
     names = ", ".join(e.name for e in spec.entities)
@@ -180,10 +194,12 @@ def parse_spec(state: AgentState) -> dict[str, Any]:
             action += "; the previous version failed, so every entity is rebuilt"
             changes = None
     ledger = [entry("architect", action, coverage, model=model_names(usage))]
-    files = _rule_tests(llm, spec, ledger, usage)
+    files = _rule_tests(llm, spec, ledger, usage, calibrated=_opts(state).get("calibrate", True))
     ledger[0]["tokens"] = usage.total_tokens
     out: dict[str, Any] = {"spec": spec.model_dump(), "status": "spec_ready", "usage": usage.as_state(), "ledger": ledger}
-    if files:
+    if files and _opts(state).get("rule_tests") is False:
+        out["held_out"] = files  # ablation study: written, but only used afterwards to count escaped bugs
+    elif files:
         out["files"] = files
     if changes is not None:
         out["changes"] = changes
@@ -229,33 +245,56 @@ def generate(state: AgentState) -> dict[str, Any]:
     mode = _opts(state).get("codegen_mode") or settings.codegen_mode
     llm = get_llm() if mode == "llm" else None
 
-    # Follow-up edit: entities the Architect did not touch keep the code of the previous version.
+    # Only the business logic is written by the model: every model, schema and router comes from the
+    # verified templates. Entities without custom actions need no model call at all.
+    with_actions = [e for e in spec.entities if any(a.entity == e.name for a in spec.actions)]
+
+    # Follow-up edit: entities the Architect did not touch keep their business logic from the version before.
     changes, base_files = state.get("changes"), state.get("base_files") or {}
-    todo = spec.entities
+    todo = with_actions
     if changes is not None:
         touched = set(changes["added"]) | set(changes["changed"])
         kept = [e for e in spec.entities if e.name not in touched]
         for e in kept:
-            files.update({p: base_files[p] for p in entity_files(e) if p in base_files})
-        todo = [e for e in spec.entities if e.name in touched]
+            path = f"app/services/{e.module}.py"
+            if path in base_files:
+                files[path] = base_files[path]
+        todo = [e for e in with_actions if e.name in touched]
         if kept:
             ledger.append(entry("code_generator", f"kept {', '.join(e.name for e in kept)} from version before",
                                 "unchanged by the edit, so their code (and its fixes) is reused"))
 
     if llm is None:
         ledger.append(entry("code_generator", f"rendered {len(files)} files from templates", "deterministic codegen", files=sorted(files)))
+        written = (state.get("files") or {}).get(RULE_TESTS)
+        if written and spec.actions:  # no AI writes business logic here: its tests cannot pass
+            kept = written
+            for name in re.findall(r"^def (test_\w+)", kept, re.MULTILINE):
+                if touches_action(get_test_source(kept, name) or "", spec):
+                    kept = remove_test(kept, name)
+            files[RULE_TESTS] = kept
+            ledger.append(entry("code_generator", "set aside the rule tests of custom actions",
+                                "template mode writes no business logic, so actions answer 501"))
     else:
-        def work(e: EntitySpec) -> tuple[EntitySpec, dict[str, str], str, Usage]:
-            return (e, *_generate_entity(llm, state, spec, e, files))
+        if not todo:
+            ledger.append(entry("code_generator", "no business logic to write",
+                                "no custom actions: the verified templates are the whole backend"))
 
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            for e, new_files, rationale, usage in pool.map(work, todo):
+        def work(e: EntitySpec) -> tuple[EntitySpec, dict[str, str], str, Usage]:
+            return (e, *_generate_service(llm, state, spec, e, files))
+
+        if todo:
+            progress("generate", f"Writing the business logic of {', '.join(e.name for e in todo)}…")
+        with ThreadPoolExecutor(max_workers=max(1, settings.llm_max_parallel)) as pool:
+            for done, (e, new_files, rationale, usage) in enumerate(pool.map(work, todo), 1):
+                progress("generate", f"Wrote {e.name} ({done}/{len(todo)})")
                 total.add(usage)
                 files.update(new_files)
+                names = ", ".join(a.name for a in spec.actions if a.entity == e.name)
                 ledger.append(
                     entry(
                         "code_generator",
-                        f"wrote {e.name} model/schema/service/router" if new_files else f"kept template for {e.name}",
+                        f"wrote the business logic of {e.name} ({names})" if new_files else f"kept the stubs of {e.name}",
                         rationale,
                         files=sorted(new_files),
                         tokens=usage.total_tokens,
@@ -267,6 +306,7 @@ def generate(state: AgentState) -> dict[str, Any]:
         if same_entities and UI in base_files:
             ui, rationale, usage = base_files[UI], "same entities as before: the app keeps its look", Usage()
         else:
+            progress("generate", "Designing the app's look and dashboard…")
             ui, rationale, usage = _design_ui(llm, state, spec)
         total.add(usage)
         if ui:
@@ -291,31 +331,37 @@ def _design_ui(llm: Any, state: AgentState, spec: ProjectSpec) -> tuple[str | No
     return json.dumps(ui.model_dump(), indent=1) + "\n", "the app's name, colours and dashboard fit the domain", usage
 
 
-def _generate_entity(
-    llm: Any, state: AgentState, spec: ProjectSpec, e: EntitySpec, baseline: dict[str, str]
+def _service_context(spec: ProjectSpec, e: EntitySpec, files: dict[str, str]) -> str:
+    """Read-only code the business logic may need: every model, this entity's schemas, the error type."""
+    paths = [f"app/models/{x.module}.py" for x in spec.entities] + [f"app/schemas/{e.module}.py", "app/errors.py"]
+    return "\n\n".join(f"# {p}\n```python\n{files[p]}```" for p in paths if p in files)
+
+
+def _generate_service(
+    llm: Any, state: AgentState, spec: ProjectSpec, e: EntitySpec, files: dict[str, str]
 ) -> tuple[dict[str, str], str, Usage]:
-    expected = entity_files(e)
+    """Implement the custom actions of one entity: the only code the model writes."""
+    path = f"app/services/{e.module}.py"
     stack = get_stack(spec.stack)
-    reference = "\n\n".join(f"### FILE: {p}\n```python\n{baseline[p]}```" for p in expected)
-    system = prompts.entity_system(stack.name, stack.label, e.module, e.name, e.table)
+    system = prompts.service_system(stack.name, stack.label, e.module)
     notes = plugins.prompt_notes(_plugins(state), stack.name)
     if notes:
         system += f"\n\nAlso follow these project rules:\n{notes}"
-    user = prompts.ENTITY_USER.format(
+    user = prompts.SERVICE_USER.format(
         prompt=state["prompt"],
         requirements=requirements_text(spec.requirements),
         spec=spec.model_dump_json(indent=1, exclude={"requirements"}),
-        name=e.name,
-        reference=reference,
+        module=e.module,
+        stub=files[path],
+        context=_service_context(spec, e, files),
     )
     try:
         text, usage = llm.complete("strong", system, user)
     except LLMError as exc:
-        return {}, f"LLM unavailable ({exc}); template kept", Usage()
-    blocks = parse_file_blocks(text)
-    new_files = {p: blocks[p] for p in expected if p in blocks and blocks[p].strip()}
+        return {}, f"LLM unavailable ({exc}); stubs kept", Usage()
+    body = parse_file_blocks(text).get(path, "")
     m = re.search(r"RATIONALE:\s*(.+)", text)
-    return new_files, (m.group(1).strip() if m else "entity files generated"), usage
+    return ({path: body} if body.strip() else {}), (m.group(1).strip() if m else "business logic written"), usage
 
 
 # --------------------------------------------------------------------------- validate
@@ -330,6 +376,7 @@ def validate(state: AgentState) -> dict[str, Any]:
     if blocking:
         result = GateResult(False, "static", "\n".join(blocking), 0.0)
     else:
+        progress("validate", "Importing and starting the app, then running every test…")
         result = get_sandbox().validate(files, spec.stack)
     validation = result.as_state()
     history = [*state.get("heal_history", []), history_entry(validation, files)]
@@ -337,6 +384,9 @@ def validate(state: AgentState) -> dict[str, Any]:
     it = state.get("iteration", 0)
     action = f"all gates passed in {result.duration_s:.1f}s" if result.ok else f"failed at gate '{result.gate}' after {result.duration_s:.1f}s"
     ledger = [entry("validator", action, "static checks -> import -> boot -> contract, edge-case and rule tests", iteration=it)]
+    if _opts(state).get("resume") and not state.get("heal_history"):
+        ledger.insert(0, entry("validator", "kept fixing the previous version's code",
+                               "same design and code; healing starts again from where it stopped"))
     return {
         "validation": validation,
         "heal_history": history,
@@ -381,7 +431,7 @@ def classify(state: AgentState) -> dict[str, Any]:
     spec = _spec(state)
     v = state["validation"]
     error_class = classify_error(v["log"])
-    path = locate_failing_file(v["log"], state["files"], spec)
+    path = repair_target(locate_failing_file(v["log"], state["files"], spec), state["files"])
     return {
         "error_class": error_class,
         "validation": {**v, "failing_file": path},
@@ -427,6 +477,7 @@ def reflect(state: AgentState) -> dict[str, Any]:
     if llm is not None and path and rung in ("cheap", "strong"):
         try:
             check_budget(state.get("usage"))
+            progress("reflect", f"Repairing {path} with the {rung} model…")
             text, usage, box = _llm_repair(llm, rung, state, path, attempt)
             agent = f"reflector ({rung})"
             changed, diagnosis = _parse_repair(text, files)
@@ -519,10 +570,7 @@ def _llm_repair(llm: Any, role: str, state: AgentState, path: str, attempt: int)
 
 def _parse_repair(text: str, files: dict[str, str]) -> tuple[dict[str, str], str]:
     """Replacement files from a Reflector reply (never tests), plus its diagnosis."""
-    changed = {
-        p: body for p, body in parse_file_blocks(text).items()
-        if p in files and not p.startswith("tests/") and body != files[p]
-    }
+    changed = {p: body for p, body in parse_file_blocks(text).items() if p in files and editable(p) and body != files[p]}
     m = re.search(r"DIAGNOSIS:\s*(.+)", text)
     return changed, (m.group(1).strip() if m else "")
 

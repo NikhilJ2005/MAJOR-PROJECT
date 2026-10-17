@@ -323,6 +323,9 @@ class Options(TypedDict, total=False):
     tools: bool  # the Reflector may call tools (default True)
     edge_tests: bool  # include the spec-derived edge-case tests (default True)
     fixed_repairs: int  # stop after exactly N repairs instead of the progress-based rule
+    rule_tests: bool  # use the Architect's rule tests during validation (default True)
+    calibrate: bool  # check the rule tests against the verified templates before any code (default True)
+    resume: bool  # "keep fixing": validate and heal the given files, skipping design and code generation
 
 
 class AgentState(TypedDict, total=False):
@@ -332,6 +335,7 @@ class AgentState(TypedDict, total=False):
     base_run_id: str  # follow-up edits: the version this run starts from
     base_spec: dict[str, Any]
     base_files: dict[str, str]
+    held_out: dict[str, str]  # ablation study: rule tests kept out of validation, run afterwards
     base_failed: bool  # the version being edited never passed validation: none of its code is reused
     changes: dict[str, list[str]]  # follow-up edits: entities added / changed / removed by the Architect
     spec: dict[str, Any]

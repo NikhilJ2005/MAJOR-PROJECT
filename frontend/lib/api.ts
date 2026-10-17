@@ -101,6 +101,7 @@ export type Snapshot = {
   stop_reason?: string | null;
   report?: string | null;
   has_artifact?: boolean;
+  has_draft?: boolean;
 };
 
 export type PluginInfo = { name: string; description: string; hooks: string[]; default: boolean };
@@ -122,8 +123,9 @@ export type ServerConfig = {
 export type RunEvent = {
   seq: number;
   ts: number;
-  type: "node" | "status" | "error";
+  type: "node" | "status" | "error" | "progress";
   node?: string;
+  text?: string;
   status?: string;
   message?: string;
   ledger?: LedgerEntry[];
@@ -199,15 +201,17 @@ export const api = {
   start: (body: StartRun) => request<{ run_id: string; project_id: string }>("/api/projects", post(body)),
   projects: () => request<Project[]>("/api/projects"),
   project: (id: string) => request<ProjectDetail>(`/api/projects/${id}`),
-  message: (id: string, prompt: string) => request<{ run_id: string; project_id: string }>(`/api/projects/${id}/messages`, post({ prompt })),
+  message: (id: string, prompt: string, mode: "edit" | "fix" = "edit") =>
+    request<{ run_id: string; project_id: string }>(`/api/projects/${id}/messages`, post({ prompt, mode })),
   restore: (id: string, run_id: string) => request<{ current_run_id: string }>(`/api/projects/${id}/current`, post({ run_id })),
   file: async (id: string, path: string) => {
     const res = await fetch(`${API}/api/runs/${id}/files/${path}`, { headers: { Authorization: `Bearer ${getToken()}` } });
     if (!res.ok) throw new Error(`${res.status}`);
     return res.text();
   },
-  previewStatus: (id: string) => request<PreviewInfo>(`/api/runs/${id}/preview`),
-  startPreview: (id: string) => request<PreviewInfo>(`/api/runs/${id}/preview`, { method: "POST" }),
+  previewStatus: (id: string, draft = false) => request<PreviewInfo>(`/api/runs/${id}/preview${draft ? "?draft=true" : ""}`),
+  startPreview: (id: string, draft = false) =>
+    request<PreviewInfo>(`/api/runs/${id}/preview${draft ? "?draft=true" : ""}`, { method: "POST" }),
   eventsUrl: (id: string, after: number) => withToken(`${API}/api/runs/${id}/events?after=${after}`),
   downloadUrl: (id: string) => withToken(`${API}/api/runs/${id}/download`),
 };

@@ -39,6 +39,20 @@ def classify_error(log: str) -> str:
     return "unknown"
 
 
+def editable(path: str) -> bool:
+    """Files the AI may change: the business logic and the app's look. Everything else is verified template code."""
+    return path.startswith("app/services/") and path.endswith(".py") or path == "app/static/ui.json"
+
+
+def repair_target(path: str | None, files: dict[str, str]) -> str | None:
+    """Point a failure inside verified template code at the entity's business logic, where the bug can be."""
+    if path is None or editable(path):
+        return path
+    m = re.match(r"app/(?:routers|models|schemas)/(\w+\.py)$", path)
+    service = f"app/services/{m.group(1)}" if m else None
+    return service if service in files else path
+
+
 def locate_failing_file(log: str, files: dict[str, str], spec: ProjectSpec) -> str | None:
     """Best guess at the generated file that holds the root cause."""
     # 0. The frontend contract check names the JSON file it is about.

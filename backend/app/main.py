@@ -143,6 +143,8 @@ class RunRequest(BaseModel):
 
 class Message(BaseModel):
     prompt: str = Field(min_length=3, max_length=6000)
+    # "edit": change the app as the prompt says. "fix": keep healing the latest version's code as it is.
+    mode: Literal["edit", "fix"] = "edit"
 
 
 @app.get("/api/health")
@@ -244,11 +246,13 @@ def send_message(project_id: str, body: Message, user: CurrentUser) -> dict[str,
     project = own_project(project_id, user)
     if manager.project_busy(project_id):
         raise HTTPException(status_code=409, detail="the agents are still working on this project")
-    # Start from the working version; with none yet, from the latest attempt (an edit or "try again").
-    base = project["current_run_id"] or next((v["run_id"] for v in reversed(store.versions(project_id))), None)
+    latest = next((v["run_id"] for v in reversed(store.versions(project_id))), None)
+    # An edit starts from the working version (with none yet, from the latest attempt);
+    # "keep fixing" continues healing the latest version's own code.
+    base = latest if body.mode == "fix" else project["current_run_id"] or latest
     if base is None:
         raise HTTPException(status_code=409, detail="the project has no version yet")
-    options = {"stack": project["stack"], "codegen_mode": "llm"}
+    options = {"stack": project["stack"], "codegen_mode": "llm", "resume": body.mode == "fix"}
     run_id = start_run(user, body.prompt, options, project_id=project_id, base_run_id=base)
     return {"run_id": run_id, "project_id": project_id}
 
@@ -360,27 +364,37 @@ def _preview_info(p: Any) -> dict[str, Any]:
 
 
 @app.post("/api/runs/{run_id}/preview")
-async def start_preview(run_id: str, user: CurrentUser) -> dict[str, Any]:
-    """Start the generated app as a live process, reachable at a private /preview/<key>/ URL."""
+async def start_preview(run_id: str, user: CurrentUser, draft: bool = False) -> dict[str, Any]:
+    """Start the generated app as a live process, reachable at a private /preview/<key>/ URL.
+
+    draft=true starts the verified template build instead: available while the agents are still
+    working (or after a failed build), with custom actions not written yet.
+    """
     own_run(run_id, user)
     snap = manager.snapshot(run_id)
     if snap is None:
         raise HTTPException(status_code=404, detail="run not found")
-    if snap["status"] != "succeeded":
+    if draft:
+        files, key = manager.draft_files(run_id), f"{run_id}-draft"
+        if not files:
+            raise HTTPException(status_code=409, detail="the draft is not ready yet")
+    elif snap["status"] != "succeeded":
         raise HTTPException(status_code=409, detail="only a successfully validated app can be previewed")
-    files = manager.files(run_id)
+    else:
+        files, key = manager.files(run_id), run_id
+        previews.stop(f"{run_id}-draft")  # the finished app replaces its draft
     stack = (snap.get("spec") or {}).get("stack", "fastapi")
     try:
-        p = await run_in_threadpool(previews.start, run_id, files, stack)
+        p = await run_in_threadpool(previews.start, key, files, stack)
     except PreviewError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return _preview_info(p)
 
 
 @app.get("/api/runs/{run_id}/preview")
-def preview_status(run_id: str, user: CurrentUser) -> dict[str, Any]:
+def preview_status(run_id: str, user: CurrentUser, draft: bool = False) -> dict[str, Any]:
     own_run(run_id, user)
-    return _preview_info(previews.get(run_id))
+    return _preview_info(previews.get(f"{run_id}-draft" if draft else run_id))
 
 
 _HOP_HEADERS = {"connection", "keep-alive", "transfer-encoding", "content-encoding", "content-length", "upgrade"}

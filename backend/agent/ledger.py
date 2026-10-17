@@ -11,6 +11,17 @@ from .config import settings
 from .llm import Usage
 
 
+def progress(node: str, text: str) -> None:
+    """Tell the UI what an agent is doing right now. Does nothing outside a streamed run (CLI, tests)."""
+    from langgraph.config import get_stream_writer
+
+    try:
+        writer = get_stream_writer()
+    except RuntimeError:  # not inside a running graph
+        return
+    writer({"node": node, "text": text})
+
+
 def entry(
     agent: str,
     action: str,

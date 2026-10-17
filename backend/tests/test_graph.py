@@ -56,24 +56,58 @@ def test_clean_run_needs_no_healing():
     assert values["spec"]["requirements"]  # the Architect lists requirements itself
 
 
-def test_edge_case_tests_find_a_bug_the_contract_tests_miss():
-    """The model forgets to turn constraint errors into 409: the spec-derived edge-case test notices."""
-    fake = FakeLLM(mistake="swallow_fk")
+def test_rule_tests_written_before_the_code_find_a_business_logic_bug():
+    """The model gets an action's answer wrong: only the Architect's rule test, written first, notices."""
+    fake = FakeLLM(mistake="wrong_rule")
     values = _run(initial_state("blog", {"codegen_mode": "llm"}), fake)
     assert values["status"] == "succeeded", values.get("report")
-    found = [b for b in values["bugs"] if b["found_by"] == "edge-case tests"]
+    found = [b for b in values["bugs"] if b["found_by"] == "rule tests"]
     assert found and all(b["fixed"] for b in found)
     assert "reflect:cheap" in fake.calls
+    reflector = next(e for e in values["ledger"] if e["agent"].startswith("reflector"))
+    assert list(reflector["diff"]) == ["app/services/post.py"]
+
+
+def test_only_the_business_logic_is_written_by_the_model():
+    """Models, schemas and routers stay verified template code; one call per entity with actions."""
+    fake = FakeLLM()
+    values = _run(initial_state("blog", {"codegen_mode": "llm"}), fake)
+    assert values["status"] == "succeeded"
+    assert fake.calls.count("entity") == 1  # Post has the only action; Comment needs no call
+    templates = values["template_files"]
+    changed = sorted(p for p in templates if p.startswith("app/") and values["files"][p] != templates[p])
+    assert changed == ["app/services/post.py", "app/static/ui.json"] or changed == ["app/services/post.py"]
+
+
+def test_rule_tests_that_contradict_the_verified_contract_are_removed(monkeypatch):
+    """Calibration: a CRUD rule test the verified templates fail is wrong; action tests are kept."""
+    from agent import testwriter
+
+    wrong = (
+        "def test_list_is_never_empty(client, user_headers):\n"
+        "    assert client.get('/posts/', headers=user_headers).status_code == 418\n\n\n"
+        "def test_stats_counts(client, user_headers):\n"
+        "    assert client.get('/posts/stats', headers=user_headers).json()['count'] >= 0\n"
+    )
+    monkeypatch.setattr("agent.nodes.write_rule_tests", lambda llm, spec: (wrong, llm_mod.Usage()))
+    values = _run(initial_state("blog", {"codegen_mode": "llm"}), FakeLLM())
+    assert values["status"] == "succeeded", values.get("report")
+    rules = values["files"]["tests/test_rules.py"]
+    assert "test_list_is_never_empty" not in rules and "test_stats_counts" in rules
+    assert any("contradict the verified contract" in e["action"] for e in values["ledger"])
+    assert testwriter.touches_action("client.get('/posts/stats')", testwriter.ProjectSpec.model_validate(BLOG_SPEC))
 
 
 def test_escalates_only_when_stalled_cheap_then_strong_then_templates():
     """A reflector whose fixes never work: each stall climbs one rung."""
     fake = FakeLLM(mistake="typo", fix_reflection=False)
     values = _run(initial_state("blog", {"codegen_mode": "llm"}), fake)
-    assert [c for c in fake.calls if c.startswith("reflect")] == ["reflect:cheap", "reflect:strong"]
-    assert values["status"] == "succeeded"
-    assert values["iteration"] == 3
-    assert any(e["agent"] == "template_repair" for e in values["ledger"])
+    repairs = [e["agent"] for e in values["ledger"] if e["agent"].startswith(("reflector", "template"))]
+    assert repairs[:3] == ["reflector (cheap)", "reflector (strong)", "template_repair"]
+    # The templates only hold stubs for business logic: the app starts, but its action rule still fails,
+    # so healing stops honestly instead of claiming success.
+    assert values["status"] == "failed"
+    assert values["stop_reason"]
 
 
 def test_stops_when_no_repair_level_helps(monkeypatch):

@@ -1,6 +1,7 @@
 """The VibeStack harness as a LangGraph state machine of 8 agents.
 
     Architect -> Planner -> Code Generator -> Validator --ok-----------------------> Packager -> END
+    ("keep fixing" starts at the Validator with the previous version's code)
                                               Validator --fail, making progress--> Error Classifier -> Reflector -> Validator
                                               Validator --fail, no progress------> Circuit Breaker -> END
 
@@ -43,7 +44,9 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     for name in NODE_ORDER:
         g.add_node(name, getattr(nodes, name))
 
-    g.add_edge(START, "parse_spec")
+    # "Keep fixing" (options.resume) continues healing the given code: straight to the Validator.
+    g.add_conditional_edges(START, lambda s: "validate" if (s.get("options") or {}).get("resume") else "parse_spec",
+                            ["parse_spec", "validate"])
     g.add_edge("parse_spec", "plan")
     g.add_edge("plan", "generate")
     g.add_edge("generate", "validate")
@@ -95,6 +98,8 @@ def initial_state(
     if base:
         state.update(base_run_id=base["run_id"], base_spec=base["spec"], base_files=base["files"],
                      base_failed=bool(base.get("failed")))
+        if state["options"].get("resume"):  # keep fixing: the same design and code, a fresh healing history
+            state.update(spec=base["spec"], files=base["files"], template_files=base.get("template_files") or {})
     return state
 
 

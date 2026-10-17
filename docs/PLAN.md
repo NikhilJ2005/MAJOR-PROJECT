@@ -18,9 +18,12 @@
 - [x] **Lovable-style UI**: a prompt-first home page, and a workspace with the chat on the left and the live app on the right.
 - [x] **Tool-using Reflector**: it reads, searches, stages a fix and runs the failing tests itself. Tools can also come from MCP servers and plugins.
 - [x] **Ablation evals** with a held-out escaped-bug check, written as CSV and Markdown.
+- [x] **Focused code generation**: the AI writes only the business logic (custom actions); everything else is verified templates. Repairs can only change those files.
+- [x] **Rule-test calibration**: the Architect's tests are checked against the verified templates before any code is written.
+- [x] **Keep fixing / Rebuild** after a failed version, a **draft preview** within about a minute, and live progress from every agent.
 
 ## Still to do (team)
-1. **Provider:** create a Gemini key (aistudio.google.com/apikey). Run `python scripts/check_llm.py --list` to see the model ids, then `python scripts/check_llm.py --full`.
+1. **Provider:** create a Gemini key (aistudio.google.com/apikey) and **enable billing**: Gemini 4 Argon, the default builder, has no free tier. Run `python scripts/check_llm.py --list` to see the model ids, then `python scripts/check_llm.py` (it also checks function calling), then `--full`. Without billing, set `FREE_TIER=1`.
 2. **Real-model numbers for the slides and paper.** Each command takes about 30–60 minutes on a free tier.
    ```bash
    cd backend
@@ -36,7 +39,7 @@
    - Delete `OPENROUTER_API_KEY`, `STRONG_MODEL`, `CHEAP_MODEL` and `FALLBACK_MODEL` if they are set.
    - Keep the `/data` volume.
    - Build one project per framework, including one follow-up edit.
-4. **Demo-day budget:** a $5–10 top-up (OpenRouter, or Gemini paid Flash) gives a stronger model and no rate limits on the day.
+4. **Budget:** about $0.30–0.80 per app with Gemini 4 Argon (launch price until 30 Nov). A $10–20 top-up covers development and the demo.
 5. Record a **demo video** as the fallback, then freeze the code on 22 Oct.
 
 ## Demo script (about 6 minutes)
@@ -58,7 +61,7 @@
    - MCP in both directions
    - one contract for three frameworks
 4. **Numbers (1 min):** the ablation table. It shows what each idea buys:
-   - escaped bugs without edge tests
+   - escaped bugs without the rule tests, and wrong tests removed by calibration
    - cost and time of the fixed limit versus dynamic stopping
    - repairs with tools versus without
 

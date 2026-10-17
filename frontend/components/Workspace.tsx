@@ -41,8 +41,8 @@ export function Workspace({ projectId, onHome }: { projectId: string; onHome: ()
   const shown = useRun(selected === running?.run_id ? null : selected);
   const snap = selected === running?.run_id ? live.snap : shown.snap;
 
-  async function send(prompt: string) {
-    const { run_id } = await api.message(projectId, prompt);
+  async function send(prompt: string, mode: "edit" | "fix" = "edit") {
+    const { run_id } = await api.message(projectId, prompt, mode);
     await load();
     setSelected(run_id);
   }
@@ -108,7 +108,7 @@ function ChatPanel({
   project: ProjectDetail;
   selected: string | null;
   onSelect: (id: string) => void;
-  onSend: (prompt: string) => Promise<void>;
+  onSend: (prompt: string, mode?: "edit" | "fix") => Promise<void>;
   onRestore: (id: string) => Promise<void>;
   onHome: () => void;
   liveSteps: ReturnType<typeof deriveSteps> | null;
@@ -119,17 +119,18 @@ function ChatPanel({
   const end = useRef<HTMLDivElement>(null);
   const busy = project.versions.some((v) => v.status === "running");
   const canEdit = project.versions.length > 0 && !busy;
-  const lastFailed = !busy && !project.current_run_id && project.versions.length > 0;
+  const latest = project.versions[project.versions.length - 1];
+  const lastFailed = !busy && !!latest && latest.status !== "succeeded";
 
   const progress = liveSteps?.map((s) => s.state).join() ?? "";
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end", behavior: "smooth" });
   }, [project.versions.length, progress]);
 
-  async function send(prompt: string) {
+  async function send(prompt: string, mode: "edit" | "fix" = "edit") {
     setError(null);
     try {
-      await onSend(prompt);
+      await onSend(prompt, mode);
       setText("");
     } catch (err) {
       setError((err as Error).message.replace(/^\d+: /, ""));
@@ -165,13 +166,24 @@ function ChatPanel({
       </div>
       <form onSubmit={submit} className="border-t border-ink-800 p-3">
         {lastFailed && (
-          <button
-            type="button"
-            onClick={() => send("Try again: rebuild this app and fix whatever stopped it.")}
-            className="mb-2 rounded-full border border-signal-400/50 px-3 py-1 text-sm text-signal-300 hover:bg-signal-400/10"
-          >
-            Try again
-          </button>
+          <div className="mb-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => send("Keep fixing the current version.", "fix")}
+              title="Continue healing this version's code: no new design, no new code"
+              className="rounded-full bg-signal-400 px-3 py-1 text-sm font-semibold text-ink-950 hover:bg-signal-300"
+            >
+              Keep fixing
+            </button>
+            <button
+              type="button"
+              onClick={() => send("Rebuild this app from its design and fix whatever stopped it.")}
+              title="Write the business logic again from the same design"
+              className="rounded-full border border-ink-600 px-3 py-1 text-sm text-ink-200 hover:border-ink-400 hover:text-ink-50"
+            >
+              Rebuild from scratch
+            </button>
+          </div>
         )}
         <div className="rounded-xl border border-ink-700 bg-ink-900 p-2 focus-within:border-signal-400">
           <label htmlFor="followup" className="sr-only">Ask for a change</label>
@@ -184,7 +196,7 @@ function ChatPanel({
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && text.trim().length >= 3 && canEdit) submit(e);
             }}
-            placeholder={busy ? "The agents are working…" : lastFailed ? "Describe a change, or press Try again" : "Ask for a change, e.g. “add product reviews with a 1–5 rating”"}
+            placeholder={busy ? "The agents are working…" : lastFailed ? "Describe a change, or press Keep fixing" : "Ask for a change, e.g. “add product reviews with a 1–5 rating”"}
             className="w-full resize-none bg-transparent px-1.5 py-1 text-sm text-ink-50 outline-none placeholder:text-ink-500 disabled:opacity-60"
           />
           <div className="flex items-center justify-between">
@@ -235,6 +247,9 @@ function Message({
             .
           </p>
         )}
+        {snap && version.status !== "running" && version.status !== "succeeded" && (
+          <FailureSummary snap={snap} />
+        )}
         {changes && (changes.added.length + changes.changed.length + changes.removed.length > 0) && (
           <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
             {changes.added.map((n) => <span key={n} className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-emerald-300">+ {n}</span>)}
@@ -255,6 +270,32 @@ function Message({
   );
 }
 
+/** Why a version stopped, in plain words: the open problems first, the log behind "Details". */
+function FailureSummary({ snap }: { snap: Snapshot }) {
+  const open = (snap.bugs ?? []).filter((b) => !b.fixed).slice(0, 3);
+  return (
+    <div className="mt-2 rounded-lg border border-rose-400/30 bg-rose-500/5 px-3 py-2 text-sm">
+      {snap.stop_reason && <p className="text-rose-200">Stopped: {snap.stop_reason}</p>}
+      {open.length > 0 && (
+        <ul className="mt-1 space-y-1 text-ink-200">
+          {open.map((b) => (
+            <li key={b.id} className="truncate" title={b.detail}>
+              <span className="text-ink-400">{b.found_by}:</span> <span className="font-mono text-xs">{b.detail}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {snap.validation?.log && (
+        <details className="mt-1">
+          <summary className="cursor-pointer text-xs text-ink-400 hover:text-ink-100">Details</summary>
+          <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-ink-400">{snap.validation.log.slice(-2000)}</pre>
+        </details>
+      )}
+      <p className="mt-1 text-xs text-ink-400">Press Keep fixing to continue on this code, or describe a change.</p>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------- the live app
 
 function PreviewPane({ runId, snap }: { runId: string | null; snap: Snapshot | null }) {
@@ -263,15 +304,17 @@ function PreviewPane({ runId, snap }: { runId: string | null; snap: Snapshot | n
   const [mobile, setMobile] = useState(false);
   const [reload, setReload] = useState(0);
   const ready = snap?.status === "succeeded" && snap.run_id === runId;
+  // While the agents work (or after a failed build), the verified template build runs as a draft.
+  const draft = !ready && !!snap?.has_draft && snap.run_id === runId;
 
   useEffect(() => {
-    if (!ready || !runId) return;
+    if ((!ready && !draft) || !runId) return;
     let cancelled = false;
     (async () => {
       setError(null);
       try {
-        const status = await api.previewStatus(runId);
-        const info = status.running ? status : await api.startPreview(runId);
+        const status = await api.previewStatus(runId, draft);
+        const info = status.running ? status : await api.startPreview(runId, draft);
         if (!cancelled) setBase(info.base);
       } catch (e) {
         if (!cancelled) setError((e as Error).message);
@@ -281,20 +324,20 @@ function PreviewPane({ runId, snap }: { runId: string | null; snap: Snapshot | n
       cancelled = true;
       setBase(null);
     };
-  }, [ready, runId, reload]);
+  }, [ready, draft, runId, reload]);
 
-  if (!snap || snap.status === "running")
+  if (!snap || (snap.status === "running" && !draft))
     return (
       <div className="grid h-full place-items-center p-8 text-center">
         <div>
           <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-2 border-ink-700 border-t-signal-400" />
-          <p className="font-display text-lg text-ink-100">Your app is being built</p>
-          <p className="mt-1 text-sm text-ink-400">It opens here as soon as every test passes.</p>
+          <p className="font-display text-lg text-ink-100">Your app is being designed</p>
+          <p className="mt-1 text-sm text-ink-400">A first draft opens here in about a minute.</p>
         </div>
       </div>
     );
-  if (snap.status !== "succeeded")
-    return <div className="p-8"><Empty text={`This version did not pass validation${snap.stop_reason ? ` (${snap.stop_reason})` : ""}. See Quality for what the agents tried, or ask for a change.`} /></div>;
+  if (!ready && !draft)
+    return <div className="p-8"><Empty text={`This version did not pass validation${snap.stop_reason ? ` (${snap.stop_reason})` : ""}. See Quality for what the agents tried, or press Keep fixing.`} /></div>;
 
   const url = base ? `${API}${base}/` : null;
   return (
@@ -318,6 +361,13 @@ function PreviewPane({ runId, snap }: { runId: string | null; snap: Snapshot | n
           </a>
         )}
       </div>
+      {draft && (
+        <p className="border-b border-ink-800 bg-signal-400/10 px-4 py-2 text-sm text-signal-200">
+          {snap.status === "running"
+            ? "Draft: every screen already works. The agents are still writing and testing the business rules (custom actions)."
+            : `Draft of a version that did not pass validation${snap.stop_reason ? ` (${snap.stop_reason})` : ""}: screens work, custom actions do not yet.`}
+        </p>
+      )}
       {error && <pre className="m-4 whitespace-pre-wrap rounded-lg bg-rose-500/10 p-3 font-mono text-xs text-rose-300">{error}</pre>}
       <div className="flex min-h-0 flex-1 justify-center bg-ink-950 p-3">
         {url && (

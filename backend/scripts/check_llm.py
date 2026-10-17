@@ -19,6 +19,18 @@ from agent.config import settings
 from agent.llm import ProviderLLM
 
 
+def tool_probe(llm: ProviderLLM) -> str:
+    """Does the strong model call a tool when asked to? (Without it the Reflector repairs in one shot.)"""
+    schema = {"type": "function", "function": {"name": "add", "description": "Add two numbers",
+              "parameters": {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
+                             "required": ["a", "b"]}}}
+    try:
+        msg = llm.chat("strong").bind_tools([schema]).invoke([("user", "Use the add tool to add 2 and 3.")])
+    except Exception as exc:  # noqa: BLE001
+        return f"not available ({type(exc).__name__}: {str(exc)[:100]})"
+    return "OK" if msg.tool_calls else "the model answered without calling the tool"
+
+
 def list_models() -> int:
     """Print the model ids from the provider's OpenAI-compatible /models endpoint."""
     import httpx
@@ -59,6 +71,9 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             ok = False
             print(f"  FAIL  {role:<8} {model:<36} {type(exc).__name__}: {str(exc)[:160]}")
+            if model.startswith("gemini-4") and any(code in str(exc) for code in ("403", "429", "PERMISSION", "quota")):
+                print("        Gemini 4 Argon has no free tier: enable billing for this key, or set FREE_TIER=1")
+    print(f"\nfunction calling (the Reflector's tools) on {settings.strong_model}: {tool_probe(llm)}")
     if not ok:
         print("\nFix: check the model ids your provider lists and set STRONG_MODEL / CHEAP_MODEL /")
         print("FALLBACK_MODEL (see --list), or check your credit balance with the provider")
