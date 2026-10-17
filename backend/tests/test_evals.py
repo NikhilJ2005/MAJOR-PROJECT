@@ -3,6 +3,7 @@
 import yaml
 
 from agent import llm as llm_mod
+from agent.fake_llm import BLOG_SPEC
 from agent.graph import build_graph
 from evals.run import HERE, run_case
 
@@ -11,16 +12,17 @@ def _case(case_id):
     return next(c for c in yaml.safe_load((HERE / "prompts.yaml").read_text()) if c["id"] == case_id)
 
 
-def test_without_edge_tests_a_bug_escapes_and_the_held_out_check_counts_it():
+def test_without_rule_tests_a_business_bug_escapes_and_the_held_out_check_counts_it():
     graph = build_graph()
     try:
-        full = run_case(graph, _case("blog"), "fake", "fastapi", "full", mistake="swallow_fk")
-        blind = run_case(graph, _case("blog"), "fake", "fastapi", "no-edge-tests", mistake="swallow_fk")
+        case = {"id": "blog", "prompt": "a blog with post stats", "spec": BLOG_SPEC}
+        full = run_case(graph, case, "fake", "fastapi", "full", mistake="wrong_rule")
+        blind = run_case(graph, case, "fake", "fastapi", "no-rule-tests", mistake="wrong_rule")
     finally:
         llm_mod.set_llm(None)
     assert full["status"] == blind["status"] == "succeeded"
-    assert full["found_by"].get("edge-case tests") and full["escaped_bugs"] == 0
-    assert blind["escaped_bugs"] > 0  # it "passed", with a bug inside
+    assert full["found_by"].get("rule tests") and full["escaped_bugs"] == 0
+    assert blind["repairs"] == 0 and blind["escaped_bugs"] > 0  # it "passed", with a bug inside
 
 
 def test_fixed_retry_policy_stops_after_n_repairs_even_while_progressing():

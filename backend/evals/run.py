@@ -11,13 +11,14 @@ Ablation study (the paper's main table): every case runs once per configuration.
 
     python -m evals.run --ablation --hard
 
-    full            everything on: dynamic healing, tool-using Reflector, edge-case tests
+    full            everything on: dynamic healing, tool-using Reflector, calibrated rule tests
     fixed-3         the usual fixed retry count (3) instead of progress-based stopping
     no-tools        the Reflector repairs in one shot, without tools
-    no-edge-tests   without the spec-derived edge-case tests
+    no-calibration  rule tests are not checked against the verified templates before the code
+    no-rule-tests   the Architect's rule tests are written but kept out of validation
 
-After each successful run the edge-case tests are also run as a held-out check. A configuration
-that skipped them shows how many bugs would have shipped ("escaped bugs").
+After each successful run the edge-case tests, and any rule tests a configuration kept out, are run
+as a held-out check: "escaped bugs" counts what would have shipped.
 
 Results go to evals/results/: a Markdown report, JSON, and a CSV for charts.
 """
@@ -49,18 +50,20 @@ CONFIGS: dict[str, dict] = {
     "full": {},
     "fixed-3": {"fixed_repairs": 3},
     "no-tools": {"tools": False},
-    "no-edge-tests": {"edge_tests": False},
+    "no-calibration": {"calibrate": False},
+    "no-rule-tests": {"rule_tests": False},
 }
-FAKE_MISTAKES = ["typo", "swallow_fk", None]  # what the fake model gets wrong, case by case
+FAKE_MISTAKES = ["typo", "wrong_rule", None]  # what the fake model gets wrong, case by case
 
 
 def escaped_bugs(values: dict) -> int:
-    """Held-out check: how many spec-derived edge-case tests fail on the final code."""
+    """Held-out check: failing edge-case tests, plus rule tests a configuration kept out of validation."""
     if values.get("status") != "succeeded" or not values.get("spec"):
         return 0
     spec = ProjectSpec.model_validate(values["spec"])
-    files = {**values["files"], EDGE_TESTS: render_project(spec)[EDGE_TESTS]}
-    ok, log = get_sandbox().run_tests(files, spec.stack, [EDGE_TESTS])
+    held_out = values.get("held_out") or {}
+    files = {**values["files"], EDGE_TESTS: render_project(spec)[EDGE_TESTS], **held_out}
+    ok, log = get_sandbox().run_tests(files, spec.stack, [EDGE_TESTS, *held_out])
     found = re.search(r"(\d+) failed", log)
     return 0 if ok else int(found.group(1)) if found else 1
 

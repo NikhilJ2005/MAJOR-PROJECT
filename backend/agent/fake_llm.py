@@ -2,13 +2,13 @@
 
 Used by the test-suite, and by `FAKE_LLM=1` so the UI can be developed and
 demoed without an API key or token spend. It never invents application code:
-entity files echo the reference templates. With `mistake=...` the "API engineer"
-makes a typical model slip, so tests can watch the agents find and repair a
+it implements custom actions with a simple row count. With `mistake=...` the Code
+Generator makes a typical model slip, so tests can watch the agents find and repair a
 bug that nobody planted in the pipeline:
 
-    "typo"        a misspelled import (caught when the app is imported)
-    "swallow_fk"  constraint errors are not turned into 409 (only the spec-derived
-                  "unknown foreign key" edge-case test notices: a 500 instead of 409)
+    "typo"        a misspelled import in the business logic (caught when the app is imported)
+    "wrong_rule"  an action answers with the wrong field (only the Architect's rule test,
+                  written before the code, notices)
 """
 
 from __future__ import annotations
@@ -27,11 +27,15 @@ BLOG_SPEC = {
         {"name": "Post", "fields": [{"name": "title"}, {"name": "body", "type": "text"}, {"name": "author_id", "references": "User"}]},
         {"name": "Comment", "fields": [{"name": "content", "type": "text"}, {"name": "post_id", "references": "Post"}]},
     ],
+    "actions": [
+        {"name": "stats", "entity": "Post", "method": "GET", "path": "/stats", "description": "How many posts exist",
+         "rules": ['Returns {"count": <number of posts>}']},
+    ],
 }
 
 MISTAKES = {
     "typo": ("from app.errors import ApiError", "from app.errors import ApiErorr"),
-    "swallow_fk": ("except IntegrityError as exc:", "except ValueError as exc:"),
+    "wrong_rule": ('return {"count":', 'return {"total":'),
 }
 
 
@@ -66,13 +70,16 @@ class FakeLLM:
                 e.setdefault("requirement_ids", [f"R{i}"])
         return json.dumps(spec)
 
-    def _entity(self, user: str) -> str:
-        reference = user.split("Reference implementation:\n", 1)[1]
-        repeat = self.mistake_name == "swallow_fk"  # a typo happens once; a misunderstanding happens everywhere
-        if self.mistake and self.mistake[0] in reference and (repeat or not self._made_typo):
+    def _service(self, system: str, user: str) -> str:
+        """Implement every action stub as a row count (the "business logic" of the stand-in model)."""
+        path, stub = re.search(r"The file to complete: (\S+)\n```python\n(.*?)```", user, re.DOTALL).groups()
+        model = re.search(r"from app\.models\.\w+ import (\w+)", stub).group(1)
+        count = f"{model}.objects.count()" if "Django ORM" in system else f"db.query({model}).count()"
+        code = re.sub(r'raise ApiError\(501, "[^"]*"\)', f'return {{"count": {count}}}', stub)
+        if self.mistake and self.mistake[0] in code and not self._made_typo:
             self._made_typo = True
-            reference = reference.replace(*self.mistake, -1 if repeat else 1)
-        return "RATIONALE: kept the reference contract\n" + reference
+            code = code.replace(*self.mistake, 1)
+        return f"RATIONALE: counted the rows\n### FILE: {path}\n```python\n{code}```"
 
     def _first_entity(self, user: str) -> tuple[dict, dict]:
         from .codegen import smoke_cases
@@ -85,14 +92,26 @@ class FakeLLM:
         return (with_fk or cases)[0], design
 
     def _rule_tests(self, user: str) -> str:
-        case, _ = self._first_entity(user)
-        return (
-            "### FILE: tests/test_rules.py\n```python\n"
+        case, design = self._first_entity(user)
+        tests = (
             "def test_list_respects_limit(client, user_headers):\n"
             f"    r = client.get('/{case['table']}/', params={{'limit': 1}}, headers=user_headers)\n"
             "    assert r.status_code == 200, r.text\n"
-            "    assert len(r.json()) <= 1\n```\n"
+            "    assert len(r.json()) <= 1\n"
         )
+        from .state import ProjectSpec
+
+        spec = ProjectSpec.model_validate(design)
+        tables = {e.name: e.table for e in spec.entities}
+        for a in spec.actions:
+            if a.method == "GET" and "{" not in a.path:
+                tests += (
+                    f"\n\ndef test_{a.name}_answers_with_a_count(client, user_headers):\n"
+                    f"    r = client.get('/{tables[a.entity]}{a.path}', headers=user_headers)\n"
+                    "    assert r.status_code == 200, r.text\n"
+                    "    assert r.json()['count'] >= 0\n"
+                )
+        return f"### FILE: tests/test_rules.py\n```python\n{tests}```\n"
 
     def _reflect(self, user: str) -> str:
         m = re.search(r"File most likely at fault: (\S+)\n```python\n(.*?)```", user, re.DOTALL)
@@ -134,7 +153,7 @@ class FakeLLM:
             return user.split("Default (improve on it):\n", 1)[1], usage
         if "Code Generator" in system:
             self.calls.append("entity")
-            return self._entity(user), usage
+            return self._service(system, user), usage
         if "Reflector" in system:
             self.calls.append(f"reflect:{role}")
             return self._reflect(user), usage

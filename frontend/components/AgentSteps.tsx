@@ -3,7 +3,7 @@
 import type { LedgerEntry, RunEvent, Snapshot } from "@/lib/api";
 
 export type StepState = "idle" | "active" | "done" | "failed";
-type Step = { id: string; name: string; job: string; state: StepState; detail?: string; seconds?: number; count?: number };
+type Step = { id: string; name: string; job: string; state: StepState; detail?: string; live?: string; seconds?: number; count?: number };
 
 // The 8 agents, in the order a run meets them.
 const AGENTS: [string, string, string][] = [
@@ -33,8 +33,13 @@ export function deriveSteps(events: RunEvent[], snap: Snapshot | null): Step[] {
         prev = ev.ts;
         steps.parse_spec.state = "active";
       }
+      if (ev.type === "progress" && ev.node && steps[ev.node]) {
+        steps[ev.node].live = ev.text;  // what the agent is doing right now
+        continue;
+      }
       if (ev.type !== "node" || !ev.node || !steps[ev.node]) continue;
       const s = steps[ev.node];
+      s.live = undefined;
       s.seconds = (s.seconds ?? 0) + (prev !== null ? ev.ts - prev : 0);
       prev = ev.ts;
       s.count = (s.count ?? 0) + 1;
@@ -82,7 +87,7 @@ export function AgentSteps({ steps, compact }: { steps: Step[]; compact?: boolea
             {s.seconds != null && s.state !== "active" && s.seconds > 0.05 && <span className="text-xs text-ink-500">{s.seconds.toFixed(1)}s</span>}
           </div>
           <p className={`text-xs leading-5 ${s.state === "failed" ? "text-rose-300" : "text-ink-400"}`}>
-            {s.state === "active" ? `Working: ${s.job}…` : s.detail ?? s.job}
+            {s.state === "active" ? s.live ?? `Working: ${s.job}…` : s.detail ?? s.job}
           </p>
         </li>
       ))}

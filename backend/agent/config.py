@@ -17,10 +17,11 @@ def _env_int(name: str, default: int) -> int:
 # Every provider speaks the OpenAI chat API, so switching is just a different URL, key and models.
 # name: (base URL, API-key variable, strong model, cheap model, fallback model)
 PROVIDERS: dict[str, tuple[str, str, str, str, str]] = {
-    # Default. Gemini 2.5 models are retired; for the best builder set STRONG_MODEL=gemini-3.1-pro-preview
-    # (paid tier). `python scripts/check_llm.py --list` shows the model ids your key can use.
+    # Default. Gemini 4 Argon (paid tier only) designs the app and writes the business logic; Gemini 3.8
+    # Flash does the quick jobs. FREE_TIER=1 uses 3.8 Flash for everything. `python scripts/check_llm.py
+    # --list` shows the model ids your key can use.
     "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai/", "GEMINI_API_KEY",
-               "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-3.1-flash-lite"),
+               "gemini-4-argon", "gemini-3.8-flash", "gemini-3.8-flash"),
     "groq": ("https://api.groq.com/openai/v1", "GROQ_API_KEY",
              "openai/gpt-oss-120b", "openai/gpt-oss-20b", "openai/gpt-oss-20b"),
     "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY",
@@ -42,6 +43,8 @@ def _provider() -> str:
 
 def _from_provider(index: int, override: str) -> str:
     """A provider default (URL/model) that an environment variable may override."""
+    if index == 2 and _provider() == "gemini" and os.environ.get("FREE_TIER") == "1":
+        index = 3  # Gemini 4 Argon has no free tier: build with Flash instead
     return os.environ.get(override) or PROVIDERS[_provider()][index]
 
 
@@ -58,8 +61,12 @@ class Settings:
     fallback_model: str = field(default_factory=lambda: _from_provider(4, "FALLBACK_MODEL"))
     # Free tiers allow few tokens per minute: call the model fewer times at once, and retry 429s.
     llm_max_parallel: int = field(
-        default_factory=lambda: _env_int("LLM_MAX_PARALLEL", {"openrouter": 4, "gemini": 2}.get(_provider(), 1))
+        default_factory=lambda: _env_int("LLM_MAX_PARALLEL", {"openrouter": 4, "gemini": 4}.get(_provider(), 1))
     )
+    # How hard each tier thinks (Gemini thinking level / OpenAI reasoning effort): low, medium or high.
+    # Empty sends nothing (the model's default).
+    strong_reasoning: str = field(default_factory=lambda: os.environ.get("STRONG_REASONING", "high"))
+    cheap_reasoning: str = field(default_factory=lambda: os.environ.get("CHEAP_REASONING", "low"))
     llm_max_retries: int = field(default_factory=lambda: _env_int("LLM_MAX_RETRIES", 6))
 
     # "llm" lets the model write entity files; "template" is fully deterministic.

@@ -54,11 +54,12 @@ def test_builtin_tools_read_search_and_protect_tests():
 
 def test_staged_fix_is_tested_and_reported():
     box, _ = _box()
-    main = box.files["app/main.py"]
-    box.call("write_file", {"path": "app/main.py", "content": main.replace("import", "imprt", 1)})
+    assert "verified template code" in box.call("write_file", {"path": "app/main.py", "content": "x = 1"})
+    service = box.files["app/services/order.py"]
+    box.call("write_file", {"path": "app/services/order.py", "content": service.replace("import", "imprt", 1)})
     result = box.call("run_tests", {"selection": "tests/test_smoke.py::test_health"})
     assert result.startswith("FAILED")
-    assert list(box.changes()) == ["app/main.py"]
+    assert list(box.changes()) == ["app/services/order.py"]
     assert box.calls[-1] == {"tool": "run_tests", "args": {"selection": "tests/test_smoke.py::test_health"},
                              "result": "FAILED (no tests ran)"}  # the app no longer imports
 
@@ -128,16 +129,15 @@ def test_function_calling_loop_runs_tools_then_answers():
 
 
 def test_reflector_uses_tools_to_check_its_fix():
-    fake = FakeLLM(mistake="swallow_fk")
+    fake = FakeLLM(mistake="wrong_rule")
     values = _run(initial_state("blog", {"codegen_mode": "llm"}), fake)
     assert values["status"] == "succeeded"
     reflector = next(e for e in values["ledger"] if e["agent"].startswith("reflector"))
     assert [c["tool"] for c in reflector["tools"]][:2] == ["read_file", "write_file"]
-    # The first fix is checked before answering; it repairs one of the two failing tests.
+    # The fix is checked against the failing rule test before the Reflector answers.
     run = next(c for c in reflector["tools"] if c["tool"] == "run_tests")
-    assert run["result"] == "FAILED (1 failed, 1 passed)"
-    last = [e for e in values["ledger"] if e["agent"].startswith("reflector")][-1]
-    assert last["tools"][-1]["result"] == "PASSED (1 passed)"
+    assert run["args"]["selection"].startswith("tests/test_rules.py::test_stats")
+    assert run["result"] == "PASSED (1 passed)"
 
 
 def test_tools_can_be_switched_off_for_the_ablation_study():

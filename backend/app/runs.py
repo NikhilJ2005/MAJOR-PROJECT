@@ -80,9 +80,11 @@ class RunManager:
                 values = self.graph.get_state(self._config(base_run_id)).values
                 if values.get("spec"):
                     base = {"run_id": base_run_id, "spec": values["spec"], "files": dict(values.get("files") or {}),
+                            "template_files": dict(values.get("template_files") or {}),
                             "failed": values.get("status") != "succeeded"}
                 elif values.get("prompt"):  # it stopped before a design existed: start over with both requests
                     prompt = f"{values['prompt']}\n\nAlso: {prompt}"
+                    options = {**options, "resume": False}
             state = initial_state(prompt, options, spec, base)
             run = Run(id=state["run_id"], prompt=prompt)
             self.runs[run.id] = run
@@ -102,7 +104,10 @@ class RunManager:
     def _execute(self, run: Run, graph_input: Any) -> None:
         config = self._config(run.id)
         try:
-            for update in self.graph.stream(graph_input, config, stream_mode="updates"):
+            for mode, update in self.graph.stream(graph_input, config, stream_mode=["updates", "custom"]):
+                if mode == "custom":  # what an agent is doing right now (agent.ledger.progress)
+                    run.emit({"type": "progress", "node": update.get("node"), "text": update.get("text")})
+                    continue
                 for node, delta in update.items():
                     delta = delta or {}
                     run.emit(
@@ -164,10 +169,16 @@ class RunManager:
             "stop_reason": values.get("stop_reason"),
             "report": values.get("report"),
             "has_artifact": bool(values.get("artifact_path")),
+            # The verified template build (every screen, actions still stubbed) can be previewed as a draft.
+            "has_draft": bool(values.get("template_files")),
         }
 
     def files(self, run_id: str) -> dict[str, str]:
         return dict(self.graph.get_state(self._config(run_id)).values.get("files") or {})
+
+    def draft_files(self, run_id: str) -> dict[str, str]:
+        """The verified template build of a run: works at once, with custom actions not written yet."""
+        return dict(self.graph.get_state(self._config(run_id)).values.get("template_files") or {})
 
     def file(self, run_id: str, path: str) -> str | None:
         values = self.graph.get_state(self._config(run_id)).values

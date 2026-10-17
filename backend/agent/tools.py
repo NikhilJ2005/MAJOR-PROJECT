@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from .frontend import check_frontend
+from .healing import editable
+from .ledger import progress
 from .state import ProjectSpec
 
 MAX_TOOL_CALLS = 6
@@ -123,11 +125,13 @@ class Toolbox:
         return "\n".join(routes(self.spec))
 
     def write_file(self, path: str, content: str) -> str:
-        """Replace an application file with a fixed version. Tests cannot be changed."""
+        """Replace a business-logic file (app/services/*.py) or app/static/ui.json with a fixed version."""
         if path.startswith("tests/"):
             return "refused: tests are the specification; fix the code instead"
         if path not in self.files:
             return f"refused: {path} is not a file of this project"
+        if not editable(path):
+            return f"refused: {path} is verified template code; fix the business logic in app/services/ instead"
         self.files[path] = content if content.endswith("\n") else content + "\n"
         return f"staged {path} ({len(content.splitlines())} lines); call run_tests to check it"
 
@@ -154,6 +158,8 @@ class Toolbox:
         if len(self.calls) >= self.max_calls:
             return "tool budget used up: give your final answer now"
         tool = next((t for t in self.tools if t.name == name), None)
+        first = next(iter((args or {}).values()), "")
+        progress("reflect", f"{name} {first if isinstance(first, str) and len(first) < 80 else ''}".strip())
         try:
             result = "unknown tool" if tool is None else str(tool.fn(**(args or {})))
         except Exception as exc:  # noqa: BLE001 - a bad call is reported to the model, not raised

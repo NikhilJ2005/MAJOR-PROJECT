@@ -36,6 +36,8 @@ _PRICE_TABLE: dict[str, tuple[float, float]] = {
     # Estimates; free tiers cost nothing within their limits.
     "openai/gpt-oss-120b": (0.15, 0.60),
     "openai/gpt-oss-20b": (0.075, 0.30),
+    "gemini-4-argon": (2.00, 10.00),  # launch price until 30 Nov 2026, then 4 / 20
+    "gemini-3.8-flash": (0.75, 3.75),
     "gemini-3-flash-preview": (0.50, 3.00),
     "gemini-2.5-flash": (0.30, 2.50),
     "gemini-2.5-flash-lite": (0.10, 0.40),
@@ -126,6 +128,28 @@ def parse_file_blocks(text: str) -> dict[str, str]:
     return files
 
 
+def model_options(model: str, reasoning: str) -> dict[str, Any]:
+    """ChatOpenAI settings for one model.
+
+    - Thinking models get a thinking level (`reasoning_effort`: low, medium or high), which Gemini's
+      OpenAI-compatible API maps to its thinking level.
+    - Gemini 4 ignores sampling settings such as temperature, so none is sent; older models get 0.1.
+    - Thinking counts against the output limit, so no low max_tokens is set.
+    """
+    options: dict[str, Any] = {
+        "timeout": 300,
+        # The OpenAI SDK retries rate limits (429) and server errors with exponential
+        # backoff and honours the provider's retry-after header.
+        "max_retries": settings.llm_max_retries,
+    }
+    thinking = settings.llm_provider in ("gemini", "openai_compatible") or model.startswith(("gemini", "openai/gpt-oss"))
+    if reasoning and thinking:
+        options["reasoning_effort"] = reasoning
+    if not model.startswith("gemini-4"):
+        options["temperature"] = 0.1
+    return options
+
+
 class ProviderLLM:
     """Chat models of the configured provider (OpenRouter, Groq, Gemini or any OpenAI-compatible API)."""
 
@@ -136,24 +160,15 @@ class ProviderLLM:
         if settings.llm_provider == "openrouter":
             extra = {"extra_body": {"usage": {"include": True}}, "default_headers": {"X-Title": "VibeStack"}}
 
-        def make(model: str) -> Any:
-            return ChatOpenAI(
-                model=model,
-                api_key=settings.llm_api_key,
-                base_url=settings.llm_base_url,
-                temperature=0.1,
-                timeout=180,
-                # The OpenAI SDK retries rate limits (429) and server errors with exponential
-                # backoff and honours the provider's retry-after header.
-                max_retries=settings.llm_max_retries,
-                **extra,
-            )
+        def make(model: str, reasoning: str) -> Any:
+            return ChatOpenAI(model=model, api_key=settings.llm_api_key, base_url=settings.llm_base_url,
+                              **model_options(model, reasoning), **extra)
 
         self._models = {
-            "strong": (settings.strong_model, make(settings.strong_model)),
-            "cheap": (settings.cheap_model, make(settings.cheap_model)),
+            "strong": (settings.strong_model, make(settings.strong_model, settings.strong_reasoning)),
+            "cheap": (settings.cheap_model, make(settings.cheap_model, settings.cheap_reasoning)),
         }
-        self._fallback = (settings.fallback_model, make(settings.fallback_model))
+        self._fallback = (settings.fallback_model, make(settings.fallback_model, "medium"))
         self._slots = threading.BoundedSemaphore(max(1, settings.llm_max_parallel))
 
     def chat(self, role: Role) -> Any:

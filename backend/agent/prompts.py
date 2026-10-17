@@ -152,48 +152,63 @@ Default (improve on it):
 # --------------------------------------------------------------------------- Code Generator
 
 
-def entity_system(stack: str, label: str, module: str, name: str, table: str) -> str:
-    return f"""You are the Code Generator of VibeStack. You write production-quality {label} code.
-You get the project spec, ONE entity, and reference implementations of its four files: model,
-schema, service and router. Rewrite them to fit the user's intent better: docstrings, sensible
-filters and, above all, the business logic of the custom actions in app/services/{module}.py.
+def service_system(stack: str, label: str, module: str) -> str:
+    return f"""You are the Code Generator of VibeStack. You write the business logic of a {label} app.
+Everything else (models, schemas, routers, auth, tests) is verified template code that already works.
 
-Keep these EXACTLY:
-- class {name} with table "{table}", an integer `id`, a `created_at` column, every spec field with the same
-  name and type, and `owner_id` when the reference has it.
-- app/schemas/{module}.py: {name}Create, {name}Update (all optional), {name}Read (from_attributes) with
-  the reference's validation rules (choices, min/max, max_length). You may add rules the requirements
-  state, but never reject the reference's sample values.
-- app/routers/{module}.py: the same routes, status codes, access checks and imports as the reference.
-- app/services/{module}.py: implement every action function the reference declares (same name and
-  signature), following its rules. Raise ApiError(status, detail) for a broken rule, return a JSON-able dict.
-- Only use {ALLOWED_LIBRARIES[stack]}. No new dependencies.
+You get app/services/{module}.py with one stub per custom action, and read-only code of the models
+and schemas you may need. Replace each `raise ApiError(501, ...)` stub with a real implementation of
+the rules in its docstring and the requirements.
+
+Rules:
+- Keep every function name, signature and docstring. Keep the imports you use; add imports of other
+  models (`from app.models.<module> import <Name>`) when a rule needs them.
+- Raise ApiError(status, detail) for a broken rule: 409 for a business rule (not enough stock, already
+  paid, no free port), 422 for invalid input, 404 for a missing referenced row, 403 for not allowed.
+- Return a JSON-able dict (numbers, strings, lists; dates as .isoformat(); a changed row as a dict of
+  its fields including id).
+- Save what you change (see the framework notes). Do not print. Only use {ALLOWED_LIBRARIES[stack]}.
 
 {CONTRACT}
 
 Framework notes:
 {STACK_NOTES[stack]}
+{SERVICE_NOTES[stack]}
 
-Reply with one line `RATIONALE: <one sentence on what you improved>` and then exactly four blocks:
-### FILE: <path>
+Reply with one line `RATIONALE: <one sentence>` and then exactly one block:
+### FILE: app/services/{module}.py
 ```python
 <full file content>
 ```"""
 
 
-ENTITY_USER = """User description:
+SERVICE_NOTES = {
+    "fastapi": "- Use the `db` Session: db.get(Model, id), db.scalars(select(Model).where(...)), db.add(obj), "
+               "db.commit(), db.refresh(obj). `obj` is the row of an /<id>/ action (None for collection actions).",
+    "flask": "- Use the `db` Session: db.get(Model, id), db.scalars(select(Model).where(...)), db.add(obj), "
+             "db.commit(), db.refresh(obj). `obj` is the row of an /<id>/ action (None for collection actions).",
+    "django": "- Use the Django ORM: Model.objects.filter(...), .get(id=...), .aggregate(...), obj.save(); "
+              "wrap multi-row changes in django.db.transaction.atomic(). `obj` is the row of an /<id>/ action "
+              "(None for collection actions).",
+}
+
+
+SERVICE_USER = """User description:
 {prompt}
 
 Requirements:
 {requirements}
 
-Project spec (JSON):
+Design (JSON):
 {spec}
 
-Entity to implement: {name}
+The file to complete: app/services/{module}.py
+```python
+{stub}
+```
 
-Reference implementation:
-{reference}"""
+Read-only code you can rely on:
+{context}"""
 
 # --------------------------------------------------------------------------- Reflector + Judge
 

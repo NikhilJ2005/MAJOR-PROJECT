@@ -1,6 +1,9 @@
 """Business-rule tests written by the Architect, and the rules that keep them honest.
 
 - The Architect writes tests/test_rules.py from its requirements *before* any code exists.
+- Before any code exists, the tests are calibrated: they run once against the verified template
+  baseline, and a test about plain CRUD that the verified code fails contradicts the contract,
+  so it is removed (tests of custom actions are kept; their code does not exist yet).
 - If the Reflector believes one of those tests is wrong, a strong-model verdict (the "judge" step
   of the Reflector) decides; a test ruled wrong is removed and logged. The contract tests
   (tests/test_smoke.py) and the spec-derived edge-case tests (tests/test_edge_cases.py) are
@@ -47,6 +50,31 @@ def write_rule_tests(llm: Any, spec: ProjectSpec) -> tuple[str | None, Usage]:
 def needs_rule_tests(spec: ProjectSpec) -> bool:
     """Only worth it when there is something beyond plain CRUD to test."""
     return bool(spec.actions) or any(r.kind in ("rule", "permission", "endpoint") for r in spec.requirements)
+
+
+def touches_action(test_code: str, spec: ProjectSpec) -> bool:
+    """Does the test call a custom action (the code the model still has to write)?"""
+    return any(f"/{a.segment}" in test_code for a in spec.actions)
+
+
+def calibrate(source: str, spec: ProjectSpec, baseline: dict[str, str]) -> tuple[str | None, list[str]]:
+    """Run the rule tests against the verified template code; remove CRUD tests that it fails.
+
+    Returns the calibrated file (None when no test is left) and the names of the removed tests.
+    """
+    from .bughunt import failing_tests
+    from .sandbox import get_sandbox
+
+    ok, log = get_sandbox().run_tests({**baseline, RULE_TESTS: source}, spec.stack, [RULE_TESTS])
+    if ok:
+        return source, []
+    removed = []
+    for path, name in failing_tests(log):
+        code = get_test_source(source, name)
+        if path == RULE_TESTS and code is not None and not touches_action(code, spec):
+            source = remove_test(source, name)
+            removed.append(name)
+    return (source if valid_test_file(source) else None), removed
 
 
 def get_test_source(source: str, name: str) -> str | None:
