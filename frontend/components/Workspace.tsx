@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Architecture } from "@/components/Architecture";
 import { AgentSteps, deriveSteps } from "@/components/AgentSteps";
 import { Files } from "@/components/Files";
+import { GitHubButton } from "@/components/GitHubButton";
 import { StatusDot } from "@/components/Home";
 import { BugsAndHealing, Empty } from "@/components/Ledger";
 import { Tests } from "@/components/Tests";
@@ -78,11 +79,17 @@ export function Workspace({ projectId, onHome }: { projectId: string; onHome: ()
               {t === "Quality" && (snap?.bugs?.length ?? 0) > 0 && <span className="ml-1.5 rounded-full bg-signal-400/20 px-1.5 text-xs text-signal-300">{snap?.bugs?.length}</span>}
             </button>
           ))}
-          {snap?.has_artifact && selected && (
-            <a href={api.downloadUrl(selected)} className="ml-auto rounded-lg border border-ink-700 px-3 py-1.5 text-sm text-ink-100 hover:border-ink-500">
-              Download code
-            </a>
-          )}
+          <div className="ml-auto flex items-center gap-2">
+            <GitHubButton
+              projectId={projectId}
+              currentVersion={project.versions.find((v) => v.run_id === project.current_run_id)?.version ?? null}
+            />
+            {snap?.has_artifact && selected && (
+              <a href={api.downloadUrl(selected)} className="rounded-lg border border-ink-700 px-3 py-1.5 text-sm text-ink-100 hover:border-ink-500">
+                Download code
+              </a>
+            )}
+          </div>
         </div>
         <div className="min-h-0 flex-1 overflow-auto">
           {tab === "Preview" && <PreviewPane runId={selected} snap={snap} />}

@@ -1,6 +1,9 @@
-# Self-hosted / local track: the same image Railway runs.
-#   cp .env.example .env   # set LLM_PROVIDER and its API key (or FAKE_LLM=1)
-#   docker compose up --build   ->  http://localhost:8000
+# Self-hosted / local: the same image Railway, Render and Fly run.
+#   cp .env.example .env            # set LLM_PROVIDER and its API key (or FAKE_LLM=1)
+#   docker compose up --build       -> http://localhost:8000   (SQLite + zips on a volume)
+#
+# Everything on one VM, no Railway at all (Postgres + S3-compatible MinIO):
+#   docker compose --profile full up --build
 services:
   vibestack:
     build: .
@@ -9,5 +12,63 @@ services:
     env_file: .env
     volumes:
       - vibestack-data:/data
+
+  vibestack-full:
+    profiles: ["full"]
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      PLATFORM_DATABASE_URL: postgresql://vibestack:vibestack@postgres:5432/vibestack
+      S3_BUCKET: vibestack-artifacts
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-http://localhost:9000}
+      S3_ACCESS_KEY_ID: vibestack
+      S3_SECRET_ACCESS_KEY: vibestack-secret
+      S3_REGION: us-east-1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-bucket:
+        condition: service_completed_successfully
+
+  postgres:
+    profiles: ["full"]
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: vibestack
+      POSTGRES_PASSWORD: vibestack
+      POSTGRES_DB: vibestack
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vibestack"]
+      interval: 5s
+      retries: 10
+
+  minio:
+    profiles: ["full"]
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: vibestack
+      MINIO_ROOT_PASSWORD: vibestack-secret
+    ports:
+      - "9000:9000"   # download links point here
+      - "9001:9001"   # MinIO console
+    volumes:
+      - minio-data:/data
+
+  minio-bucket:
+    profiles: ["full"]
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on: [minio]
+    entrypoint: >
+      sh -c "until mc alias set local http://minio:9000 vibestack vibestack-secret; do sleep 1; done;
+             mc mb --ignore-existing local/vibestack-artifacts"
+
 volumes:
   vibestack-data:
+  postgres-data:
+  minio-data:

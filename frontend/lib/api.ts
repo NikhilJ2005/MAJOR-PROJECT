@@ -118,6 +118,15 @@ export type ServerConfig = {
   stacks: { name: string; label: string }[];
   plugins: PluginInfo[];
   models: { strong: string; cheap: string; fallback: string };
+  github_enabled?: boolean;
+};
+
+export type GitHubConnection = { enabled: boolean; connected: boolean; login: string | null };
+export type GitHubStatus = {
+  repo: string | null;
+  url?: string;
+  version?: number | null;
+  ci?: { status: string; conclusion: string | null; url: string } | null;
 };
 
 export type RunEvent = {
@@ -203,6 +212,11 @@ export const api = {
   project: (id: string) => request<ProjectDetail>(`/api/projects/${id}`),
   message: (id: string, prompt: string, mode: "edit" | "fix" = "edit") =>
     request<{ run_id: string; project_id: string }>(`/api/projects/${id}/messages`, post({ prompt, mode })),
+  github: () => request<GitHubConnection>("/api/auth/github"),
+  githubStatus: (projectId: string) => request<GitHubStatus>(`/api/projects/${projectId}/github`),
+  pushToGitHub: (projectId: string) =>
+    request<{ repo: string; url: string; commit: string; version: number }>(`/api/projects/${projectId}/github`, post({})),
+  githubSignInUrl: (next = "/") => `${API}/api/auth/github/start?next=${encodeURIComponent(next)}${getToken() ? `&token=${getToken()}` : ""}`,
   restore: (id: string, run_id: string) => request<{ current_run_id: string }>(`/api/projects/${id}/current`, post({ run_id })),
   file: async (id: string, path: string) => {
     const res = await fetch(`${API}/api/runs/${id}/files/${path}`, { headers: { Authorization: `Bearer ${getToken()}` } });

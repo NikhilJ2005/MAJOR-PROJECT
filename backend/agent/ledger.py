@@ -7,6 +7,7 @@ import shutil
 import zipfile
 from typing import Any
 
+from . import storage
 from .config import settings
 from .llm import Usage
 
@@ -84,7 +85,7 @@ def ledger_markdown(state: dict[str, Any]) -> str:
 
 
 def write_artifact(state: dict[str, Any], project_name: str, extra: dict[str, str]) -> str:
-    """Write the project to the run folder and zip it. Returns the zip path."""
+    """Write the project to the run folder and zip it. Returns where the zip is kept (agent/storage.py)."""
     run_dir = settings.runs_dir / state["run_id"]
     project_dir = run_dir / "project"
     if project_dir.exists():
@@ -98,4 +99,4 @@ def write_artifact(state: dict[str, Any], project_name: str, extra: dict[str, st
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for rel, content in sorted(files.items()):
             zf.writestr(f"{project_name}/{rel}", content)
-    return str(zip_path)
+    return storage.keep(state["run_id"], str(zip_path))  # local path, or s3://... when S3_BUCKET is set

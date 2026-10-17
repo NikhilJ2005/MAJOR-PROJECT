@@ -2,8 +2,8 @@
 
 Runs are decoupled from HTTP connections: a client can disconnect and
 reconnect to the event stream (Last-Event-ID) without affecting the run.
-Graph state is persisted by the SQLite checkpointer, so finished runs can still
-be inspected and downloaded after a server restart.
+Graph state is persisted by the checkpointer (SQLite or Postgres), so finished runs can still
+be inspected after a server restart, and interrupted runs continue where they stopped (recover).
 """
 
 from __future__ import annotations
@@ -91,6 +91,30 @@ class RunManager:
             self.store.add_run(run.id, owner_id, prompt, options.get("stack", "fastapi"), project_id, base_run_id)
             self._launch(run, state)
         return run
+
+    def recover(self) -> list[str]:
+        """After a restart or redeploy: continue every interrupted run from its last checkpoint.
+
+        LangGraph saved the state after each agent, so a run picks up at the next agent; a run that
+        never reached its first checkpoint is marked as an error instead.
+        """
+        resumed = []
+        for row in self.store.unfinished_runs():
+            if row["id"] in self.runs:
+                continue
+            snapshot = self.graph.get_state(self._config(row["id"]))
+            run = Run(id=row["id"], prompt=row["prompt"], created_at=row["created_at"])
+            self.runs[run.id] = run
+            if not snapshot.values or not snapshot.next:
+                run.status = "error"
+                self.store.finish_run(run.id, "error", snapshot.values or {})
+                continue
+            run.emit({"type": "progress", "node": snapshot.next[0], "text": "Resumed after a server restart"})
+            self._launch(run, None)  # None = continue from the checkpoint
+            resumed.append(run.id)
+        if resumed:
+            log.info("resumed %d interrupted run(s): %s", len(resumed), ", ".join(resumed))
+        return resumed
 
     def project_busy(self, project_id: str) -> bool:
         return any(r.active and self.store.run(r.id)["project_id"] == project_id for r in self.runs.values())

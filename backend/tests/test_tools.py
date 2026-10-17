@@ -146,3 +146,14 @@ def test_tools_can_be_switched_off_for_the_ablation_study():
     assert values["status"] == "succeeded"
     reflector = next(e for e in values["ledger"] if e["agent"].startswith("reflector"))
     assert "tools" not in reflector
+
+
+def test_mcp_presets_are_turned_on_by_name(monkeypatch):
+    from agent.mcp_tools import configured_servers
+
+    monkeypatch.setenv("MCP_PRESETS", "docs, github, nope")
+    monkeypatch.setenv("GITHUB_MCP_TOKEN", "ghp_x")
+    monkeypatch.setenv("MCP_SERVERS", '[{"name": "mine", "url": "http://127.0.0.1:9/mcp"}]')
+    servers = configured_servers()
+    assert [s["name"] for s in servers] == ["docs", "github", "mine"]
+    assert servers[1]["headers"] == {"Authorization": "Bearer ghp_x"}

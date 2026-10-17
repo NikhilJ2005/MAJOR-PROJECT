@@ -8,6 +8,7 @@ token (`Authorization: Bearer <token>`), so runs belong to that user exactly as 
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -47,8 +48,11 @@ def summary(snap: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_mcp(manager: RunManager, store: Store, start_run: Callable[..., str]) -> MCPServer:
-    """Create the MCP server. `start_run(user, prompt, options)` is the same function the HTTP API uses."""
+def build_mcp(manager: RunManager, store: Store, start_run: Callable[..., str],
+              push: Callable[..., dict[str, Any]] | None = None,
+              preview: Callable[[str], str] | None = None) -> MCPServer:
+    """Create the MCP server. `start_run(user, prompt, options)`, `push(project_id, user, repo)` and
+    `preview(run_id) -> path` are the same functions the HTTP API uses."""
     server = MCPServer(name="VibeStack", instructions=INSTRUCTIONS, version="2.0.0")
 
     def user_from(ctx: Context) -> dict[str, Any]:
@@ -127,5 +131,60 @@ def build_mcp(manager: RunManager, store: Store, start_run: Callable[..., str]) 
         if content is None:
             raise ToolError(f"no file {path} in run {run_id}")
         return content
+
+    def site(ctx: Context) -> str:
+        """This server's public address, for links the assistant can show its user."""
+        host = (ctx.headers or {}).get("host", "localhost:8000")
+        return (os.getenv("PUBLIC_URL") or f"https://{host}").rstrip("/")
+
+    @server.tool()
+    async def keep_fixing(project_id: str, ctx: Context, wait: bool = True) -> dict[str, Any]:
+        """Continue self-healing the latest version's own code (no new design, no new code), e.g. after it failed."""
+        user = user_from(ctx)
+        project = store.project(project_id, user["id"])
+        versions = store.versions(project_id) if project else []
+        if not versions:
+            raise ToolError(f"project {project_id} not found or has no version yet")
+        try:
+            run_id = start_run(user, "Keep fixing the current version.", {"stack": project["stack"], "codegen_mode": "llm",
+                                                                          "resume": True},
+                               project_id=project_id, base_run_id=versions[-1]["run_id"])
+        except HTTPException as exc:
+            raise ToolError(str(exc.detail)) from None
+        return await finish(run_id, wait)
+
+    @server.tool()
+    async def push_to_github(project_id: str, ctx: Context, repo: str = "") -> dict[str, Any]:
+        """Push the project's current version to the user's GitHub (a private repo is created on the first push).
+
+        The user must have connected GitHub in the VibeStack web app once.
+        """
+        if push is None:
+            raise ToolError("GitHub is not configured on this server")
+        user = user_from(ctx)
+        try:
+            return await asyncio.to_thread(push, project_id, user, repo or None)
+        except HTTPException as exc:
+            raise ToolError(str(exc.detail)) from None
+
+    @server.tool()
+    async def preview_url(run_id: str, ctx: Context) -> str:
+        """Start the generated app of a successful run and return its private live URL."""
+        snap = owned(ctx, run_id)
+        if preview is None or snap["status"] != "succeeded":
+            raise ToolError("only a successfully validated app can be previewed")
+        try:
+            path = await asyncio.to_thread(preview, run_id)
+        except HTTPException as exc:
+            raise ToolError(str(exc.detail)) from None
+        return f"{site(ctx)}{path}/"
+
+    @server.tool()
+    async def download_url(run_id: str, ctx: Context) -> str:
+        """Where to download the generated project as a zip (send your token as ?token= or a Bearer header)."""
+        snap = owned(ctx, run_id)
+        if not snap.get("has_artifact"):
+            raise ToolError("this run has no zip (it is still running, or it failed before packaging)")
+        return f"{site(ctx)}/api/runs/{run_id}/download"
 
     return server

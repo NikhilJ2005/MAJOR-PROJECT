@@ -48,11 +48,21 @@ SCHEMA = [
         bugs_found INTEGER DEFAULT 0,
         bugs_fixed INTEGER DEFAULT 0
     )""",
+    # Linked accounts (GitHub). The access token is encrypted (accounts.encrypt).
+    """CREATE TABLE IF NOT EXISTS connections (
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        provider TEXT NOT NULL,
+        login TEXT NOT NULL,
+        token_enc TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        PRIMARY KEY (user_id, provider)
+    )""",
     "CREATE INDEX IF NOT EXISTS runs_by_owner ON runs(owner_id, created_at)",
     "CREATE INDEX IF NOT EXISTS projects_by_owner ON projects(owner_id, updated_at)",
 ]
 # Columns added after the first release, so older databases are upgraded in place.
 RUN_COLUMNS = {"project_id": "TEXT", "parent_run_id": "TEXT", "version": "INTEGER"}
+PROJECT_COLUMNS = {"github_repo": "TEXT", "github_pushed_run_id": "TEXT"}
 
 
 class Store:
@@ -62,10 +72,11 @@ class Store:
         with self.engine.begin() as db:
             for statement in SCHEMA:
                 db.execute(text(statement.replace("INTEGER PRIMARY KEY", "SERIAL PRIMARY KEY") if not sqlite else statement))
-            existing = {c["name"] for c in inspect(db).get_columns("runs")}
-            for name, kind in RUN_COLUMNS.items():
-                if name not in existing:
-                    db.execute(text(f"ALTER TABLE runs ADD COLUMN {name} {kind}"))
+            for table, columns in (("runs", RUN_COLUMNS), ("projects", PROJECT_COLUMNS)):
+                existing = {c["name"] for c in inspect(db).get_columns(table)}
+                for name, kind in columns.items():
+                    if name not in existing:
+                        db.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {kind}"))
         with self.engine.begin() as db:
             db.execute(text("CREATE INDEX IF NOT EXISTS runs_by_project ON runs(project_id, version)"))
 
@@ -94,6 +105,18 @@ class Store:
 
     def user_by_id(self, user_id: int) -> dict[str, Any] | None:
         return self._one("SELECT id, email, created_at FROM users WHERE id = :id", id=user_id)
+
+    # -- linked accounts -----------------------------------------------------------------
+
+    def save_connection(self, user_id: int, provider: str, login: str, token_enc: str) -> None:
+        with self.engine.begin() as db:
+            db.execute(text("DELETE FROM connections WHERE user_id = :u AND provider = :p"), {"u": user_id, "p": provider})
+            db.execute(text("INSERT INTO connections (user_id, provider, login, token_enc, created_at) "
+                            "VALUES (:u, :p, :login, :token, :now)"),
+                       {"u": user_id, "p": provider, "login": login, "token": token_enc, "now": time.time()})
+
+    def connection(self, user_id: int, provider: str) -> dict[str, Any] | None:
+        return self._one("SELECT * FROM connections WHERE user_id = :u AND provider = :p", u=user_id, p=provider)
 
     # -- projects ------------------------------------------------------------------------
 
@@ -127,6 +150,11 @@ class Store:
         """The version the workspace shows and the next edit starts from."""
         self._write("UPDATE projects SET current_run_id = :run, updated_at = :now, name = COALESCE(:name, name) WHERE id = :id",
                     run=run_id, now=time.time(), name=name, id=project_id)
+
+    def set_github(self, project_id: str, repo: str, run_id: str) -> None:
+        """The repository a project is pushed to, and which version is there now."""
+        self._write("UPDATE projects SET github_repo = :repo, github_pushed_run_id = :run WHERE id = :id",
+                    repo=repo, run=run_id, id=project_id)
 
     def touch_project(self, project_id: str) -> None:
         self._write("UPDATE projects SET updated_at = :now WHERE id = :id", now=time.time(), id=project_id)
@@ -164,6 +192,14 @@ class Store:
 
     def run(self, run_id: str) -> dict[str, Any] | None:
         return self._one("SELECT * FROM runs WHERE id = :id", id=run_id)
+
+    def run_metrics(self) -> list[dict[str, Any]]:
+        """The numbers /api/metrics adds up, one row per run."""
+        return self._rows("SELECT status, created_at, finished_at, repairs, bugs_found, bugs_fixed, tokens, cost_usd FROM runs")
+
+    def unfinished_runs(self) -> list[dict[str, Any]]:
+        """Runs a server restart interrupted (still marked running)."""
+        return self._rows("SELECT * FROM runs WHERE status = 'running' ORDER BY created_at")
 
     def run_owner(self, run_id: str) -> int | None:
         row = self.run(run_id)

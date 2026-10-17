@@ -11,6 +11,7 @@ export default function Page() {
   const [config, setConfig] = useState<ServerConfig | null>(null);
   const [user, setUser] = useState<string | null>(null);
   const [checked, setChecked] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
 
@@ -21,6 +22,15 @@ export default function Page() {
 
   useEffect(() => {
     api.config().then(setConfig, () => undefined);
+    const query = new URLSearchParams(window.location.search);
+    const fromGitHub = query.get("login");  // back from "Sign in with GitHub"
+    if (fromGitHub) setToken(fromGitHub);
+    const loginProblem = query.get("login_error");
+    if (fromGitHub || loginProblem) {
+      query.delete("login");
+      query.delete("login_error");
+      window.history.replaceState(null, "", query.toString() ? `?${query}` : window.location.pathname);
+    }
     (async () => {
       if (getToken()) {
         try {
@@ -29,6 +39,7 @@ export default function Page() {
           setToken(""); // expired: show the login screen
         }
       }
+      setLoginError(loginProblem);
       setProjectId(new URLSearchParams(window.location.search).get("project"));
       setChecked(true);
     })();
@@ -43,7 +54,8 @@ export default function Page() {
   }, [user, projectId]);
 
   if (!checked) return null;
-  if (!user) return <Login inviteRequired={!!config?.invite_required} onDone={setUser} />;
+  if (!user)
+    return <Login inviteRequired={!!config?.invite_required} github={!!config?.github_enabled} initialError={loginError} onDone={setUser} />;
 
   async function create(prompt: string, stack: string, plugins: string[]) {
     const { project_id } = await api.start({ prompt, stack, plugins });

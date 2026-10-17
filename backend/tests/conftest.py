@@ -5,6 +5,8 @@ import tempfile
 os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="vibestack-test-")
 os.environ.setdefault("OPENROUTER_API_KEY", "test-key")
 os.environ["ACCESS_CODE"] = ""
+os.environ["AUTH_RATE_LIMIT"] = "100000"  # tests register many users from one address
+os.environ["LOG_FORMAT"] = "text"
 
 import pytest
 
