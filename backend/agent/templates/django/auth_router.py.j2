@@ -1,51 +1,147 @@
-"""Register, log in, and "who am I"."""
+{% set refresh = spec.has("refresh_tokens") %}{% set audit = spec.has("audit_log") %}{% set limit = spec.has("rate_limit") %}
+"""Register, log in, "who am I"{% if refresh %}, refresh and log out{% endif %}{% if spec.roles %}, and roles{% endif %}."""
 
 import json
 
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse  # noqa: F401
 from django.urls import path
 
+{% if audit %}
+from app import audit
+{% endif %}
+{% if limit %}
+from app import ratelimit
+{% endif %}
+{% if refresh %}
+from app import tokens
+{% endif %}
 from app.errors import ApiError
 from app.models.user import User
-from app.schemas.user import Token, UserCreate, UserRead
-from app.security import create_access_token, current_user, hash_password, verify_password
+from app.schemas.user import {% if refresh %}RefreshIn, {% endif %}{% if spec.roles %}RoleChange, {% endif %}Token, UserCreate, UserRead
+from app.security import {% if spec.roles %}ROLES, {% endif %}create_access_token, current_user, hash_password, login_ok{% if spec.roles %}, require_admin, signup_role{% endif %}
 
 
-def _credentials(request) -> UserCreate:
+def _body(request) -> dict:
     try:
         data = json.loads(request.body or b"{}")
     except ValueError:
         data = {}
-    return UserCreate.model_validate(data if isinstance(data, dict) else {})
+    return data if isinstance(data, dict) else {}
+
+
+def _only(request, method: str) -> None:
+    if request.method != method:
+        raise ApiError(405, "method not allowed")
+
+
+def _user_json(user: User) -> dict:
+    return UserRead.model_validate(user).model_dump(mode="json")
 
 
 def register(request):
-    if request.method != "POST":
-        raise ApiError(405, "method not allowed")
-    payload = _credentials(request)
+    _only(request, "POST")
+{% if limit %}
+    ratelimit.hit("register", request.META.get("REMOTE_ADDR", "unknown"))
+{% endif %}
+    payload = UserCreate.model_validate(_body(request))
     email = payload.email.lower()
     if User.objects.filter(email=email).exists():
         raise ApiError(409, "email already registered")
-    user = User.objects.create(email=email, password_hash=hash_password(payload.password))
-    return JsonResponse(UserRead.model_validate(user).model_dump(mode="json"), status=201)
+    user = User.objects.create(email=email, password_hash=hash_password(payload.password){% if spec.roles %}, role=signup_role(payload.role){% endif %})
+{% if audit %}
+    audit.record(user, "register", "User", user.id)
+{% endif %}
+    return JsonResponse(_user_json(user), status=201)
 
 
 def login(request):
-    if request.method != "POST":
-        raise ApiError(405, "method not allowed")
-    payload = _credentials(request)
-    user = User.objects.filter(email=payload.email.lower()).first()
-    if user is None or not verify_password(payload.password, user.password_hash):
+    _only(request, "POST")
+    payload = UserCreate.model_validate(_body(request))
+    email = payload.email.lower()
+{% if limit %}
+    ratelimit.hit("login", f"{request.META.get('REMOTE_ADDR', 'unknown')}:{email}")
+{% endif %}
+    user = User.objects.filter(email=email).first()
+    ok = login_ok(user, payload.password)
+{% if spec.has("account_lockout") %}
+    if user is not None:
+        user.save(update_fields=["failed_logins", "locked_until"])  # keeps the failed-login count
+{% endif %}
+    if not ok:
+{% if audit %}
+        audit.record(user, "login_failed", "User", user.id if user else None)
+{% endif %}
         raise ApiError(401, "invalid credentials")
-    return JsonResponse(Token(access_token=create_access_token(user.id)).model_dump())
+{% if audit %}
+    audit.record(user, "login", "User", user.id)
+{% endif %}
+    return JsonResponse(Token(access_token=create_access_token(user.id){% if refresh %}, refresh_token=tokens.issue(user.id){% endif %}).model_dump())
+{% if refresh %}
+
+
+def refresh(request):
+    """A new access token and a new refresh token; the old refresh token stops working."""
+    _only(request, "POST")
+    user_id, new_refresh = tokens.rotate(RefreshIn.model_validate(_body(request)).refresh_token)
+    return JsonResponse(Token(access_token=create_access_token(user_id), refresh_token=new_refresh).model_dump())
+
+
+def logout(request):
+    """Revoke the refresh token (and every token rotated from the same login)."""
+    _only(request, "POST")
+    tokens.revoke(RefreshIn.model_validate(_body(request)).refresh_token)
+    return HttpResponse(status=204)
+{% endif %}
 
 
 def me(request):
-    return JsonResponse(UserRead.model_validate(current_user(request)).model_dump(mode="json"))
+    _only(request, "GET")
+    return JsonResponse(_user_json(current_user(request)))
+{% if spec.roles %}
+
+
+def roles(request):
+    return JsonResponse({"roles": ROLES})
+
+
+def list_users(request):
+    _only(request, "GET")
+    require_admin(current_user(request))
+    return JsonResponse([_user_json(u) for u in User.objects.order_by("id")[:500]], safe=False)
+
+
+def change_role(request, user_id: int):
+    """Admins give any role, including the ones users can't pick at sign-up."""
+    _only(request, "PATCH")
+    user = current_user(request)
+    require_admin(user)
+    payload = RoleChange.model_validate(_body(request))
+    if payload.role not in ROLES:
+        raise ApiError(422, f"unknown role {payload.role}; choose one of: {', '.join(ROLES)}")
+    target = User.objects.filter(id=user_id).first()
+    if target is None:
+        raise ApiError(404, "User not found")
+    before = target.role
+    target.role = payload.role
+    target.save(update_fields=["role"])
+{% if audit %}
+    audit.record(user, "change_role", "User", target.id, {"role": before}, {"role": target.role})
+{% endif %}
+    return JsonResponse(_user_json(target))
+{% endif %}
 
 
 urlpatterns = [
     path("auth/register", register),
     path("auth/login", login),
+{% if refresh %}
+    path("auth/refresh", refresh),
+    path("auth/logout", logout),
+{% endif %}
     path("auth/me", me),
+{% if spec.roles %}
+    path("auth/roles", roles),
+    path("auth/users", list_users),
+    path("auth/users/<int:user_id>/role", change_role),
+{% endif %}
 ]

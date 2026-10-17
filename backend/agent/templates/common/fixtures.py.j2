@@ -15,6 +15,31 @@ def login(client, email: str) -> dict:
     r = client.post("/auth/login", json=creds)
     assert r.status_code == 200, r.text
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
+{% if spec.roles %}
+
+
+def login_as(client, role: str, admin_headers: dict) -> dict:
+    """A logged-in user with `role` (an admin gives it, so roles closed to sign-up work too)."""
+    headers = login(client, f"{role}@example.com")
+    me = client.get("/auth/me", headers=headers).json()
+    if me["role"] != role:
+        r = client.patch(f"/auth/users/{me['id']}/role", json={"role": role}, headers=admin_headers)
+        assert r.status_code == 200, r.text
+    return headers
+
+
+@pytest.fixture(scope="session")
+def role_headers(client, admin_headers):
+    """role_headers("freelancer") -> the Authorization header of a user with that role."""
+    cache: dict = {}
+
+    def get(role: str) -> dict:
+        if role not in cache:
+            cache[role] = login_as(client, role, admin_headers)
+        return cache[role]
+
+    return get
+{% endif %}
 
 
 @pytest.fixture(scope="session")

@@ -10,6 +10,7 @@ _db_dir = tempfile.mkdtemp()
 os.environ["DATABASE_URL"] = f"sqlite:///{_db_dir}/test.db"
 os.environ["ENV"] = "test"
 os.environ["ADMIN_EMAILS"] = "admin@example.com"
+os.environ["RATE_LIMITS"] = "off"  # the rate-limit test turns them on for itself
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "app.settings")
 
 import django  # noqa: E402
@@ -23,9 +24,10 @@ call_command("migrate", run_syncdb=True, verbosity=0)
 
 
 class Response:
-    def __init__(self, status_code: int, text: str):
+    def __init__(self, status_code: int, text: str, headers: dict | None = None):
         self.status_code = status_code
         self.text = text
+        self.headers = headers or {}
 
     def json(self):
         return jsonlib.loads(self.text)
@@ -43,7 +45,7 @@ class Client:
         body = "" if json is None else jsonlib.dumps(json)
         r = self._client.generic(method, url, data=body, content_type="application/json", headers=headers or {})
         body = b"".join(r.streaming_content) if r.streaming else r.content  # streams: live-update endpoints
-        return Response(r.status_code, body.decode())
+        return Response(r.status_code, body.decode(), {k.lower(): v for k, v in r.headers.items()})
 
     def get(self, url, **kw):
         return self.request("GET", url, **kw)

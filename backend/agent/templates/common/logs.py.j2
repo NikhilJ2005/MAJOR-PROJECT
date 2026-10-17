@@ -1,0 +1,43 @@
+"""Logging: one JSON object per line, each carrying the request id (X-Request-ID) of the request it belongs to."""
+
+import json
+import logging
+import re
+import uuid
+from contextvars import ContextVar
+from datetime import datetime, timezone
+
+from app import config
+
+request_id: ContextVar[str | None] = ContextVar("request_id", default=None)
+_SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def new_request_id(incoming: str | None) -> str:
+    """Keep the caller's X-Request-ID when it is sensible, so one id follows a request across services."""
+    return incoming if incoming and _SAFE_ID.match(incoming) else uuid.uuid4().hex
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        line = {
+            "time": datetime.fromtimestamp(record.created, timezone.utc).isoformat(timespec="milliseconds"),
+            "level": record.levelname.lower(),
+            "logger": record.name,
+            "message": record.getMessage(),
+            "request_id": request_id.get(),
+        }
+        if record.exc_info:
+            line["error"] = self.formatException(record.exc_info)
+        return json.dumps(line)
+
+
+def setup() -> None:
+    handler = logging.StreamHandler()
+    if config.LOG_FORMAT == "json":
+        handler.setFormatter(JsonFormatter())
+    else:
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.handlers = [handler]
+    root.setLevel(config.LOG_LEVEL)

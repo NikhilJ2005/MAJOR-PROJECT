@@ -1,25 +1,28 @@
-"""App wiring: blueprints, error format, CORS, request logging, health checks, docs."""
+"""App wiring: blueprints, RFC 7807 errors, CORS, request ids and logging, health checks, docs."""
 
 import json
 import logging
 import time
 from pathlib import Path
 
-from flask import Flask, Response, g, jsonify, request, send_from_directory
+from flask import Flask, Response, g, request, send_from_directory
 from pydantic import ValidationError
 from werkzeug.exceptions import HTTPException
 
-from app import config, models  # noqa: F401  (registers tables on Base.metadata)
+from app import config, logs, models  # noqa: F401  (registers tables on Base.metadata)
 from app.database import Base, database_ok, engine
-from app.errors import ApiError
+from app.errors import PROBLEM_JSON, ApiError, error_headers, problem
 {% if spec.auth %}
 from app.routers import auth
+{% endif %}
+{% if spec.has("audit_log") %}
+from app.routers import audit
 {% endif %}
 {% for e in spec.entities %}
 from app.routers import {{ e.module }}
 {% endfor %}
 
-logging.basicConfig(level=config.LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logs.setup()
 log = logging.getLogger("app")
 HERE = Path(__file__).parent
 
@@ -30,33 +33,41 @@ if config.AUTO_CREATE_TABLES:
 {% if spec.auth %}
 app.register_blueprint(auth.bp)
 {% endif %}
+{% if spec.has("audit_log") %}
+app.register_blueprint(audit.bp)
+{% endif %}
 {% for e in spec.entities %}
 app.register_blueprint({{ e.module }}.bp)
 {% endfor %}
 
 
+def _problem(status: int, detail, headers: dict | None = None) -> Response:
+    response = Response(json.dumps(problem(status, detail), default=str), status=status, mimetype=PROBLEM_JSON)
+    response.headers.update(headers or {})
+    return response
+
+
 @app.errorhandler(ApiError)
 def api_error(exc: ApiError):
-    response = jsonify(detail=exc.detail)
-    response.status_code = exc.status_code
-    if exc.status_code == 401:
-        response.headers["WWW-Authenticate"] = "Bearer"
-    return response
+    return _problem(exc.status_code, exc.detail, error_headers(exc))
 
 
 @app.errorhandler(ValidationError)
 def validation_error(exc: ValidationError):
-    return jsonify(detail=json.loads(exc.json(include_url=False))), 422
+    return _problem(422, json.loads(exc.json(include_url=False)))
 
 
 @app.errorhandler(HTTPException)
 def http_error(exc: HTTPException):
-    return jsonify(detail=exc.description), exc.code
+    return _problem(exc.code or 500, exc.description)
 
 
 @app.before_request
-def start_timer() -> None:
+def start_request() -> None:
+    """Give every request an id (the caller's X-Request-ID, or a new one) for the logs and the response."""
     g.started = time.perf_counter()
+    g.request_id = logs.new_request_id(request.headers.get("X-Request-ID"))
+    logs.request_id.set(g.request_id)
 
 
 @app.after_request
@@ -67,6 +78,7 @@ def finish(response: Response) -> Response:
         response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
     ms = (time.perf_counter() - g.get("started", time.perf_counter())) * 1000
+    response.headers["X-Request-ID"] = g.get("request_id", "")
     log.info("%s %s -> %s (%.0f ms)", request.method, request.path, response.status_code, ms)
     return response
 

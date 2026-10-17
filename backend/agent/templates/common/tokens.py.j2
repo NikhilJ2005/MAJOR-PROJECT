@@ -1,0 +1,90 @@
+"""Refresh tokens with rotation.
+
+Logging in starts a "family". Each refresh returns a new pair and revokes the old refresh token.
+Using a revoked token again means it was stolen (or copied), so the whole family is revoked and
+everyone holding it has to log in again. Only a SHA-256 hash of each token is stored.
+"""
+
+import hashlib
+import secrets
+import time
+
+{% if stack.name != "django" %}
+from sqlalchemy import select, update
+from sqlalchemy.orm import Session
+
+{% endif %}
+from app import config
+from app.errors import ApiError
+from app.models.refresh_token import RefreshToken
+
+
+def _digest(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+{% if stack.name == "django" %}
+def issue(user_id: int, family: str | None = None) -> str:
+    token = secrets.token_urlsafe(32)
+    RefreshToken.objects.create(
+        user_id=user_id, token_hash=_digest(token), family=family or secrets.token_hex(8),
+        expires_at=int(time.time()) + config.REFRESH_TOKEN_DAYS * 86400,
+    )
+    return token
+
+
+def _revoke_family(family: str) -> None:
+    RefreshToken.objects.filter(family=family, revoked_at__isnull=True).update(revoked_at=int(time.time()))
+
+
+def rotate(token: str) -> tuple[int, str]:
+    """(user id, new refresh token) for a valid refresh token; 401 otherwise."""
+    row = RefreshToken.objects.filter(token_hash=_digest(token)).first()
+    if row is None or row.expires_at < time.time():
+        raise ApiError(401, "invalid or expired refresh token")
+    if row.revoked_at is not None:
+        _revoke_family(row.family)
+        raise ApiError(401, "refresh token was already used; log in again")
+    row.revoked_at = int(time.time())
+    row.save(update_fields=["revoked_at"])
+    return row.user_id, issue(row.user_id, row.family)
+
+
+def revoke(token: str) -> None:
+    row = RefreshToken.objects.filter(token_hash=_digest(token)).first()
+    if row is not None:
+        _revoke_family(row.family)
+{% else %}
+def issue(db: Session, user_id: int, family: str | None = None) -> str:
+    token = secrets.token_urlsafe(32)
+    db.add(RefreshToken(
+        user_id=user_id, token_hash=_digest(token), family=family or secrets.token_hex(8),
+        expires_at=int(time.time()) + config.REFRESH_TOKEN_DAYS * 86400,
+    ))
+    db.commit()
+    return token
+
+
+def _revoke_family(db: Session, family: str) -> None:
+    db.execute(update(RefreshToken).where(RefreshToken.family == family, RefreshToken.revoked_at.is_(None))
+               .values(revoked_at=int(time.time())))
+    db.commit()
+
+
+def rotate(db: Session, token: str) -> tuple[int, str]:
+    """(user id, new refresh token) for a valid refresh token; 401 otherwise."""
+    row = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == _digest(token)).with_for_update())
+    if row is None or row.expires_at < time.time():
+        raise ApiError(401, "invalid or expired refresh token")
+    if row.revoked_at is not None:
+        _revoke_family(db, row.family)
+        raise ApiError(401, "refresh token was already used; log in again")
+    row.revoked_at = int(time.time())
+    return row.user_id, issue(db, row.user_id, row.family)
+
+
+def revoke(db: Session, token: str) -> None:
+    row = db.scalar(select(RefreshToken).where(RefreshToken.token_hash == _digest(token)))
+    if row is not None:
+        _revoke_family(db, row.family)
+{% endif %}

@@ -7,10 +7,11 @@ CONTRACT = """HTTP contract (the tests check exactly this, whatever the framewor
 - GET /<table>/ -> 200 JSON list; query params skip, limit, q (text search) and one filter per foreign key
 - GET /<table>/<id> -> 200 or 404;  PATCH /<table>/<id> -> 200 updated row;  DELETE /<table>/<id> -> 204
 - Custom actions: <METHOD> /<table>/<id>/<word> or /<table>/<word> -> 200 with a JSON object
-- Errors are JSON {"detail": ...}: 401 missing/invalid token on protected endpoints, 403 logged in but
-  not allowed (admin-only data), 404 missing or another user's private row, 409 duplicate value or unknown
+- Errors are RFC 7807 JSON {"type", "title", "status", "detail"}: 401 missing/invalid token on protected
+  endpoints, 403 logged in but not allowed (admin-only data, or a role the entity/action does not allow), 404 missing or another user's private row, 409 duplicate value or unknown
   foreign key or a broken business rule, 422 invalid input (wrong type, not in choices, below min/above max)
-- Admins are the users whose email is listed in the ADMIN_EMAILS environment variable."""
+- Admins are the users whose email is listed in the ADMIN_EMAILS environment variable; they pass every
+  role check. With roles, every user has `user.role` (one of the design's roles)."""
 
 TEST_HELPERS = """Test helpers available in tests/conftest.py (do not redefine them):
 - fixture `client`: client.get(url, params=..., headers=...), client.post(url, json=..., headers=...),
@@ -18,6 +19,8 @@ TEST_HELPERS = """Test helpers available in tests/conftest.py (do not redefine t
 - fixtures `user_headers`, `other_headers` (a second normal user), `admin_headers`: Authorization headers,
   or {} when the project has no login
 - `login(client, email)` returns headers for a new or existing user
+- when the design has roles: fixture `role_headers`, e.g. role_headers("freelancer") returns the headers of a
+  user with that role (users signing up get the first sign-up role)
 The database is shared by all tests in the session: create the rows your test needs (unique values where
 the field is unique, e.g. add a uuid4 suffix) and never assume an empty table."""
 
@@ -74,10 +77,21 @@ Step 2, design:
   exists already and entities may reference "User".
 - write_access per entity: "owner" when rows are private to the user who created them, "admin" for
   data only staff may change, otherwise "any_user".
+- "roles" when the description names kinds of users (client, freelancer, seller, doctor ...): a list of
+  {"name", "self_signup", "description"}. self_signup false for staff roles an admin assigns (e.g.
+  dispute_admin). Do not list a super admin: ADMIN_EMAILS users are super admins and pass every check.
+  Then "write_roles" on an entity (only those roles may create/change/delete it) and "roles" on an action.
+- "features" (production features the templates already implement, tested; turn on what is asked for):
+  "refresh_tokens" (refresh/rotating tokens, sessions), "account_lockout" (lock after failed logins,
+  brute-force protection), "audit_log" (audit trail, compliance, immutable history),
+  "rate_limit" (rate limiting, throttling, abuse protection). Errors are always RFC 7807, logs are JSON with
+  request ids, passwords use scrypt: do not model any of these as entities.
+- Money: decimal fields with min 0; wallets/escrow/ledgers are entities, and every action that moves money
+  or stock gets "locks": true (it runs in a transaction with the row locked: SELECT ... FOR UPDATE).
 - Custom endpoints ("actions") for every operation beyond CRUD: name (snake_case), entity, method
   (POST changes data, GET reads), path ("/{item_id}/<word>" for one row or "/<word>" for the collection),
   description, rules (plain English, each naming the HTTP error when it is broken, e.g.
-  "409 if stock is lower than the quantity"), admin_only, requirement_ids.
+  "409 if stock is lower than the quantity"), admin_only, roles, locks, requirement_ids.
 - Put every requirement id on the entity or action that covers it (requirement_ids); every requirement
   must be covered.
 - Leave "stack" empty: it is filled in for you. project_name is short snake_case."""

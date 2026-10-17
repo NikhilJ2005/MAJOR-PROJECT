@@ -51,16 +51,19 @@ class Stack:
             "django": ["django>=5.1", "gunicorn>=22.0"],
         }[self.name]
         deps = deps + ["pydantic>=2.6", "psycopg[binary]>=3.1"]
-        return deps + (["pyjwt>=2.8"] if spec.auth else [])
+        return deps + (["pyjwt>=2.8"] if spec.auth else []) + (["redis>=5.0"] if spec.has("rate_limit") else [])
 
     def files(self, spec: ProjectSpec) -> list[FileRow]:
         """Every file of the generated project, in dependency order."""
         rows: list[FileRow] = [
             ("app/__init__.py", None, "package marker"),
             ("app/config.py", "config.py.j2", "settings from environment variables"),
-            ("app/errors.py", "errors.py.j2", "ApiError -> JSON error responses, state-machine check"),
+            ("app/logs.py", "logs.py.j2", "JSON log lines with request ids"),
+            ("app/errors.py", "errors.py.j2", "ApiError -> RFC 7807 problem responses, state-machine check"),
             ("app/events.py", "events.py.j2", "live updates (Server-Sent Events)"),
         ]
+        if spec.has("rate_limit"):
+            rows.append(("app/ratelimit.py", "ratelimit.py.j2", "token-bucket rate limits (Redis when REDIS_URL is set)"))
         if self.name == "django":
             rows += [
                 ("manage.py", "manage.py.j2", "Django command line"),
@@ -73,9 +76,20 @@ class Stack:
             rows += [
                 ("app/models/user.py", "user_model.py.j2", "User table"),
                 ("app/schemas/user.py", "user_schema.py.j2", "auth request/response shapes"),
-                ("app/security.py", "security.py.j2", "password hashing + JWT"),
-                ("app/routers/auth.py", "auth_router.py.j2", "register/login/me"),
+                ("app/security.py", "security.py.j2", "password hashing (scrypt), JWT, roles"),
             ]
+            if spec.has("refresh_tokens"):
+                rows += [
+                    ("app/models/refresh_token.py", "refresh_token_model.py.j2", "refresh tokens (hashed)"),
+                    ("app/tokens.py", "tokens.py.j2", "refresh-token rotation and reuse detection"),
+                ]
+            if spec.has("audit_log"):
+                rows += [
+                    ("app/models/audit_log.py", "audit_log_model.py.j2", "immutable audit log table"),
+                    ("app/audit.py", "audit.py.j2", "writes audit entries"),
+                    ("app/routers/audit.py", "audit_router.py.j2", "read-only audit log for admins"),
+                ]
+            rows.append(("app/routers/auth.py", "auth_router.py.j2", "register/login/me" + (", refresh/logout" if spec.has("refresh_tokens") else "")))
         for e in spec.entities:
             rows += [(path, template, purpose) for path, template, purpose in entity_rows(e)]
         rows += [

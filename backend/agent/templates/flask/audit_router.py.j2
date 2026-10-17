@@ -1,0 +1,51 @@
+"""The audit log, read-only and for admins. There are no routes that change or delete entries."""
+
+from flask import Blueprint, request
+from sqlalchemy import select
+
+from app.database import db_session
+from app.errors import ApiError
+from app.models.audit_log import AuditLog
+from app.security import current_user, require_admin
+
+bp = Blueprint("audit", __name__, url_prefix="/audit_logs")
+
+
+def _entry(row: AuditLog) -> dict:
+    return {
+        "id": row.id, "actor_id": row.actor_id, "action": row.action, "entity": row.entity, "row_id": row.row_id,
+        "before": row.before, "after": row.after, "request_id": row.request_id, "created_at": row.created_at.isoformat(),
+    }
+
+
+def _int(name: str, default: int | None, low: int, high: int | None = None) -> int | None:
+    raw = request.args.get(name)
+    if raw is None:
+        return default
+    if not raw.isdigit() or int(raw) < low or (high is not None and int(raw) > high):
+        raise ApiError(422, f"{name} is not a valid number")
+    return int(raw)
+
+
+@bp.get("/")
+def list_audit_logs():
+    db = db_session()
+    require_admin(current_user(db))
+    stmt = select(AuditLog)
+    if request.args.get("entity"):
+        stmt = stmt.where(AuditLog.entity == request.args["entity"])
+    row_id = _int("row_id", None, 0)
+    if row_id is not None:
+        stmt = stmt.where(AuditLog.row_id == row_id)
+    skip, limit = _int("skip", 0, 0), _int("limit", 50, 1, 100)
+    return [_entry(row) for row in db.scalars(stmt.order_by(AuditLog.id.desc()).offset(skip).limit(limit))]
+
+
+@bp.get("/<int:entry_id>")
+def get_audit_log(entry_id: int):
+    db = db_session()
+    require_admin(current_user(db))
+    row = db.get(AuditLog, entry_id)
+    if row is None:
+        raise ApiError(404, "audit log entry not found")
+    return _entry(row)

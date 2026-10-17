@@ -43,13 +43,21 @@ The design (`agent/state.py`) supports:
 - per-entity access: `any_user`, `owner` (private rows), `admin`
 - **custom actions** with business rules, e.g. `POST /orders/{id}/checkout`
 - **live updates**: `GET /<table>/stream` (Server-Sent Events) in all three frameworks; the frontend listens to it
+- **roles** (e.g. client, freelancer, dispute_admin) on entities and actions; admins assign staff roles
+- **production features**, each verified template code with its own generated tests in all three frameworks:
+  - refresh tokens with rotation and reuse detection
+  - account lockout after failed logins (423)
+  - an immutable audit log, readable by admins
+  - token-bucket rate limits, shared through Redis when `REDIS_URL` is set (429 with `Retry-After`)
+  - row locks (`SELECT … FOR UPDATE`) for actions that move money or stock
+- always: RFC 7807 errors, `X-Request-ID` with JSON logs, and scrypt password hashing
 
 Every generated project contains:
 
 | | |
 |---|---|
 | Frontend | a complete React + Tailwind app (no build step; vendored, works offline): login, a dashboard, a page per entity, forms built from the field rules, state buttons, action buttons and live updates |
-| Backend | models, schemas, services (business logic), routers, auth (PBKDF2 + JWT), consistent JSON errors, `/health` and `/ready` |
+| Backend | models, schemas, services (business logic), routers, auth (scrypt + JWT, roles, refresh tokens), RFC 7807 errors, request ids, `/health` and `/ready` |
 | Database | Alembic (FastAPI, Flask) or Django migrations, **generated and applied once to prove they work** |
 | Tests | contract tests, edge-case tests, rule tests |
 | Delivery | a non-root Dockerfile with a health check, docker-compose with Postgres, a `Makefile`, GitHub Actions CI, a README, and `VIBESTACK_LEDGER.md` |

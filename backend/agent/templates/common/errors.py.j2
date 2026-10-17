@@ -1,10 +1,33 @@
+"""ApiError -> RFC 7807 "problem details" responses, and the state-machine check."""
+
+from http import HTTPStatus
+
+from app.logs import request_id
+
+PROBLEM_JSON = "application/problem+json"
+
+
 class ApiError(Exception):
     """Raise anywhere (routers, services) to answer with an HTTP error, e.g. ApiError(409, "out of stock")."""
 
-    def __init__(self, status_code: int, detail: str):
+    def __init__(self, status_code: int, detail: str, headers: dict[str, str] | None = None):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
+        self.headers = headers or {}
+
+
+def problem(status: int, detail) -> dict:
+    """The RFC 7807 body every error uses. `detail` is a message, or the list of validation errors."""
+    try:
+        title = HTTPStatus(status).phrase
+    except ValueError:
+        title = "Error"
+    return {"type": "about:blank", "title": title, "status": status, "detail": detail, "request_id": request_id.get()}
+
+
+def error_headers(exc: ApiError) -> dict[str, str]:
+    return {**({"WWW-Authenticate": "Bearer"} if exc.status_code == 401 else {}), **exc.headers}
 
 
 def check_transition(field: str, current: str | None, new: str | None, allowed: dict[str, list[str]]) -> None:

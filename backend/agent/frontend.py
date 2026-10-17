@@ -19,7 +19,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, ValidationError
 
 from .codegen import search_field
-from .state import EntitySpec, ProjectSpec
+from .state import EntitySpec, ProjectSpec, pluralize
 
 CONFIG = "app/static/config.json"
 UI = "app/static/ui.json"
@@ -64,7 +64,9 @@ def _icon(e: EntitySpec) -> str:
 
 def _label(e: EntitySpec) -> str:
     words = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", e.name)
-    return words + ("es" if words.endswith(("s", "x", "ch", "sh")) else "s")
+    head, _, last = words.rpartition(" ")
+    plural = pluralize(last.lower())
+    return f"{head} {last[0]}{plural[1:]}".strip()
 
 
 def frontend_config(spec: ProjectSpec) -> dict[str, Any]:
@@ -75,14 +77,16 @@ def frontend_config(spec: ProjectSpec) -> dict[str, Any]:
             "name": e.name,
             "table": e.table,
             "access": e.write_access,
+            "roles": e.write_roles,
             "realtime": e.realtime,
             "search": search_field(e),
             "fields": [f.model_dump(include={"name", "type", "required", "unique", "references", "choices",
                                               "min", "max", "transitions"}) for f in e.fields],
-            "actions": [a.model_dump(include={"name", "method", "path", "description", "admin_only"})
+            "actions": [a.model_dump(include={"name", "method", "path", "description", "admin_only", "roles"})
                         for a in spec.actions_for(e)],
         })
-    return {"project": spec.project_name, "description": spec.description, "auth": spec.auth, "entities": entities}
+    return {"project": spec.project_name, "description": spec.description, "auth": spec.auth, "entities": entities,
+            "roles": [r.model_dump(include={"name", "self_signup"}) for r in spec.roles], "features": spec.features}
 
 
 def default_ui(spec: ProjectSpec) -> dict[str, Any]:

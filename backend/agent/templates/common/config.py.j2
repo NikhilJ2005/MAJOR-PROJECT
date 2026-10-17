@@ -12,6 +12,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./app.db")
 AUTO_CREATE_TABLES = os.getenv("AUTO_CREATE_TABLES", "1" if DEV else "0") == "1"
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+LOG_FORMAT = os.getenv("LOG_FORMAT", "text" if DEV else "json")  # json: one object per line, with request ids
 {% if spec.auth or stack.name == "django" %}
 
 SECRET_KEY = os.getenv("SECRET_KEY", "")
@@ -21,6 +22,21 @@ if not SECRET_KEY:
     SECRET_KEY = secrets.token_urlsafe(32)  # dev only: logins reset when the server restarts
 {% endif %}
 {% if spec.auth %}
-ACCESS_TOKEN_MINUTES = int(os.getenv("ACCESS_TOKEN_MINUTES", "60"))
+ACCESS_TOKEN_MINUTES = int(os.getenv("ACCESS_TOKEN_MINUTES", "{{ 15 if spec.has("refresh_tokens") else 60 }}"))
+{% if spec.has("refresh_tokens") %}
+REFRESH_TOKEN_DAYS = int(os.getenv("REFRESH_TOKEN_DAYS", "14"))
+{% endif %}
+{% if spec.has("account_lockout") %}
+LOCKOUT_ATTEMPTS = int(os.getenv("LOCKOUT_ATTEMPTS", "5"))  # failed logins in a row before the account locks
+LOCKOUT_MINUTES = int(os.getenv("LOCKOUT_MINUTES", "15"))
+{% endif %}
 ADMIN_EMAILS = {e.strip().lower() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()}
+{% endif %}
+{% if spec.has("rate_limit") %}
+# Rate limits, "<requests>/<seconds>". Shared by every server process through Redis when REDIS_URL is set.
+RATE_LIMITS = os.getenv("RATE_LIMITS", "on") != "off"
+RATE_LIMIT_LOGIN = os.getenv("RATE_LIMIT_LOGIN", "10/60")
+RATE_LIMIT_REGISTER = os.getenv("RATE_LIMIT_REGISTER", "20/60")
+RATE_LIMIT_ACTIONS = os.getenv("RATE_LIMIT_ACTIONS", "60/60")
+REDIS_URL = os.getenv("REDIS_URL", "")
 {% endif %}

@@ -2,13 +2,15 @@
 
 They define what every generated API must do, whatever the framework:
 POST / -> 201, GET / -> list, GET /{id}, PATCH /{id}, DELETE /{id} -> 204,
-401 without a token, 403 for non-admins on admin data, 404 for other users' private rows.
+401 without a token, 403 for non-admins on admin data, 404 for other users' private rows,
+RFC 7807 error bodies and request ids{% if spec.roles %}, roles{% endif %}{% for f in spec.features if f in features_known %}, {{ f | replace("_", " ") }}{% endfor %}.
 """
 
 import pytest
 
 ENTITIES = {{ entities_json }}
 AUTH = {{ spec.auth | string }}
+PASSWORD = "s3cret-pass-123"
 
 state: dict = {"ids": {}}
 
@@ -50,8 +52,24 @@ def _resolve(payload: dict) -> dict:
 
 
 def _writer(entity, user_headers, admin_headers) -> dict:
-    """Who may create rows of this entity."""
-    return admin_headers if entity["access"] == "admin" else user_headers
+    """Who may create rows of this entity (admins may do everything, whatever roles it needs)."""
+    return admin_headers if entity["access"] == "admin" or entity["roles"] else user_headers
+
+
+def test_errors_are_problem_details(client, user_headers, admin_headers):
+    """Errors follow RFC 7807: {"type", "title", "status", "detail"} as application/problem+json."""
+    entity = ENTITIES[0]
+    r = client.get(f"/{entity['table']}/999999", headers=_writer(entity, user_headers, admin_headers))
+    assert r.status_code == 404, r.text
+    body = r.json()
+    assert body["status"] == 404 and body["title"] and body["detail"], body
+    assert r.headers["content-type"].startswith("application/problem+json")
+
+
+def test_request_id_is_echoed(client):
+    r = client.get("/health", headers={"X-Request-ID": "trace-123"})
+    assert r.headers["x-request-id"] == "trace-123"
+    assert client.get("/health").headers["x-request-id"]
 
 
 @pytest.mark.parametrize("entity", ENTITIES, ids=[e["name"] for e in ENTITIES])
@@ -111,6 +129,142 @@ def test_invalid_input_is_rejected(client, entity, user_headers, admin_headers):
     r = client.post(f"/{entity['table']}/", json=entity["invalid"], headers=headers)
     assert r.status_code == 422, r.text
     assert "detail" in r.json()
+    assert r.json()["status"] == 422
+{% if spec.roles %}
+
+
+ROLES = {{ tojson(spec.role_names) }}
+SIGNUP_ROLES = {{ tojson(spec.roles | selectattr("self_signup") | map(attribute="name") | list) }}
+ROLE_ENTITIES = [e for e in ENTITIES if e["roles"]]
+ROLE_ACTIONS = {{ role_actions_json }}
+
+
+def test_sign_up_roles(client, user_headers):
+    r = client.post("/auth/register", json={"email": "picks-a-role@example.com", "password": PASSWORD, "role": SIGNUP_ROLES[-1]})
+    assert r.status_code == 201, r.text
+    assert r.json()["role"] == SIGNUP_ROLES[-1]
+    r = client.post("/auth/register", json={"email": "bad-role@example.com", "password": PASSWORD, "role": "no-such-role"})
+    assert r.status_code == 422, r.text
+    for role in [r for r in ROLES if r not in SIGNUP_ROLES]:  # given by admins only
+        r = client.post("/auth/register", json={"email": f"wants-{role}@example.com", "password": PASSWORD, "role": role})
+        assert r.status_code == 403, r.text
+    me = client.get("/auth/me", headers=user_headers).json()
+    assert me["role"] == SIGNUP_ROLES[0]
+    r = client.patch(f"/auth/users/{me['id']}/role", json={"role": ROLES[-1]}, headers=user_headers)
+    assert r.status_code == 403, r.text
+
+
+@pytest.mark.parametrize("entity", ROLE_ENTITIES, ids=[e["name"] for e in ROLE_ENTITIES])
+def test_write_roles(client, entity, role_headers):
+    """Only the entity's roles may create rows; any other role gets 403."""
+    base, payload = f"/{entity['table']}", _resolve(entity["payload"])
+    denied = [r for r in ROLES if r not in entity["roles"]]
+    if denied:
+        r = client.post(f"{base}/", json=payload, headers=role_headers(denied[0]))
+        assert r.status_code == 403, r.text
+    allowed = role_headers(entity["roles"][0])
+    r = client.post(f"{base}/", json=payload, headers=allowed)
+    assert r.status_code in (201, 409), r.text  # 409: a unique value test_crud's row already has
+    if r.status_code == 201:
+        assert client.delete(f"{base}/{r.json()['id']}", headers=allowed).status_code == 204
+
+
+@pytest.mark.parametrize("action", ROLE_ACTIONS, ids=[a["name"] for a in ROLE_ACTIONS])
+def test_action_roles(client, action, role_headers):
+    denied = [r for r in ROLES if r not in action["roles"]]
+    if not denied:
+        pytest.skip("every role may call it")
+    headers = role_headers(denied[0])
+    r = client.post(action["url"], json={}, headers=headers) if action["method"] == "POST" else client.get(action["url"], headers=headers)
+    assert r.status_code == 403, r.text
+{% endif %}
+{% if spec.has("refresh_tokens") %}
+
+
+def test_refresh_token_rotation(client):
+    creds = {"email": "refresh@example.com", "password": PASSWORD}
+    client.post("/auth/register", json=creds)
+    first = client.post("/auth/login", json=creds).json()
+    assert first["refresh_token"]
+    r = client.post("/auth/refresh", json={"refresh_token": first["refresh_token"]})
+    assert r.status_code == 200, r.text
+    second = r.json()
+    assert second["refresh_token"] != first["refresh_token"]
+    assert client.get("/auth/me", headers={"Authorization": f"Bearer {second['access_token']}"}).status_code == 200
+    # Reusing a rotated token means it leaked: refused, and every token of that login stops working.
+    assert client.post("/auth/refresh", json={"refresh_token": first["refresh_token"]}).status_code == 401
+    assert client.post("/auth/refresh", json={"refresh_token": second["refresh_token"]}).status_code == 401
+    third = client.post("/auth/login", json=creds).json()
+    assert client.post("/auth/logout", json={"refresh_token": third["refresh_token"]}).status_code == 204
+    assert client.post("/auth/refresh", json={"refresh_token": third["refresh_token"]}).status_code == 401
+{% endif %}
+{% if spec.has("account_lockout") %}
+
+
+def test_account_lockout(client):
+    """5 wrong passwords in a row lock the account (423), even for the right password."""
+    creds = {"email": "lockout@example.com", "password": PASSWORD}
+    client.post("/auth/register", json=creds)
+    for _ in range(5):
+        assert client.post("/auth/login", json={**creds, "password": "wrong-pass-123"}).status_code == 401
+    r = client.post("/auth/login", json=creds)
+    assert r.status_code == 423, r.text
+{% endif %}
+{% if spec.has("rate_limit") %}
+
+
+def test_rate_limit():
+    """Over the limit: 429 with Retry-After."""
+    from app import ratelimit
+    from app.errors import ApiError
+
+    saved = ratelimit.ENABLED, dict(ratelimit.LIMITS)
+    ratelimit.ENABLED, ratelimit.LIMITS["action"] = True, (2, 60)
+    try:
+        ratelimit.hit("action", "rate-test")
+        ratelimit.hit("action", "rate-test")
+        with pytest.raises(ApiError) as caught:
+            ratelimit.hit("action", "rate-test")
+        assert caught.value.status_code == 429
+        assert int(caught.value.headers["Retry-After"]) >= 1
+    finally:
+        ratelimit.ENABLED = saved[0]
+        ratelimit.LIMITS.update(saved[1])
+{% if spec.auth %}
+
+
+def test_login_is_rate_limited(client):
+    from app import ratelimit
+
+    saved = ratelimit.ENABLED, dict(ratelimit.LIMITS)
+    ratelimit.ENABLED, ratelimit.LIMITS["login"] = True, (2, 60)
+    try:
+        creds = {"email": "too-many-logins@example.com", "password": "wrong-pass-123"}
+        codes = [client.post("/auth/login", json=creds).status_code for _ in range(3)]
+        assert codes == [401, 401, 429], codes
+        r = client.post("/auth/login", json=creds)
+        assert r.status_code == 429 and int(r.headers["retry-after"]) >= 1
+    finally:
+        ratelimit.ENABLED = saved[0]
+        ratelimit.LIMITS.update(saved[1])
+{% endif %}
+{% endif %}
+{% if spec.has("audit_log") %}
+
+
+def test_audit_log(client, user_headers, admin_headers):
+    """Every change is recorded; admins can read the log, nobody can change it."""
+    entity = ENTITIES[0]
+    r = client.get("/audit_logs/", params={"entity": entity["name"]}, headers=admin_headers)
+    assert r.status_code == 200, r.text
+    entries = r.json()
+    assert "create" in {e["action"] for e in entries}, entries
+    assert client.get("/audit_logs/", headers=user_headers).status_code == 403
+    entry = entries[0]
+    assert client.patch(f"/audit_logs/{entry['id']}", json={"action": "x"}, headers=admin_headers).status_code == 405
+    assert client.delete(f"/audit_logs/{entry['id']}", headers=admin_headers).status_code == 405
+    assert client.post("/audit_logs/", json={}, headers=admin_headers).status_code == 405
+{% endif %}
 
 
 DELETE_RULES = {{ delete_rules_json }}
