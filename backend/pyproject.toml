@@ -15,6 +15,7 @@ dependencies = [
     "jinja2>=3.1",
     "pyyaml>=6.0",
     "mcp>=2.0",  # VibeStack as an MCP server (app/mcp_server.py)
+    "redis>=5.0",  # build queue for worker processes (app/queue.py); also generated apps' shared rate limits
     # runtime deps of *generated* projects (FastAPI, Flask and Django), pre-installed
     # so the local sandbox never has to pip install during a run
     "sqlalchemy>=2.0",
@@ -29,7 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["ruff>=0.5", "moto[s3]>=5"]
+dev = ["ruff>=0.5", "moto[s3]>=5", "fakeredis>=2.20"]
 
 [build-system]
 requires = ["setuptools>=68"]

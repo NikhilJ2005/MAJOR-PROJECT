@@ -32,6 +32,7 @@ from .accounts import create_token, hash_password, user_id_from_token, verify_pa
 from .mcp_server import build_mcp
 from .ops import RateLimiter, RequestContext, client_ip, metrics_text, setup_logging, setup_sentry
 from .preview import PreviewError, PreviewManager
+from .queue import make_queue
 from .runs import TERMINAL, RunManager
 from .store import IntegrityError, Store
 
@@ -77,7 +78,7 @@ app.add_middleware(
 )
 
 store = Store(settings.platform_database_url)
-manager = RunManager(store)
+manager = RunManager(store, queue=make_queue())
 
 
 # --------------------------------------------------------------------------- accounts
@@ -335,7 +336,7 @@ async def events(
 ) -> StreamingResponse:
     """Server-sent events. Resume with the Last-Event-ID header or ?after=<seq>."""
     own_run(run_id, user)
-    run = manager.runs.get(run_id)
+    run = manager.get_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="run not found (or server restarted; fetch /api/runs/{id})")
     start = int(last_event_id) + 1 if last_event_id and last_event_id.isdigit() else after + 1

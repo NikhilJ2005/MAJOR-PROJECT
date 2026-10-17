@@ -1,0 +1,28 @@
+# HTTPS entry (ingress-nginx). Event streams need buffering off and long timeouts. Live previews run
+# inside one web pod, so a browser sticks to the pod it first reached (cookie affinity).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vibestack
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: vibestack-pod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [vibestack.example.com]
+      secretName: vibestack-tls   # e.g. from cert-manager
+  rules:
+    - host: vibestack.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vibestack-web
+                port:
+                  number: 80

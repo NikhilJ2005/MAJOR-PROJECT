@@ -174,6 +174,9 @@ class Store:
         """The numbers /api/metrics adds up, one row per run."""
         return self._rows("SELECT status, created_at, finished_at, repairs, bugs_found, bugs_fixed, tokens, cost_usd FROM runs")
 
+    def project_running(self, project_id: str) -> bool:
+        return self._one("SELECT id FROM runs WHERE project_id = :p AND status = 'running' LIMIT 1", p=project_id) is not None
+
     def unfinished_runs(self) -> list[dict[str, Any]]:
         """Runs a server restart interrupted (still marked running)."""
         return self._rows("SELECT * FROM runs WHERE status = 'running' ORDER BY created_at")

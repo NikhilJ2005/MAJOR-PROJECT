@@ -72,6 +72,7 @@ Every generated project contains:
   - **Server:** at `/mcp/`, so Claude Desktop, Cursor or VS Code can build and edit projects ([docs/MCP.md](docs/MCP.md)).
   - **Client:** the Reflector can use other MCP servers' tools.
 - **Plugins:** one `.py` file adds files, static checks, prompt rules or tools ([docs/PLUGINS.md](docs/PLUGINS.md)). Ten are included, among them deploy configs, seed data, OpenAPI export and a secrets scan.
+- **Build workers:** with `RUN_QUEUE=redis`, web servers queue builds in Redis and any number of workers (`python -m app.worker`) build them. A worker that dies hands its runs to the others, which continue from the last checkpoint. Kubernetes manifests with a worker autoscaler are in `deploy/k8s/`.
 - **Runs anywhere:** the same Docker image runs on Railway, Render, Fly.io or any VM (`docker compose --profile full up` brings Postgres and S3-compatible MinIO). Generated zips can live in any S3-compatible bucket ([docs/DEPLOY.md](docs/DEPLOY.md)).
 - **Operations:**
   - Builds interrupted by a redeploy resume from their last checkpoint.
@@ -103,7 +104,7 @@ backend/
     llm.py            provider client: model tiers, fallback, tool loop, cost
     prompts.py        every prompt in one place
     fake_llm.py       deterministic stand-in model for tests and offline demos
-  app/                FastAPI platform: accounts, projects, runs, SSE, previews, MCP server
+  app/                FastAPI platform: accounts, projects, runs, SSE, previews, MCP server, build queue + worker
   plugins/            example plugins
   evals/              15 benchmark prompts + runner with ablations
   tests/              unit, graph, HTTP, MCP, tools and end-to-end tests

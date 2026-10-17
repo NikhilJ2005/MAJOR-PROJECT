@@ -99,3 +99,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t vibestack .
+
+  kubernetes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render and validate deploy/k8s
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          kubectl kustomize deploy/k8s > rendered.yaml
+          ./kubeconform -strict -summary rendered.yaml

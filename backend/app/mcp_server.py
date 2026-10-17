@@ -85,7 +85,7 @@ def build_mcp(manager: RunManager, store: Store, start_run: Callable[..., str],
 
     async def finish(run_id: str, wait: bool) -> dict[str, Any]:
         waited = 0.0
-        while wait and manager.runs[run_id].active and waited < MAX_WAIT_S:
+        while wait and manager.get_run(run_id).active and waited < MAX_WAIT_S:
             await asyncio.sleep(1.0)
             waited += 1.0
         return summary(manager.snapshot(run_id))

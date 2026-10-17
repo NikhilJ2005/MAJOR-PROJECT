@@ -1,0 +1,16 @@
+# VibeStack on Kubernetes: kubectl apply -k deploy/k8s   (see docs/DEPLOY.md)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: vibestack
+resources:
+  - namespace.yaml
+  - config.yaml
+  - secret.yaml       # edit before applying, or create the Secret yourself and remove this line
+  - redis.yaml        # remove when you use a managed Redis (then set REDIS_URL in config.yaml)
+  - web.yaml
+  - worker.yaml
+  - ingress.yaml
+images:
+  - name: vibestack
+    newName: ghcr.io/your-org/vibestack   # the image built from the repository's Dockerfile
+    newTag: latest
