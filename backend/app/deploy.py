@@ -148,19 +148,30 @@ KNOWN = [
 ]
 
 
-def explain(clues: str, step: str) -> str:
+def explain(clues: str, step: str, namespace: str = "") -> str:
     """A plain-English cause: a known pattern first, otherwise the cheap model reads the cluster's clues."""
     for pattern, text in KNOWN:
         if re.search(pattern, clues, re.IGNORECASE):
             return text
+    system = ("You explain Kubernetes deploy failures to a non-expert in two short sentences: the cause, then the "
+              "fix. No preamble.")
     try:
         from agent.llm import ask, get_llm
+        from agent.mcp_tools import load_tools
+        from agent.tools import ToolSet
 
         llm = get_llm()
-        if llm is not None:
-            text, _ = ask(llm, "cheap", "You explain Kubernetes deploy failures to a non-expert in two short sentences: "
-                          "the cause, then the fix. No preamble.", f"The step that failed: {step}\n\n{clues}", effort="low")
-            return text.strip()[:600]
+        if llm is None:
+            return "The cluster did not report a clear cause; the details are below."
+        # With the Kubernetes MCP server (read-only) the diagnoser looks into the cluster itself.
+        tools = load_tools(purpose="deploy")
+        if tools and hasattr(llm, "complete_with_tools"):
+            text, _ = llm.complete_with_tools(
+                "cheap", system + " Use the tools to look at the namespace's pods, events and logs first.",
+                f"The step that failed: {step}\nNamespace: {namespace}\n\n{clues}", ToolSet(tools, max_calls=5))
+        else:
+            text, _ = ask(llm, "cheap", system, f"The step that failed: {step}\n\n{clues}", effort="low")
+        return text.strip()[:600]
     except Exception as exc:  # noqa: BLE001 - the explanation is a bonus, never a second failure
         log.warning("could not explain the deploy failure: %s", exc)
     return "The cluster did not report a clear cause; the details are below."
@@ -272,7 +283,7 @@ class Deployer:
 
     def _fail(self, step: str, message: str, namespace: str) -> DeployError:
         clues = self._kube().clues(namespace)
-        return DeployError(step, f"{message}\n\n{clues}", explain(f"{message}\n{clues}", step))
+        return DeployError(step, f"{message}\n\n{clues}", explain(f"{message}\n{clues}", step, namespace))
 
     def _deploy(self, row: dict[str, Any], spec: ProjectSpec, name: str) -> None:
         ns, kube = row["namespace"], self._kube()

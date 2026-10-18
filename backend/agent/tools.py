@@ -171,3 +171,22 @@ class Toolbox:
     def changes(self) -> dict[str, str]:
         """Files the model rewrote with write_file."""
         return {p: body for p, body in self.files.items() if body != self.original.get(p)}
+
+
+class ToolSet:
+    """Tools for an agent outside the repair loop (e.g. the deploy diagnoser): same budget and record as Toolbox."""
+
+    def __init__(self, tools: list[Tool], max_calls: int = MAX_TOOL_CALLS, node: str = "deploy") -> None:
+        self.tools, self.max_calls, self.node = tools, max_calls, node
+        self.calls: list[dict[str, Any]] = []
+
+    def call(self, name: str, args: dict[str, Any]) -> str:
+        if len(self.calls) >= self.max_calls:
+            return "tool budget used up: give your final answer now"
+        tool = next((t for t in self.tools if t.name == name), None)
+        try:
+            result = "unknown tool" if tool is None else str(tool.fn(**(args or {})))
+        except Exception as exc:  # noqa: BLE001 - a bad call is reported to the model, not raised
+            result = f"error: {type(exc).__name__}: {exc}"
+        self.calls.append({"tool": name, "args": args or {}, "result": result.splitlines()[0][:120] if result else ""})
+        return result[:MAX_RESULT_CHARS]
