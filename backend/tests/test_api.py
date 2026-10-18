@@ -173,3 +173,32 @@ def test_ui_pages_are_revalidated_but_hashed_assets_are_cached(tmp_path):
     client = TestClient(ui)
     assert client.get("/").headers["cache-control"] == "no-cache"
     assert "immutable" in client.get("/_next/static/a1b2.js").headers["cache-control"]
+
+
+def test_design_review_pauses_before_code_and_continues_on_approval(fake_llm):
+    from app.main import app
+
+    with TestClient(app) as client:
+        me = _login(client)
+        r = client.post("/api/runs", json={"prompt": "A blog with posts and comments", "review_design": True}, headers=me)
+        run_id = r.json()["run_id"]
+        snap = _wait(client, run_id, {"awaiting_approval", "failed", "error"}, me)
+        assert snap["status"] == "awaiting_approval" and snap["spec"] and not snap["files"]  # no code yet
+
+        # A change in words goes back to the Architect, then waits for approval again.
+        assert client.post(f"/api/runs/{run_id}/approve", json={"instruction": "also tag posts"}, headers=me).status_code == 200
+        time.sleep(0.5)
+        snap = _wait(client, run_id, {"awaiting_approval", "failed", "error"}, me)
+        assert snap["status"] == "awaiting_approval"
+        assert any("design change" in e["action"] for e in snap["ledger"])
+
+        bad = {**snap["spec"], "entities": []}
+        assert client.post(f"/api/runs/{run_id}/approve", json={"spec": bad}, headers=me).status_code == 422
+        edited = snap["spec"]
+        edited["entities"][0]["fields"].append({"name": "subtitle", "required": False})
+        assert client.post(f"/api/runs/{run_id}/approve", json={"spec": edited}, headers=me).status_code == 200
+        snap = _wait(client, run_id, {"succeeded", "failed", "error"}, me)
+        assert snap["status"] == "succeeded", snap
+        assert any(f["name"] == "subtitle" for f in snap["spec"]["entities"][0]["fields"])
+        assert any(e["action"] == "you edited and approved the design" for e in snap["ledger"])
+        assert client.post(f"/api/runs/{run_id}/approve", json={}, headers=me).status_code == 409

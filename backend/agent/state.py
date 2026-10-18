@@ -423,6 +423,7 @@ class Options(TypedDict, total=False):
     rule_tests: bool  # use the Architect's rule tests during validation (default True)
     calibrate: bool  # check the rule tests against the verified templates before any code (default True)
     resume: bool  # "keep fixing": validate and heal the given files, skipping design and code generation
+    review_design: bool  # wait for the user to approve (or edit) the design before any code is written
 
 
 class AgentState(TypedDict, total=False):
@@ -438,6 +439,7 @@ class AgentState(TypedDict, total=False):
     changes: dict[str, list[str]]  # follow-up edits: entities added / changed / removed by the Architect
     spec: dict[str, Any]
     file_plan: list[dict[str, str]]
+    design_feedback: str | None  # the user asked for a design change in words: back to the Architect
     plugin_choices: list[dict[str, str]]  # the plugins this build uses: {name, by, reason} (plugins.resolve)
     files: Annotated[dict[str, str], merge_files]
     template_files: dict[str, str]

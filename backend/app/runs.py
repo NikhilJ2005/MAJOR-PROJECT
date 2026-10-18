@@ -18,6 +18,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from langgraph.types import Command
+
 from agent.config import settings
 from agent.graph import build_graph, checkpointer, initial_state
 
@@ -27,6 +29,7 @@ from .store import Store
 log = logging.getLogger(__name__)
 
 TERMINAL = {"succeeded", "failed", "error"}
+WAITING = "awaiting_approval"  # paused before any code is written, until the user approves the design
 
 
 @dataclass
@@ -192,17 +195,40 @@ class RunManager:
                 run.emit({"type": "progress", "node": snapshot.next[0], "text": "Continued by another builder"})
             run.status = "running"
             run.emit({"type": "status", "status": "running"})
+            if isinstance(graph_input, dict) and "resume" in graph_input and len(graph_input) == 1:
+                graph_input = Command(resume=graph_input["resume"])  # the user approved the design
             self._execute(run, graph_input)
             return True
         finally:
             self.queue.release(run_id)
             self.runs.pop(run_id, None)
 
+    def waiting_for_approval(self, run_id: str) -> bool:
+        snapshot = self.graph.get_state(self._config(run_id))
+        return bool(snapshot.next) and any(getattr(t, "interrupts", ()) for t in snapshot.tasks)
+
+    def approve(self, run_id: str, decision: dict[str, Any]) -> None:
+        """Continue a run paused at the design review: {} approves, {"spec": ...} approves an edited design,
+        {"instruction": "..."} sends the design back to the Architect with a change in words."""
+        if not self.waiting_for_approval(run_id):
+            raise ValueError("this run is not waiting for approval")
+        if self.executes:
+            record = self.store.run(run_id) or {}
+            run = self.runs.get(run_id) or self.runs.setdefault(run_id, Run(id=run_id, prompt=record.get("prompt", "")))
+            if run.active:
+                raise ValueError("this run is already continuing")
+            self._launch(run, Command(resume=decision))
+        else:
+            run = self.get_run(run_id)
+            self.queue.push(run_id, {"resume": decision})
+            if run is not None:
+                run.emit({"type": "progress", "node": "plan", "text": "Design approved; waiting for a free builder"})
+
     def requeue_orphans(self) -> list[str]:
         """Runs still marked running that no worker holds (it crashed or was redeployed): queue them again."""
         orphans = []
         for row in self.store.unfinished_runs():
-            if self.queue.claimed(row["id"]) or self.queue.status(row["id"]) == "queued":
+            if self.queue.claimed(row["id"]) or self.queue.status(row["id"]) in ("queued", WAITING):
                 continue
             self.queue.push(row["id"], None)
             orphans.append(row["id"])
@@ -228,6 +254,8 @@ class RunManager:
                         run.emit({"type": "progress", "node": update.get("node"), "text": update.get("text")})
                     continue
                 for node, delta in update.items():
+                    if node.startswith("__"):  # "__interrupt__": the run paused (see waiting_for_approval)
+                        continue
                     delta = delta or {}
                     run.emit(
                         {
@@ -244,6 +272,10 @@ class RunManager:
                         }
                     )
             values = self.graph.get_state(config).values
+            if self.waiting_for_approval(run.id):
+                run.status = WAITING
+                run.emit({"type": "status", "status": WAITING})
+                return  # not finished: the user approves the design, then approve() continues it
             run.status = values.get("status", "succeeded")
             if run.status not in TERMINAL:
                 run.status = "failed"
@@ -264,6 +296,8 @@ class RunManager:
             # Started, but the first checkpoint has not been written yet.
             values = {"prompt": run.prompt, "status": run.status}
         status = run.status if run else values.get("status")
+        if status not in TERMINAL and values.get("status") == "spec_ready" and self.waiting_for_approval(run_id):
+            status = WAITING
         queued = status == "queued"
         if queued:  # for the UI a queued run is already running: its first agent just has not started
             status = "running"

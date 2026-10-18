@@ -27,6 +27,7 @@ from starlette.background import BackgroundTask
 from agent import plugins, storage
 from agent.config import settings
 from agent.stacks import STACKS
+from agent.state import ProjectSpec
 
 from .accounts import create_token, hash_password, user_id_from_token, verify_password
 from .mcp_server import build_mcp
@@ -157,12 +158,21 @@ class RunRequest(BaseModel):
     plugins: list[str] | None = None  # plugins forced on (the agents choose the rest)
     plugins_off: list[str] | None = None  # plugins forced off
     auto_plugins: bool = True  # let the Architect and Planner choose plugins
+    review_design: bool = False  # wait for the user to approve the design before any code is written
 
 
 class Message(BaseModel):
     prompt: str = Field(min_length=3, max_length=6000)
     # "edit": change the app as the prompt says. "fix": keep healing the latest version's code as it is.
     mode: Literal["edit", "fix"] = "edit"
+    review_design: bool = False
+
+
+class Approval(BaseModel):
+    """The design review: approve as it is, approve an edited design, or ask for a change in words."""
+
+    spec: dict[str, Any] | None = None
+    instruction: str | None = Field(default=None, min_length=3, max_length=2000)
 
 
 @app.get("/api/health")
@@ -238,7 +248,27 @@ def _options(body: RunRequest) -> dict[str, Any]:
             raise HTTPException(status_code=422, detail=f"unknown plugins: {', '.join(sorted(unknown))}")
         options[key] = names
     options["auto_plugins"] = body.auto_plugins
+    options["review_design"] = body.review_design
     return options
+
+
+@app.post("/api/runs/{run_id}/approve")
+def approve_design(run_id: str, body: Approval, user: CurrentUser) -> dict[str, str]:
+    """Continue a run that waits at the design review."""
+    own_run(run_id, user)
+    decision: dict[str, Any] = {"approved": True}  # never empty: LangGraph reads {} as "no resume values"
+    if body.instruction:
+        decision["instruction"] = body.instruction.strip()
+    elif body.spec is not None:
+        try:
+            decision["spec"] = ProjectSpec.model_validate(body.spec).model_dump()
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"the edited design is not valid: {exc}") from exc
+    try:
+        manager.approve(run_id, decision)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"status": "continuing"}
 
 
 @app.post("/api/runs", status_code=201)
@@ -287,7 +317,8 @@ def send_message(project_id: str, body: Message, user: CurrentUser) -> dict[str,
     base = latest if body.mode == "fix" else project["current_run_id"] or latest
     if base is None:
         raise HTTPException(status_code=409, detail="the project has no version yet")
-    options = {"stack": project["stack"], "codegen_mode": "llm", "resume": body.mode == "fix"}
+    options = {"stack": project["stack"], "codegen_mode": "llm", "resume": body.mode == "fix",
+               "review_design": body.review_design and body.mode == "edit"}
     run_id = start_run(user, body.prompt, options, project_id=project_id, base_run_id=base)
     return {"run_id": run_id, "project_id": project_id}
 

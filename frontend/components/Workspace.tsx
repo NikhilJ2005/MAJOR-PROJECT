@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Architecture } from "@/components/Architecture";
 import { AgentSteps, deriveSteps } from "@/components/AgentSteps";
+import { DesignReview } from "@/components/DesignReview";
 import { Files } from "@/components/Files";
 import { LiveCode } from "@/components/LiveCode";
 import { StatusDot } from "@/components/Home";
@@ -17,7 +18,8 @@ type Tab = (typeof TABS)[number];
 export function Workspace({ projectId, onHome }: { projectId: string; onHome: () => void }) {
   const [project, setProject] = useState<ProjectDetail | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("Preview");
+  const [chosenTab, setChosenTab] = useState<Tab>("Preview");
+  const [leftReview, setLeftReview] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const p = await api.project(projectId);
@@ -30,7 +32,7 @@ export function Workspace({ projectId, onHome }: { projectId: string; onHome: ()
       const p = await load();
       const latest = p.versions[p.versions.length - 1];
       setSelected((s) => s ?? (latest?.status === "running" ? latest.run_id : p.current_run_id ?? latest?.run_id ?? null));
-      if (latest?.status === "running") setTab("Live");  // watch the agents write
+      if (latest?.status === "running") setChosenTab("Live");  // watch the agents write
     })();
   }, [load]);
 
@@ -38,10 +40,17 @@ export function Workspace({ projectId, onHome }: { projectId: string; onHome: ()
   const live = useRun(running?.run_id ?? null, async () => {
     const p = await load();
     setSelected(p.versions[p.versions.length - 1]?.run_id ?? null);
-    setTab("Preview");
+    setChosenTab("Preview");
   });
   const shown = useRun(selected === running?.run_id ? null : selected);
   const snap = selected === running?.run_id ? live.snap : shown.snap;
+  const reviewing = live.snap?.status === "awaiting_approval" && selected === running?.run_id;
+  // While the build waits for the user's approval, open the design, unless they picked another tab since.
+  const tab = reviewing && leftReview !== running?.run_id ? "Design" : chosenTab;
+  const setTab = (t: Tab) => {
+    setChosenTab(t);
+    if (reviewing) setLeftReview(running?.run_id ?? null);
+  };
 
   async function send(prompt: string, mode: "edit" | "fix" = "edit") {
     const { run_id } = await api.message(projectId, prompt, mode);
@@ -78,6 +87,7 @@ export function Workspace({ projectId, onHome }: { projectId: string; onHome: ()
               className={`-mb-px border-b-2 px-3 py-3 text-sm ${tab === t ? "border-signal-400 font-medium text-ink-50" : "border-transparent text-ink-400 hover:text-ink-100"}`}
             >
               {t}
+              {t === "Design" && reviewing && <span className="ml-1.5 inline-block h-2 w-2 animate-pulse rounded-full bg-signal-400" aria-label="waiting for your approval" />}
               {t === "Quality" && (snap?.bugs?.length ?? 0) > 0 && <span className="ml-1.5 rounded-full bg-signal-400/20 px-1.5 text-xs text-signal-300">{snap?.bugs?.length}</span>}
             </button>
           ))}
@@ -100,7 +110,14 @@ export function Workspace({ projectId, onHome }: { projectId: string; onHome: ()
           )}
           <div className={tab === "Preview" || tab === "Live" ? "hidden" : "p-5"}>
             {tab === "Code" && selected && <Files runId={selected} files={snap?.files ?? []} version={snap?.ledger?.length ?? 0} />}
-            {tab === "Design" && (snap?.spec ? <Architecture spec={snap.spec} plan={snap.file_plan} /> : <Empty text="The Architect's design appears here." />)}
+            {tab === "Design" &&
+              (reviewing && snap?.spec && selected ? (
+                <DesignReview key={JSON.stringify(snap.spec)} runId={selected} spec={snap.spec} onSent={() => { live.refresh(); setTab("Live"); }} />
+              ) : snap?.spec ? (
+                <Architecture spec={snap.spec} plan={snap.file_plan} plugins={snap.plugin_choices} />
+              ) : (
+                <Empty text="The Architect's design appears here." />
+              ))}
             {tab === "Tests" && <Tests validation={snap?.validation} report={snap?.report} files={snap?.files ?? []} />}
             {tab === "Quality" && (
               <BugsAndHealing entries={snap?.ledger ?? []} bugs={snap?.bugs ?? []} notes={snap?.review ?? []} done={snap?.status !== "running"} stopReason={snap?.stop_reason} />
@@ -245,7 +262,7 @@ function Message({
       >
         <div className="flex items-center gap-2">
           <button onClick={onSelect} className="font-display font-bold text-ink-50 hover:text-signal-300">Version {version.version}</button>
-          <StatusDot status={version.status} />
+          <StatusDot status={isSelected && snap?.status === "awaiting_approval" ? snap.status : version.status} />
           {isCurrent && <span className="rounded-full bg-ink-700 px-2 py-0.5 text-xs text-ink-200">current</span>}
           {!isCurrent && version.status === "succeeded" && (
             <button onClick={onRestore} className="ml-auto text-xs text-ink-400 hover:text-signal-300">Make current</button>

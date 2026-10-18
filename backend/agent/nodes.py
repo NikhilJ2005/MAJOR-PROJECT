@@ -24,6 +24,8 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from langgraph.types import interrupt
+
 from . import plugins, prompts
 from .analysis import check_coverage, requirements_text
 from .bughunt import failing_tests, static_check, update_bugs
@@ -194,10 +196,26 @@ def _rule_tests(llm: Any, spec: ProjectSpec, ledger: list[dict[str, Any]], usage
     return {RULE_TESTS: source} if source else {}
 
 
+def _redesign(state: AgentState) -> dict[str, Any]:
+    llm = _require_llm()
+    progress("parse_spec", "Changing the design as you asked…")
+    spec, missing, usage = _design(llm, {**state, "base_spec": state["spec"], "prompt": state["design_feedback"]})
+    coverage = "all requirements covered" if not missing else f"not covered: {', '.join(missing)}"
+    ledger = [entry("architect", f"changed the design: {state['design_feedback'][:120]}", coverage,
+                    model=model_names(usage), tokens=usage.total_tokens)]
+    out = {"spec": spec.model_dump(), "design_feedback": None, "status": "spec_ready", "usage": usage.as_state(),
+           "ledger": ledger, "rule_tests_wanted": True}
+    if state.get("base_spec") and not state.get("base_failed"):  # an edit of an earlier version: what changed since it
+        out["changes"] = design_changes(ProjectSpec.model_validate(state["base_spec"]), spec)
+    return out
+
+
 def parse_spec(state: AgentState) -> dict[str, Any]:
     """Architect: prompt -> requirements + a validated design. (Its rule tests are written in parallel with
     the code, from the design alone: see generate.)"""
     stack = _opts(state).get("stack")
+    if state.get("design_feedback"):  # the user asked for a change on the design screen: edit the design
+        return _redesign(state)
     if state.get("spec"):
         spec = _with_stack(ProjectSpec.model_validate(state["spec"]), stack)
         return {
@@ -236,6 +254,20 @@ def parse_spec(state: AgentState) -> dict[str, Any]:
 
 
 def plan(state: AgentState) -> dict[str, Any]:
+    reviewed: list[dict[str, Any]] = []
+    if _opts(state).get("review_design"):
+        # Pause here until the user approves the design (POST /api/runs/{id}/approve). Nothing runs before
+        # this line, so the node can safely start over when the run continues.
+        decision = interrupt({"kind": "design_review"}) or {}
+        if decision.get("instruction"):
+            return {"design_feedback": decision["instruction"], "status": "spec_ready",
+                    "ledger": [entry("planner", "you asked for a design change", decision["instruction"])]}
+        if decision.get("spec"):
+            edited = _with_stack(ProjectSpec.model_validate(decision["spec"]), _spec(state).stack)
+            state = {**state, "spec": edited.model_dump()}
+            reviewed.append(entry("planner", "you edited and approved the design", "changes made on the design screen"))
+        else:
+            reviewed.append(entry("planner", "you approved the design", "no code is written before your approval"))
     spec = _spec(state)
     choices = plugins.resolve(_opts(state), [c.model_dump() for c in spec.plugins], spec, state.get("prompt", ""))
     state = {**state, "plugin_choices": choices}
@@ -244,16 +276,14 @@ def plan(state: AgentState) -> dict[str, Any]:
     if _opts(state).get("edge_tests") is False:  # ablation study: run without the spec-derived edge-case tests
         template_files.pop(EDGE_TESTS, None)
         file_plan = [f for f in file_plan if f["path"] != EDGE_TESTS]
-    ledger = [
-        entry(
-            "planner",
-            f"planned {len(file_plan)} {get_stack(spec.stack).label} files in dependency order",
-            "models -> schemas -> services -> routers -> app wiring -> tests -> packaging",
-        )
-    ]
     who = {"user": "you", "architect": "the Architect", "planner": "the Planner", "default": "the server settings"}
-    for c in choices:
-        ledger.append(entry("planner", f"turned on the {c['name']} plugin (chosen by {who[c['by']]})", c["reason"]))
+    ledger = reviewed + [entry("planner", f"turned on the {c['name']} plugin (chosen by {who[c['by']]})", c["reason"])
+                         for c in choices]
+    ledger.append(entry(
+        "planner",
+        f"planned {len(file_plan)} {get_stack(spec.stack).label} files in dependency order",
+        "models -> schemas -> services -> routers -> app wiring -> tests -> packaging",
+    ))
     for name, added in plugins.extra_files(_plugins(state), spec).items():
         added = {p: c for p, c in added.items() if p not in template_files}  # plugins add, never overwrite
         template_files.update(added)
@@ -264,6 +294,8 @@ def plan(state: AgentState) -> dict[str, Any]:
         "file_plan": file_plan,
         "template_files": template_files,
         "plugin_choices": choices,
+        "spec": spec.model_dump(),
+        "design_feedback": None,
         "status": "planned",
         "ledger": ledger,
     }

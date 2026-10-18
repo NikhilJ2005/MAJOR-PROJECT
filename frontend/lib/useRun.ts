@@ -37,7 +37,8 @@ export function useRun(runId: string | null, onFinished?: (status: string) => vo
       const first = await api.snapshot(runId).catch(() => null);
       if (closed) return;
       setSnap(first);
-      if (!first || first.status !== "running") return;
+      // A run waiting at the design review is still going: keep listening, it continues after approval.
+      if (!first || (first.status !== "running" && first.status !== "awaiting_approval")) return;
       source = new EventSource(api.eventsUrl(runId, -1));
       const onEvent = (msg: MessageEvent) => {
         const ev = JSON.parse(msg.data) as RunEvent;
@@ -55,6 +56,10 @@ export function useRun(runId: string | null, onFinished?: (status: string) => vo
         }
         setEvents((prev) => [...prev, ev]);
         if (ev.type === "node" || ev.type === "error") refresh();
+        if (ev.type === "status" && ev.status === "awaiting_approval") {
+          refresh();
+          return;
+        }
         if (ev.type === "status" && ev.status && ev.status !== "running") {
           source?.close();
           refresh();

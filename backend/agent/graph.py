@@ -1,7 +1,8 @@
 """The VibeStack harness as a LangGraph state machine of 8 agents.
 
     Architect -> Planner -> Code Generator -> Validator --ok-----------------------> Packager -> END
-    ("keep fixing" starts at the Validator with the previous version's code)
+    ("keep fixing" starts at the Validator with the previous version's code; with review_design the
+    Planner first waits for the user to approve the design, and a change in words goes back to the Architect)
                                               Validator --fail, making progress--> Error Classifier -> Reflector -> Validator
                                               Validator --fail, no progress------> Circuit Breaker -> END
 
@@ -48,7 +49,8 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     g.add_conditional_edges(START, lambda s: "validate" if (s.get("options") or {}).get("resume") else "parse_spec",
                             ["parse_spec", "validate"])
     g.add_edge("parse_spec", "plan")
-    g.add_edge("plan", "generate")
+    g.add_conditional_edges("plan", lambda s: "parse_spec" if s.get("design_feedback") else "generate",
+                            ["parse_spec", "generate"])
     g.add_edge("generate", "validate")
     g.add_conditional_edges("validate", nodes.route_after_validate, ["package", "classify", "failure_report"])
     g.add_edge("classify", "reflect")

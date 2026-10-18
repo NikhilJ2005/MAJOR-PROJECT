@@ -25,8 +25,9 @@ function ago(ts: number) {
 }
 
 export function StatusDot({ status }: { status?: string | null }) {
-  const cls = status === "succeeded" ? "bg-emerald-400" : status === "running" ? "animate-pulse bg-signal-400" : status ? "bg-rose-400" : "bg-ink-600";
-  const text = status === "succeeded" ? "Working" : status === "running" ? "Building" : status ? "Needs attention" : "Not built";
+  const waiting = status === "awaiting_approval";
+  const cls = status === "succeeded" ? "bg-emerald-400" : status === "running" || waiting ? "animate-pulse bg-signal-400" : status ? "bg-rose-400" : "bg-ink-600";
+  const text = status === "succeeded" ? "Working" : status === "running" ? "Building" : waiting ? "Waiting for your approval" : status ? "Needs attention" : "Not built";
   return (
     <span className="inline-flex items-center gap-1.5 text-xs text-ink-300">
       <span className={`h-2 w-2 rounded-full ${cls}`} />

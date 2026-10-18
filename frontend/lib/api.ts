@@ -52,7 +52,15 @@ export type Field = {
   on_delete?: string | null;
   index?: boolean;
 };
-export type Entity = { name: string; fields: Field[]; write_access?: "any_user" | "owner" | "admin"; requirement_ids?: string[]; realtime?: boolean };
+export type Entity = {
+  name: string;
+  fields: Field[];
+  write_access?: "any_user" | "owner" | "admin";
+  write_roles?: string[];
+  requirement_ids?: string[];
+  realtime?: boolean;
+};
+export type Role = { name: string; self_signup?: boolean; description?: string };
 export type Action = {
   name: string;
   entity: string;
@@ -61,6 +69,8 @@ export type Action = {
   description?: string;
   rules?: string[];
   admin_only?: boolean;
+  roles?: string[];
+  locks?: boolean;
   requirement_ids?: string[];
 };
 export type Requirement = { id: string; text: string; kind: "data" | "rule" | "permission" | "endpoint" };
@@ -73,6 +83,16 @@ export type Spec = {
   entities: Entity[];
   actions?: Action[];
   requirements?: Requirement[];
+  roles?: Role[];
+  plugins?: { name: string; reason?: string }[];
+};
+
+/** Production features the verified templates provide (agent/state.FEATURES). */
+export const FEATURES: Record<string, string> = {
+  refresh_tokens: "Refresh tokens with rotation",
+  account_lockout: "Lock accounts after 5 failed logins",
+  audit_log: "Immutable audit log",
+  rate_limit: "Rate limits (Redis when available)",
 };
 
 export type Validation = { ok: boolean; gate: string; log: string; failing_file?: string | null; duration_s?: number };
@@ -87,7 +107,8 @@ export type Snapshot = {
   changes?: { added: string[]; changed: string[]; removed: string[] } | null;
   prompt?: string;
   status: string;
-  options?: { stack?: string; codegen_mode?: string; plugins?: string[] };
+  options?: { stack?: string; codegen_mode?: string; plugins?: string[]; review_design?: boolean };
+  plugin_choices?: PluginChoice[];
   spec?: Spec;
   file_plan?: { path: string; owner: string; purpose: string }[];
   files?: string[];
@@ -144,7 +165,7 @@ export type RunEvent = {
 export type RunSummary = { run_id: string; prompt: string; stack: string; status: string; created_at: number };
 export type Stats = { runs: number; succeeded: number; success_rate: number; avg_repairs: number; bugs_found: number; bugs_fixed: number; cost_usd: number };
 export type PreviewInfo = { running: boolean; base: string | null; docs: string | null };
-export type StartRun = { prompt: string; stack: string; codegen_mode?: string; plugins: string[]; plugins_off: string[] };
+export type StartRun = { prompt: string; stack: string; codegen_mode?: string; plugins: string[]; plugins_off: string[]; review_design?: boolean };
 
 // --- login token (kept in this browser only) -------------------------------------------
 const TOKEN_KEY = "vibestack-token";
@@ -207,7 +228,8 @@ export const api = {
   projects: () => request<Project[]>("/api/projects"),
   project: (id: string) => request<ProjectDetail>(`/api/projects/${id}`),
   message: (id: string, prompt: string, mode: "edit" | "fix" = "edit") =>
-    request<{ run_id: string; project_id: string }>(`/api/projects/${id}/messages`, post({ prompt, mode })),
+    request<{ run_id: string; project_id: string }>(`/api/projects/${id}/messages`, post({ prompt, mode, review_design: mode === "edit" })),
+  approve: (id: string, body: { spec?: Spec; instruction?: string }) => request<{ status: string }>(`/api/runs/${id}/approve`, post(body)),
   restore: (id: string, run_id: string) => request<{ current_run_id: string }>(`/api/projects/${id}/current`, post({ run_id })),
   file: async (id: string, path: string) => {
     const res = await fetch(`${API}/api/runs/${id}/files/${path}`, { headers: { Authorization: `Bearer ${getToken()}` } });
