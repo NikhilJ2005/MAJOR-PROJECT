@@ -1,0 +1,13 @@
+# Settings that are not secret. Every pod (web and worker) reads them.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vibestack-config
+data:
+  RUN_QUEUE: redis
+  REDIS_URL: redis://redis:6379/0
+  WORKER_CONCURRENCY: "2"
+  LLM_PROVIDER: gemini
+  PUBLIC_URL: https://vibestack.example.com
+  LOG_FORMAT: json
+  MAX_COST_PER_RUN_USD: "3.0"

@@ -20,6 +20,9 @@ VibeStack speaks [MCP](https://modelcontextprotocol.io) in both directions:
 | `generate_backend(prompt, stack="fastapi", wait=true)` | Creates a project and runs the whole pipeline (design, rule tests, code, validation, self-healing). Returns a summary: project id, version, entities, actions, bugs found and fixed, stop reason, download path |
 | `edit_project(project_id, prompt, wait=true)` | A follow-up change, e.g. "add reviews with a 1-5 rating": builds the next version from the current one |
 | `list_projects()` | Your projects with their latest status |
+| `keep_fixing(project_id, wait=true)` | Continues self-healing the latest version's own code, e.g. after a failed build |
+| `preview_url(run_id)` | Starts the generated app and returns its private live link |
+| `download_url(run_id)` | Where to download the project as a zip |
 | `run_status(run_id)` | The summary of one run (one version) |
 | `list_files(run_id)` | Every file path in the generated project |
 | `read_file(run_id, path)` | One file, e.g. `app/services/order.py` |
@@ -59,11 +62,17 @@ async with httpx2.AsyncClient(headers={"Authorization": f"Bearer {token}"}, time
 
 When a build fails validation, the Reflector repairs it with tools: `read_file`, `list_files`,
 `search_code`, `list_routes`, `write_file` (stage a fix), `run_tests` and `check_frontend`.
-Any MCP server can add more. List the servers in `MCP_SERVERS`:
+Any MCP server can add more. Well-known ones are turned on by name with `MCP_PRESETS`; others are
+listed in `MCP_SERVERS`:
 
 ```bash
-MCP_SERVERS='[{"name": "docs", "url": "https://example.com/mcp", "headers": {"Authorization": "Bearer ..."}}]'
+MCP_PRESETS=docs
+MCP_SERVERS='[{"name": "mine", "url": "https://example.com/mcp", "headers": {"Authorization": "Bearer ..."}}]'
 ```
+
+| Preset | Server | What the Reflector gets | Settings |
+|---|---|---|---|
+| `docs` | Context7 (`https://mcp.context7.com/mcp`) | current documentation of FastAPI, Django, SQLAlchemy, Pydantic … when a fix needs an API it is unsure about | `CONTEXT7_API_KEY` (optional), `MCP_DOCS_URL` |
 
 At the start of each repair, VibeStack asks every server for its tools and offers them to the model as
 `<server>__<tool>` (for example `docs__search`). A server that cannot be reached is skipped and logged.

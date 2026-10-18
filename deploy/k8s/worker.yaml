@@ -1,0 +1,49 @@
+# Build workers: each takes WORKER_CONCURRENCY queued runs at a time and runs the generated code in its sandbox.
+# A worker that is stopped or dies leaves its runs to the others; they continue from the last checkpoint.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vibestack-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: vibestack-worker}
+  template:
+    metadata:
+      labels: {app: vibestack-worker}
+    spec:
+      terminationGracePeriodSeconds: 60   # finishes current builds for up to WORKER_DRAIN_SECONDS
+      containers:
+        - name: worker
+          image: vibestack
+          command: ["python", "-m", "app.worker"]
+          env:
+            - name: WORKER_DRAIN_SECONDS
+              value: "50"
+          envFrom:
+            - configMapRef: {name: vibestack-config}
+            - secretRef: {name: vibestack-secrets}
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits: {memory: 6Gi}   # WORKER_CONCURRENCY builds, each with its own sandboxed test runs
+---
+# More queued work keeps the workers busy (validation is CPU-heavy), so CPU is a good scaling signal.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: vibestack-worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: vibestack-worker
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: 60}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600   # builds take minutes: do not stop workers too eagerly

@@ -4,13 +4,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Architecture } from "@/components/Architecture";
 import { AgentSteps, deriveSteps } from "@/components/AgentSteps";
 import { Files } from "@/components/Files";
+import { LiveCode } from "@/components/LiveCode";
 import { StatusDot } from "@/components/Home";
 import { BugsAndHealing, Empty } from "@/components/Ledger";
 import { Tests } from "@/components/Tests";
 import { API, api, type ProjectDetail, type Snapshot, type Version } from "@/lib/api";
 import { useRun } from "@/lib/useRun";
 
-const TABS = ["Preview", "Code", "Design", "Tests", "Quality"] as const;
+const TABS = ["Live", "Preview", "Code", "Design", "Tests", "Quality"] as const;
 type Tab = (typeof TABS)[number];
 
 export function Workspace({ projectId, onHome }: { projectId: string; onHome: () => void }) {
@@ -29,6 +30,7 @@ export function Workspace({ projectId, onHome }: { projectId: string; onHome: ()
       const p = await load();
       const latest = p.versions[p.versions.length - 1];
       setSelected((s) => s ?? (latest?.status === "running" ? latest.run_id : p.current_run_id ?? latest?.run_id ?? null));
+      if (latest?.status === "running") setTab("Live");  // watch the agents write
     })();
   }, [load]);
 
@@ -43,6 +45,7 @@ export function Workspace({ projectId, onHome }: { projectId: string; onHome: ()
 
   async function send(prompt: string, mode: "edit" | "fix" = "edit") {
     const { run_id } = await api.message(projectId, prompt, mode);
+    setTab("Live");
     await load();
     setSelected(run_id);
   }
@@ -78,15 +81,24 @@ export function Workspace({ projectId, onHome }: { projectId: string; onHome: ()
               {t === "Quality" && (snap?.bugs?.length ?? 0) > 0 && <span className="ml-1.5 rounded-full bg-signal-400/20 px-1.5 text-xs text-signal-300">{snap?.bugs?.length}</span>}
             </button>
           ))}
-          {snap?.has_artifact && selected && (
-            <a href={api.downloadUrl(selected)} className="ml-auto rounded-lg border border-ink-700 px-3 py-1.5 text-sm text-ink-100 hover:border-ink-500">
-              Download code
-            </a>
-          )}
+          <div className="ml-auto flex items-center gap-2">
+            {snap?.has_artifact && selected && (
+              <a href={api.downloadUrl(selected)} className="rounded-lg border border-ink-700 px-3 py-1.5 text-sm text-ink-100 hover:border-ink-500">
+                Download code
+              </a>
+            )}
+          </div>
         </div>
         <div className="min-h-0 flex-1 overflow-auto">
           {tab === "Preview" && <PreviewPane runId={selected} snap={snap} />}
-          <div className={tab === "Preview" ? "hidden" : "p-5"}>
+          {tab === "Live" && (
+            <LiveCode
+              live={selected === running?.run_id ? live.live : {}}
+              events={selected === running?.run_id ? live.events : []}
+              running={selected === running?.run_id}
+            />
+          )}
+          <div className={tab === "Preview" || tab === "Live" ? "hidden" : "p-5"}>
             {tab === "Code" && selected && <Files runId={selected} files={snap?.files ?? []} version={snap?.ledger?.length ?? 0} />}
             {tab === "Design" && (snap?.spec ? <Architecture spec={snap.spec} plan={snap.file_plan} /> : <Empty text="The Architect's design appears here." />)}
             {tab === "Tests" && <Tests validation={snap?.validation} report={snap?.report} files={snap?.files ?? []} />}

@@ -1,4 +1,4 @@
-"""App wiring: routers, error format, CORS, request logging, health checks."""
+"""App wiring: routers, RFC 7807 errors, CORS, request ids and logging, health checks."""
 
 import logging
 import time
@@ -6,21 +6,27 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException
 
-from app import config, models  # noqa: F401  (registers tables on Base.metadata)
+from app import config, logs, models  # noqa: F401  (registers tables on Base.metadata)
 from app.database import Base, database_ok, engine
-from app.errors import ApiError
+from app.errors import PROBLEM_JSON, ApiError, error_headers, problem
 {% if spec.auth %}
 from app.routers import auth
+{% endif %}
+{% if spec.has("audit_log") %}
+from app.routers import audit
 {% endif %}
 {% for e in spec.entities %}
 from app.routers import {{ e.module }}
 {% endfor %}
 
-logging.basicConfig(level=config.LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logs.setup()
 log = logging.getLogger("app")
 
 
@@ -44,23 +50,46 @@ if config.CORS_ORIGINS:
     )
 
 
+def _problem(status: int, detail, headers: dict | None = None) -> JSONResponse:
+    return JSONResponse(jsonable_encoder(problem(status, detail)), status_code=status, headers=headers, media_type=PROBLEM_JSON)
+
+
 @app.exception_handler(ApiError)
 async def api_error(_: Request, exc: ApiError) -> JSONResponse:
-    headers = {"WWW-Authenticate": "Bearer"} if exc.status_code == 401 else None
-    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=headers)
+    return _problem(exc.status_code, exc.detail, error_headers(exc))
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+    return _problem(422, exc.errors())
+
+
+@app.exception_handler(HTTPException)
+async def http_error(_: Request, exc: HTTPException) -> JSONResponse:
+    return _problem(exc.status_code, exc.detail, getattr(exc, "headers", None))
 
 
 @app.middleware("http")
-async def log_requests(request: Request, call_next):
+async def request_context(request: Request, call_next):
+    """Give every request an id (the caller's X-Request-ID, or a new one), log it, and send it back."""
+    rid = logs.new_request_id(request.headers.get("X-Request-ID"))
+    token = logs.request_id.set(rid)
     start = time.perf_counter()
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    finally:
+        logs.request_id.reset(token)
     ms = (time.perf_counter() - start) * 1000
-    log.info("%s %s -> %s (%.0f ms)", request.method, request.url.path, response.status_code, ms)
+    response.headers["X-Request-ID"] = rid
+    log.info("%s %s -> %s (%.0f ms) [%s]", request.method, request.url.path, response.status_code, ms, rid)
     return response
 
 
 {% if spec.auth %}
 app.include_router(auth.router)
+{% endif %}
+{% if spec.has("audit_log") %}
+app.include_router(audit.router)
 {% endif %}
 {% for e in spec.entities %}
 app.include_router({{ e.module }}.router)

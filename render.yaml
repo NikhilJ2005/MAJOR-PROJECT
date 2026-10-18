@@ -1,0 +1,36 @@
+# Render Blueprint: New -> Blueprint -> pick this repo. One web service (the same Docker image as
+# Railway) plus a managed Postgres. Fill the secrets marked sync: false in the Render dashboard.
+services:
+  - type: web
+    name: vibestack
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: PLATFORM_DATABASE_URL
+        fromDatabase:
+          name: vibestack-db
+          property: connectionString
+      - key: LLM_PROVIDER
+        value: gemini
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ADMIN_EMAILS
+        sync: false
+      - key: ACCESS_CODE
+        sync: false
+      # Zips in object storage, so the service needs no disk (Cloudflare R2, AWS S3, MinIO ...)
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+
+databases:
+  - name: vibestack-db
+    plan: basic-256mb

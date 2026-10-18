@@ -13,12 +13,30 @@ const [CFG, UI] = await Promise.all([
 const ACCENT = UI.accent || "indigo";
 const APP_NAME = UI.app_name || CFG.project;
 const TOKEN_KEY = `token:${CFG.project}`;
+const REFRESH_KEY = `refresh:${CFG.project}`;
+const FEATURES = CFG.features || [];
+const SIGNUP_ROLES = (CFG.roles || []).filter((r) => r.self_signup).map((r) => r.name);
 document.title = APP_NAME;
 
 // ---------------------------------------------------------------------------- talking to the API
 
 const getToken = () => localStorage.getItem(TOKEN_KEY) || "";
 const setToken = (t) => (t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY));
+const getRefresh = () => localStorage.getItem(REFRESH_KEY) || "";
+const setRefresh = (t) => (t ? localStorage.setItem(REFRESH_KEY, t) : localStorage.removeItem(REFRESH_KEY));
+
+// Access tokens are short-lived when refresh tokens are on: trade the refresh token for a new pair once.
+async function renewLogin() {
+  if (!getRefresh()) return false;
+  const res = await fetch("auth/refresh", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: getRefresh() }),
+  });
+  if (!res.ok) return setRefresh(""), false;
+  const data = await res.json();
+  setToken(data.access_token);
+  setRefresh(data.refresh_token);
+  return true;
+}
 
 class ApiError extends Error {
   constructor(status, message, fields) {
@@ -39,10 +57,11 @@ function explain(detail, fallback) {
   return { message: fallback, fields: {} };
 }
 
-async function api(method, path, body) {
+async function api(method, path, body, retried) {
   const headers = { "Content-Type": "application/json" };
   if (getToken()) headers.Authorization = `Bearer ${getToken()}`;
   const res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  if (res.status === 401 && !retried && !path.startsWith("auth/") && (await renewLogin())) return api(method, path, body, true);
   const text = await res.text();
   let data = null;
   try {
@@ -121,14 +140,16 @@ function Auth({ onLogin }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [role, setRole] = useState(SIGNUP_ROLES[0] || "");
   const [error, setError] = useState("");
   async function submit(ev) {
     ev.preventDefault();
     setError("");
     try {
-      if (mode === "register") await api("POST", "auth/register", { email, password });
+      if (mode === "register") await api("POST", "auth/register", { email, password, ...(role ? { role } : {}) });
       const { data } = await api("POST", "auth/login", { email, password });
       setToken(data.access_token);
+      setRefresh(data.refresh_token || "");
       onLogin((await api("GET", "auth/me")).data);
     } catch (e) {
       setError(e.message);
@@ -142,6 +163,10 @@ function Auth({ onLogin }) {
       <p className="mb-5 text-sm text-slate-500">${UI.tagline || ""}</p>
       <label className="block text-sm text-slate-600">Email<input type="email" required value=${email} onInput=${(e) => setEmail(e.target.value)} className=${input} /></label>
       <label className="mt-3 block text-sm text-slate-600">Password<input type="password" minLength="8" required value=${password} onInput=${(e) => setPassword(e.target.value)} className=${input} /></label>
+      ${mode === "register" && SIGNUP_ROLES.length > 1 && html`<label className="mt-3 block text-sm text-slate-600">I am a
+        <select value=${role} onChange=${(e) => setRole(e.target.value)} className=${input}>
+          ${SIGNUP_ROLES.map((r) => html`<option key=${r} value=${r}>${pretty(r)}</option>`)}
+        </select></label>`}
       ${error && html`<p className="mt-3 text-sm text-rose-600">${error}</p>`}
       <button className=${`mt-5 w-full rounded-lg bg-${ACCENT}-600 py-2.5 font-medium text-white hover:bg-${ACCENT}-700`}>${mode === "login" ? "Sign in" : "Create account"}</button>
       <button type="button" onClick=${() => setMode(mode === "login" ? "register" : "login")} className="mt-3 w-full text-sm text-slate-500 hover:text-slate-700">
@@ -442,6 +467,32 @@ function Dashboard({ toast }) {
   </div>`;
 }
 
+// ---------------------------------------------------------------------------- audit log (admins)
+
+function AuditPage({ toast }) {
+  const [rows, setRows] = useState([]);
+  useEffect(() => {
+    api("GET", "audit_logs/?limit=100").then((r) => setRows(r.data), (e) => toast(e.message, "error"));
+  }, [toast]);
+  return html`<div>
+    <h1 className="text-2xl font-semibold">Audit log</h1>
+    <p className="mb-5 text-sm text-slate-500">Every change, who made it and when. Entries cannot be edited or deleted.</p>
+    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+      <table className="w-full text-left text-sm">
+        <thead className="border-b border-slate-200 text-slate-500"><tr>
+          ${["When", "User", "Action", "Record"].map((h) => html`<th key=${h} className="px-4 py-2 font-medium">${h}</th>`)}
+        </tr></thead>
+        <tbody>${rows.map((r) => html`<tr key=${r.id} className="border-b border-slate-100">
+          <td className="px-4 py-2 text-slate-500">${new Date(r.created_at).toLocaleString()}</td>
+          <td className="px-4 py-2">${r.actor_id ?? "—"}</td>
+          <td className="px-4 py-2"><${Badge} text=${r.action} /></td>
+          <td className="px-4 py-2">${r.entity}${r.row_id ? ` #${r.row_id}` : ""}</td>
+        </tr>`)}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
 // ---------------------------------------------------------------------------- the app shell
 
 function useRoute() {
@@ -468,6 +519,13 @@ function App() {
 
   if (!ready) return null;
   if (CFG.auth && !me) return html`<${Auth} onLogin=${setMe} />`;
+  const showAudit = FEATURES.includes("audit_log") && me && me.is_admin;
+  const signOut = () => {
+    if (getRefresh()) api("POST", "auth/logout", { refresh_token: getRefresh() }).catch(() => {});
+    setToken("");
+    setRefresh("");
+    setMe(null);
+  };
 
   const nav = (href, active, icon, text) => html`<a href=${href} className=${`flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm ${
     active ? `bg-${ACCENT}-50 font-medium text-${ACCENT}-700` : "text-slate-600 hover:bg-slate-100"}`}><span className="w-5 text-center">${icon}</span>${text}</a>`;
@@ -479,22 +537,26 @@ function App() {
         <span className="truncate font-semibold">${APP_NAME}</span>
       </div>
       <nav className="space-y-1">
-        ${nav("#/", !entity, "⌂", "Dashboard")}
+        ${nav("#/", !entity && route !== "audit", "⌂", "Dashboard")}
         ${CFG.entities.map((e) => html`<div key=${e.name}>${nav(`#/${e.table}`, entity === e, iconOf(e), labelOf(e))}</div>`)}
+        ${showAudit && nav("#/audit", route === "audit", "🧾", "Audit log")}
       </nav>
       ${me && html`<div className="mt-auto border-t border-slate-100 pt-4 text-sm">
         <div className="truncate px-2 text-slate-600">${me.email}</div>
-        <button className="mt-1 px-2 text-slate-400 hover:text-slate-700" onClick=${() => { setToken(""); setMe(null); }}>Sign out</button>
+        ${(me.role || me.is_admin) && html`<div className="px-2 text-xs text-slate-400">${me.is_admin ? "admin" : pretty(me.role)}</div>`}
+        <button className="mt-1 px-2 text-slate-400 hover:text-slate-700" onClick=${signOut}>Sign out</button>
       </div>`}
     </aside>
     <main className="min-w-0 flex-1">
       <div className="flex items-center gap-2 border-b border-slate-200 bg-white px-4 py-3 md:hidden">
         <select className="flex-1 rounded-lg border border-slate-200 px-2 py-1.5 text-sm" value=${route} onChange=${(e) => (location.hash = `#/${e.target.value}`)}>
           <option value="">Dashboard</option>${CFG.entities.map((e) => html`<option key=${e.name} value=${e.table}>${labelOf(e)}</option>`)}
+          ${showAudit && html`<option value="audit">Audit log</option>`}
         </select>
       </div>
       <div className="mx-auto max-w-6xl px-5 py-8">
-        ${entity ? html`<${EntityPage} key=${entity.name} entity=${entity} me=${me} toast=${toast} />` : html`<${Dashboard} toast=${toast} />`}
+        ${entity ? html`<${EntityPage} key=${entity.name} entity=${entity} me=${me} toast=${toast} />`
+          : route === "audit" && showAudit ? html`<${AuditPage} toast=${toast} />` : html`<${Dashboard} toast=${toast} />`}
       </div>
     </main>
     <${Toasts} toasts=${toasts} />

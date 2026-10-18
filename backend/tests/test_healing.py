@@ -108,9 +108,22 @@ def test_circles_stop():
     assert not keep and "circles" in reason
 
 
-def test_budget_stops():
-    keep, reason = _go([_h("import")], tokens=5000)
+def test_budget_stops_but_never_before_the_first_repair():
+    keep, _ = _go([_h("import")], tokens=5000)
+    assert keep  # the first repair always happens, however much the design and code cost
+    keep, reason = _go([_h("import"), _h("boot")], tokens=5000)
     assert not keep and "budget" in reason
+
+
+def test_money_budget_stops_a_long_repair():
+    from agent.llm import budget_left
+
+    assert budget_left({"cost_usd": 0.4, "total_tokens": 10}) is None
+    reason = budget_left({"cost_usd": 99.0})
+    assert reason.startswith("cost budget used up")
+    keep, why = should_continue([_h("import"), _h("boot")], tokens_used=0, token_budget=10**9, llm_available=True,
+                                safety_limit=12, budget_problem=reason)
+    assert not keep and why == reason
 
 
 def test_safety_limit_is_only_a_seatbelt():

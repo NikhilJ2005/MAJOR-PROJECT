@@ -1,8 +1,11 @@
-"""Password hashing (PBKDF2, standard library) and JWT login tokens."""
+"""Password hashing (scrypt, standard library), JWT login tokens{% if spec.roles %}, roles{% endif %}{% if spec.has("account_lockout") %}, account lockout{% endif %}."""
 
 import hashlib
 import hmac
 import secrets
+{% if spec.has("account_lockout") %}
+import time
+{% endif %}
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -21,18 +24,22 @@ from app.errors import ApiError
 from app.models.user import User
 
 ALGORITHM = "HS256"
-_PBKDF2_ROUNDS = 240_000
+# scrypt is memory-hard (OWASP's recommended alternative to Argon2): n=2**14, r=8 uses 16 MB per hash.
+_SCRYPT = {"n": 2**14, "r": 8, "p": 1, "dklen": 32}
 
 
 def hash_password(password: str) -> str:
-    salt = secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), _PBKDF2_ROUNDS)
-    return f"{salt}${digest.hex()}"
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(password.encode(), salt=salt, **_SCRYPT)
+    return f"scrypt${salt.hex()}${digest.hex()}"
 
 
 def verify_password(password: str, stored: str) -> bool:
-    salt, _, expected = stored.partition("$")
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), _PBKDF2_ROUNDS)
+    scheme, _, rest = stored.partition("$")
+    salt, _, expected = rest.partition("$")
+    if scheme != "scrypt" or not expected:
+        return False
+    digest = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), **_SCRYPT)
     return hmac.compare_digest(digest.hex(), expected)
 
 
@@ -53,12 +60,57 @@ def user_id_from_header(header: str | None) -> int | None:
 
 
 def is_admin(user: User) -> bool:
-    return user.email.lower() in config.ADMIN_EMAILS
+    return user.is_admin
 
 
 def require_admin(user: User) -> None:
     if not is_admin(user):
         raise ApiError(403, "admin rights required")
+{% if spec.roles %}
+
+
+ROLES = {{ tojson(spec.role_names) }}
+SIGNUP_ROLES = {{ tojson(spec.roles | selectattr("self_signup") | map(attribute="name") | list) }}
+DEFAULT_ROLE = "{{ spec.default_role }}"
+
+
+def has_role(user: User, roles: list[str]) -> bool:
+    return is_admin(user) or user.role in roles
+
+
+def require_role(user: User, roles: list[str]) -> None:
+    """403 unless the user has one of `roles` (admins always pass)."""
+    if not has_role(user, roles):
+        raise ApiError(403, f"needs one of these roles: {', '.join(roles)}")
+
+
+def signup_role(requested: str | None) -> str:
+    """The role a new user gets: their choice when it is open to sign-up, else 403 (or 422 when unknown)."""
+    if not requested:
+        return DEFAULT_ROLE
+    if requested not in ROLES:
+        raise ApiError(422, f"unknown role {requested}; choose one of: {', '.join(ROLES)}")
+    if requested not in SIGNUP_ROLES:
+        raise ApiError(403, f"the {requested} role is given by an admin")
+    return requested
+{% endif %}
+
+
+def login_ok(user: User | None, password: str) -> bool:
+    """Check a login attempt{% if spec.has("account_lockout") %} and keep count of failures (the caller saves the user){% endif %}."""
+{% if spec.has("account_lockout") %}
+    if user is not None and user.locked_until > time.time():
+        raise ApiError(423, "account locked after too many failed logins; try again later")
+{% endif %}
+    ok = user is not None and verify_password(password, user.password_hash)
+{% if spec.has("account_lockout") %}
+    if user is not None:
+        user.failed_logins = 0 if ok else user.failed_logins + 1
+        if user.failed_logins >= config.LOCKOUT_ATTEMPTS:
+            user.failed_logins = 0
+            user.locked_until = int(time.time()) + config.LOCKOUT_MINUTES * 60
+{% endif %}
+    return ok
 {% if stack.name == "fastapi" %}
 
 

@@ -63,6 +63,13 @@ def test_end_to_end_over_http(fake_llm):
         nodes = [e["node"] for e in events if e["type"] == "node"]
         assert nodes[0] == "parse_spec" and nodes[-1] == "package"
         assert any(e["type"] == "progress" and e["node"] == "parse_spec" for e in events)  # live progress
+        # Live code: the design and the business logic arrive piece by piece while they are written.
+        streamed = {}
+        for e in events:
+            if e["type"] == "stream":
+                streamed[e["label"]] = streamed.get(e["label"], "") + e["delta"]
+        assert '"entities"' in streamed["Design (JSON)"]
+        assert "def stats" in streamed["app/services/post.py"]
         after = next(e["seq"] for e in events if e["type"] == "node" and e["node"] == "parse_spec")
         with client.stream("GET", f"/api/runs/{run_id}/events?token={token}", headers={"Last-Event-ID": str(after)}) as resp:
             assert '"node": "parse_spec"' not in "".join(resp.iter_text())

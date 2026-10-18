@@ -1,46 +1,130 @@
-"""Register, log in, and "who am I"."""
+{% set refresh = spec.has("refresh_tokens") %}{% set audit = spec.has("audit_log") %}{% set limit = spec.has("rate_limit") %}
+"""Register, log in, "who am I"{% if refresh %}, refresh and log out{% endif %}{% if spec.roles %}, and roles{% endif %}."""
 
 from flask import Blueprint, request
 from sqlalchemy import select
 
+{% if audit %}
+from app import audit
+{% endif %}
+{% if limit %}
+from app import ratelimit
+{% endif %}
+{% if refresh %}
+from app import tokens
+{% endif %}
 from app.database import db_session
 from app.errors import ApiError
 from app.models.user import User
-from app.schemas.user import Token, UserCreate, UserRead
-from app.security import create_access_token, current_user, hash_password, verify_password
+from app.schemas.user import {% if refresh %}RefreshIn, {% endif %}{% if spec.roles %}RoleChange, {% endif %}Token, UserCreate, UserRead
+from app.security import {% if spec.roles %}ROLES, {% endif %}create_access_token, current_user, hash_password, login_ok{% if spec.roles %}, require_admin, signup_role{% endif %}
 
 bp = Blueprint("auth", __name__, url_prefix="/auth")
 
 
-def _credentials() -> UserCreate:
+def _body() -> dict:
     data = request.get_json(silent=True)
-    return UserCreate.model_validate(data if isinstance(data, dict) else {})
+    return data if isinstance(data, dict) else {}
+
+
+def _user_json(user: User) -> dict:
+    return UserRead.model_validate(user).model_dump(mode="json")
 
 
 @bp.post("/register")
 def register():
+{% if limit %}
+    ratelimit.hit("register", request.remote_addr or "unknown")
+{% endif %}
     db = db_session()
-    payload = _credentials()
+    payload = UserCreate.model_validate(_body())
     email = payload.email.lower()
     if db.scalar(select(User).where(User.email == email)):
         raise ApiError(409, "email already registered")
-    user = User(email=email, password_hash=hash_password(payload.password))
+    user = User(email=email, password_hash=hash_password(payload.password){% if spec.roles %}, role=signup_role(payload.role){% endif %})
     db.add(user)
     db.commit()
     db.refresh(user)
-    return UserRead.model_validate(user).model_dump(mode="json"), 201
+{% if audit %}
+    audit.record(db, user, "register", "User", user.id)
+{% endif %}
+    return _user_json(user), 201
 
 
 @bp.post("/login")
 def login():
     db = db_session()
-    payload = _credentials()
-    user = db.scalar(select(User).where(User.email == payload.email.lower()))
-    if user is None or not verify_password(payload.password, user.password_hash):
+    payload = UserCreate.model_validate(_body())
+    email = payload.email.lower()
+{% if limit %}
+    ratelimit.hit("login", f"{request.remote_addr or 'unknown'}:{email}")
+{% endif %}
+    user = db.scalar(select(User).where(User.email == email))
+    ok = login_ok(user, payload.password)
+    db.commit()  # keeps the failed-login count
+    if not ok:
+{% if audit %}
+        audit.record(db, user, "login_failed", "User", user.id if user else None)
+{% endif %}
         raise ApiError(401, "invalid credentials")
-    return Token(access_token=create_access_token(user.id)).model_dump()
+{% if audit %}
+    audit.record(db, user, "login", "User", user.id)
+{% endif %}
+    return Token(access_token=create_access_token(user.id){% if refresh %}, refresh_token=tokens.issue(db, user.id){% endif %}).model_dump()
+{% if refresh %}
+
+
+@bp.post("/refresh")
+def refresh():
+    """A new access token and a new refresh token; the old refresh token stops working."""
+    user_id, new_refresh = tokens.rotate(db_session(), RefreshIn.model_validate(_body()).refresh_token)
+    return Token(access_token=create_access_token(user_id), refresh_token=new_refresh).model_dump()
+
+
+@bp.post("/logout")
+def logout():
+    """Revoke the refresh token (and every token rotated from the same login)."""
+    tokens.revoke(db_session(), RefreshIn.model_validate(_body()).refresh_token)
+    return "", 204
+{% endif %}
 
 
 @bp.get("/me")
 def me():
-    return UserRead.model_validate(current_user(db_session())).model_dump(mode="json")
+    return _user_json(current_user(db_session()))
+{% if spec.roles %}
+
+
+@bp.get("/roles")
+def roles():
+    return {"roles": ROLES}
+
+
+@bp.get("/users")
+def list_users():
+    db = db_session()
+    require_admin(current_user(db))
+    return [_user_json(u) for u in db.scalars(select(User).order_by(User.id).limit(500))]
+
+
+@bp.patch("/users/<int:user_id>/role")
+def change_role(user_id: int):
+    """Admins give any role, including the ones users can't pick at sign-up."""
+    db = db_session()
+    user = current_user(db)
+    require_admin(user)
+    payload = RoleChange.model_validate(_body())
+    if payload.role not in ROLES:
+        raise ApiError(422, f"unknown role {payload.role}; choose one of: {', '.join(ROLES)}")
+    target = db.get(User, user_id)
+    if target is None:
+        raise ApiError(404, "User not found")
+    before = target.role
+    target.role = payload.role
+    db.commit()
+    db.refresh(target)
+{% if audit %}
+    audit.record(db, user, "change_role", "User", target.id, {"role": before}, {"role": target.role})
+{% endif %}
+    return _user_json(target)
+{% endif %}

@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -242,17 +243,32 @@ class LocalSandbox:
         try:
             write_tree(workdir, files)
             self.hand_over(workdir)
-            for gate, fn in (
-                ("import", self._gate_import),
-                ("boot", self._gate_boot),
-                ("tests", self._gate_tests),
-            ):
-                ok, out = fn(workdir, chosen)
-                if not ok:
-                    return GateResult(False, gate, self._clean(out, workdir), time.monotonic() - t0)
-            return GateResult(True, "tests", self._clean(out, workdir), time.monotonic() - t0)
+            ok, out = self._gate_import(workdir, chosen)
+            if not ok:
+                return GateResult(False, "import", self._clean(out, workdir), time.monotonic() - t0)
+            # Boot and tests are independent: run them at the same time, each in its own copy of the
+            # project (both create a database file). The report keeps the gate order: boot, then tests.
+            test_dir = Path(tempfile.mkdtemp(prefix="vibestack-tests-"))
+            shutil.copytree(workdir, test_dir, dirs_exist_ok=True)
+            self.hand_over(test_dir)
+            try:
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    boot = pool.submit(self._gate_boot, workdir, chosen)
+                    tests = pool.submit(self._prepared_tests, test_dir, chosen)
+                    (boot_ok, boot_out), (tests_ok, tests_out) = boot.result(), tests.result()
+            finally:
+                shutil.rmtree(test_dir, ignore_errors=True)
+            if not boot_ok:
+                return GateResult(False, "boot", self._clean(boot_out, workdir), time.monotonic() - t0)
+            out = tests_out.replace(str(test_dir.resolve()) + "/", "").replace(str(test_dir) + "/", "")
+            return GateResult(tests_ok, "tests", self._clean(out, workdir), time.monotonic() - t0)
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
+
+    def _prepared_tests(self, workdir: Path, stack: Stack) -> tuple[bool, str]:
+        """Framework set-up (Django: tables), then the test-suite."""
+        ok, out = self.prepare(workdir, stack)
+        return (ok, out) if not ok else self._gate_tests(workdir, stack)
 
 
     def run_tests(self, files: dict[str, str], stack: str, selection: list[str]) -> tuple[bool, str]:

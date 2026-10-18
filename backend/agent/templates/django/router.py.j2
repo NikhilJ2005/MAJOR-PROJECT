@@ -1,3 +1,4 @@
+{% set audit = spec.has("audit_log") %}{% set limit = spec.has("rate_limit") and actions %}
 """{{ e.name }} endpoints: CRUD{% if actions %} plus custom actions{% endif %}.
 
 Who may do what: {{ access_text(e) }}.
@@ -10,13 +11,19 @@ from django.http import HttpResponse, JsonResponse, StreamingHttpResponse  # noq
 from django.urls import path
 
 from app import events  # noqa: F401
+{% if audit %}
+from app import audit
+{% endif %}
+{% if limit %}
+from app import ratelimit
+{% endif %}
 from app.errors import ApiError, check_transition  # noqa: F401
 from app.models.{{ e.module }} import {{ e.name }}
 from app.schemas.{{ e.module }} import {{ e.name }}Create, {{ e.name }}Read, {{ e.name }}Update
 from app.services import {{ e.module }} as service  # noqa: F401
 {% if spec.auth %}
 from app.models.user import User
-from app.security import current_user, require_admin, user_id_from_header  # noqa: F401
+from app.security import current_user, require_admin, {% if spec.roles %}require_role, {% endif %}user_id_from_header  # noqa: F401
 {% endif %}
 
 
@@ -46,8 +53,10 @@ def _int_arg(request, name: str, default: int | None = None, low: int | None = N
     return value
 
 
-def _get_or_404(item_id: int{% if e.owned %}, user: User{% endif %}) -> {{ e.name }}:
-    obj = {{ e.name }}.objects.filter(id=item_id).first()
+def _get_or_404(item_id: int{% if e.owned %}, user: User{% endif %}, lock: bool = False) -> {{ e.name }}:
+    """The row, or 404. lock=True (inside transaction.atomic): SELECT ... FOR UPDATE until the transaction ends."""
+    rows = {{ e.name }}.objects.select_for_update() if lock else {{ e.name }}.objects
+    obj = rows.filter(id=item_id).first()
 {% if e.owned %}
     if obj is None or obj.owner_id != user.id:  # other users' rows look like they don't exist
 {% else %}
@@ -76,11 +85,35 @@ def {{ a.name }}_{{ e.module }}(request{% if a.on_item %}, item_id: int{% endif 
 {% if a.admin_only and spec.auth %}
     require_admin(user)
 {% endif %}
+{% if a.roles %}
+    require_role(user, {{ tojson(a.roles) }})
+{% endif %}
+{% if limit %}
+    ratelimit.hit("action", {% if spec.auth %}str(user.id){% else %}request.META.get("REMOTE_ADDR", "unknown"){% endif %})
+{% endif %}
     payload = {% if a.method == "GET" %}request.GET.dict(){% else %}_body(request){% endif %}
 
+{% set track = audit and a.method == "POST" %}
+{% if a.locks %}
+    with transaction.atomic():  # the row stays locked until the action is done
+        obj = {% if a.on_item %}_get_or_404(item_id{% if e.owned %}, user{% endif %}, lock=True){% else %}None{% endif %}
+
+{% if track %}
+        before = _json(obj) if obj is not None else None
+{% endif %}
+        result = service.{{ a.name }}(obj, payload, {% if spec.auth %}user{% else %}None{% endif %})
+{% else %}
     obj = {% if a.on_item %}_get_or_404(item_id{% if e.owned %}, user{% endif %}){% else %}None{% endif %}
 
-    return JsonResponse(service.{{ a.name }}(obj, payload, {% if spec.auth %}user{% else %}None{% endif %}), safe=False)
+{% if track %}
+    before = _json(obj) if obj is not None else None
+{% endif %}
+    result = service.{{ a.name }}(obj, payload, {% if spec.auth %}user{% else %}None{% endif %})
+{% endif %}
+{% if track %}
+    audit.record({% if spec.auth %}user{% else %}None{% endif %}, "{{ a.name }}", "{{ e.name }}", {% if a.on_item %}item_id{% else %}None{% endif %}, before, result)
+{% endif %}
+    return JsonResponse(result, safe=False)
 {% endfor %}
 
 
@@ -111,9 +144,15 @@ def _create(request):
 {% if e.write_access == "admin" %}
     require_admin(user)
 {% endif %}
+{% if e.write_roles %}
+    require_role(user, {{ tojson(e.write_roles) }})
+{% endif %}
     payload = {{ e.name }}Create.model_validate(_body(request))
     obj = {{ e.name }}(**payload.model_dump(){% if e.owned %}, owner_id=user.id{% endif %})
     _save(obj)
+{% if audit %}
+    audit.record(user, "create", "{{ e.name }}", obj.id, None, _json(obj))
+{% endif %}
 {% if e.realtime %}
     events.publish("{{ e.table }}", "created", _json(obj))
 {% endif %}
@@ -159,14 +198,23 @@ def _update(request, item_id: int):
 {% if e.write_access == "admin" %}
     require_admin(user)
 {% endif %}
+{% if e.write_roles %}
+    require_role(user, {{ tojson(e.write_roles) }})
+{% endif %}
     obj = _get_or_404(item_id{% if e.owned %}, user{% endif %})
     changes = {{ e.name }}Update.model_validate(_body(request)).model_dump(exclude_unset=True)
+{% if audit %}
+    before = _json(obj)
+{% endif %}
 {% for f in transition_fields(e) %}
     check_transition("{{ f.name }}", obj.{{ f.name }}, changes.get("{{ f.name }}"), {{ tojson(f.transitions) }})
 {% endfor %}
     for key, value in changes.items():
         setattr(obj, key, value)
     _save(obj)
+{% if audit %}
+    audit.record(user, "update", "{{ e.name }}", obj.id, before, _json(obj))
+{% endif %}
 {% if e.realtime %}
     events.publish("{{ e.table }}", "updated", _json(obj))
 {% endif %}
@@ -180,11 +228,17 @@ def _delete(request, item_id: int):
 {% if e.write_access == "admin" %}
     require_admin(user)
 {% endif %}
+{% if e.write_roles %}
+    require_role(user, {{ tojson(e.write_roles) }})
+{% endif %}
     obj = _get_or_404(item_id{% if e.owned %}, user{% endif %})
-{% if e.realtime %}
+{% if e.realtime or audit %}
     row = _json(obj)
 {% endif %}
     obj.delete()  # a restricted parent raises RestrictedError (an IntegrityError) -> 409 in the middleware
+{% if audit %}
+    audit.record(user, "delete", "{{ e.name }}", item_id, row, None)
+{% endif %}
 {% if e.realtime %}
     events.publish("{{ e.table }}", "deleted", row)
 {% endif %}

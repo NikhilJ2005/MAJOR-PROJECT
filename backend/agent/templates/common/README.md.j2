@@ -16,6 +16,32 @@ make test                   # pytest
 
 API docs: http://localhost:8000/docs
 
+## Security and operations
+
+- Errors follow RFC 7807 (`application/problem+json` with `type`, `title`, `status`, `detail`).
+- Every request gets an `X-Request-ID` (yours is kept); logs are JSON lines that carry it (`LOG_FORMAT`).
+{% if spec.auth %}
+- Passwords are hashed with scrypt (memory-hard, standard library).
+{% endif %}
+{% if spec.roles %}
+- Roles: {% for r in spec.roles %}`{{ r.name }}`{% if not r.self_signup %} (given by an admin: `PATCH /auth/users/<id>/role`){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}. Admins (`ADMIN_EMAILS`) pass every role check.
+{% endif %}
+{% if spec.has("refresh_tokens") %}
+- Refresh tokens: login returns `refresh_token`; `POST /auth/refresh` rotates it, and reusing an old one logs out every session of that login. `POST /auth/logout` revokes it.
+{% endif %}
+{% if spec.has("account_lockout") %}
+- Account lockout: `LOCKOUT_ATTEMPTS` failed logins lock the account for `LOCKOUT_MINUTES` (423).
+{% endif %}
+{% if spec.has("audit_log") %}
+- Audit log: every create, change, delete and action is written to `audit_logs`; admins read it at `GET /audit_logs/`. Entries cannot be changed or deleted.
+{% endif %}
+{% if spec.has("rate_limit") %}
+- Rate limits (token bucket) on sign-up, login and custom actions, 429 with `Retry-After`. Set `REDIS_URL` to share them between server processes.
+{% endif %}
+{% if spec.actions | selectattr("locks") | list %}
+- Actions that move money or stock lock their row (`SELECT ... FOR UPDATE` on Postgres) for the whole transaction.
+{% endif %}
+
 ## Production (Docker + Postgres)
 
 ```bash

@@ -1,4 +1,4 @@
-"""One middleware for the whole API: JSON errors, CORS headers and a log line per request."""
+"""One middleware for the whole API: RFC 7807 errors, CORS headers, request ids and a log line per request."""
 
 import json
 import logging
@@ -8,10 +8,18 @@ from django.db import IntegrityError
 from django.http import JsonResponse
 from pydantic import ValidationError
 
-from app import config
-from app.errors import ApiError
+from app import config, logs
+from app.errors import PROBLEM_JSON, ApiError, error_headers, problem
 
+logs.setup()
 log = logging.getLogger("app")
+
+
+def problem_response(status: int, detail, headers: dict | None = None) -> JsonResponse:
+    response = JsonResponse(problem(status, detail), status=status, content_type=PROBLEM_JSON)
+    for key, value in (headers or {}).items():
+        response[key] = value
+    return response
 
 
 class ApiMiddleware:
@@ -20,7 +28,13 @@ class ApiMiddleware:
 
     def __call__(self, request):
         start = time.perf_counter()
-        response = self.get_response(request)
+        rid = logs.new_request_id(request.headers.get("X-Request-ID"))
+        token = logs.request_id.set(rid)
+        try:
+            response = self.get_response(request)
+        finally:
+            logs.request_id.reset(token)
+        response["X-Request-ID"] = rid
         origin = request.headers.get("Origin")
         if origin and origin in config.CORS_ORIGINS:
             response["Access-Control-Allow-Origin"] = origin
@@ -31,14 +45,11 @@ class ApiMiddleware:
         return response
 
     def process_exception(self, request, exc):
-        """Turn expected errors into the same JSON shape FastAPI uses: {"detail": ...}."""
+        """Turn expected errors into the same problem+json shape the other frameworks use."""
         if isinstance(exc, ApiError):
-            response = JsonResponse({"detail": exc.detail}, status=exc.status_code)
-            if exc.status_code == 401:
-                response["WWW-Authenticate"] = "Bearer"
-            return response
+            return problem_response(exc.status_code, exc.detail, error_headers(exc))
         if isinstance(exc, ValidationError):
-            return JsonResponse({"detail": json.loads(exc.json(include_url=False))}, status=422)
+            return problem_response(422, json.loads(exc.json(include_url=False)))
         if isinstance(exc, IntegrityError):
-            return JsonResponse({"detail": "conflicts with existing data (duplicate value or unknown reference)"}, status=409)
+            return problem_response(409, "conflicts with existing data (duplicate value or unknown reference)")
         return None

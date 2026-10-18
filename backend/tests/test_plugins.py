@@ -50,3 +50,59 @@ def test_plugin_files_ship_in_the_project():
     assert values["status"] == "succeeded"
     assert {"k8s/deployment.yaml", "k8s/service.yaml", "postman_collection.json"} <= set(values["files"])
     assert any(row["owner"] == "plugin:kubernetes" for row in values["file_plan"])
+
+
+NEW_PLUGINS = ["deploy_targets", "seed_data", "openapi_export", "secrets_scan"]
+
+
+def _shop_with(names):
+    from agent.codegen import render_project
+
+    spec = ProjectSpec.model_validate({**SHOP, "stack": "flask"})
+    files = render_project(spec)
+    for added in plugins.extra_files(plugins.chosen(names), spec).values():
+        files.update(added)
+    return spec, files
+
+
+def test_deploy_targets_and_openapi_files():
+    import tomllib
+
+    import yaml
+
+    _, files = _shop_with(["deploy_targets", "openapi_export"])
+    assert yaml.safe_load(files["render.yaml"])["services"][0]["healthCheckPath"] == "/health"
+    assert tomllib.loads(files["fly.toml"])["http_service"]["internal_port"] == 8000
+    assert json.loads(files["railway.json"])["build"]["builder"] == "DOCKERFILE"
+    doc = json.loads(files["openapi.json"])
+    assert doc["openapi"] == "3.1.0" and "/orders/{item_id}/checkout" in doc["paths"]
+    assert doc["components"]["schemas"]["Product"]["properties"]["price"]["type"] == "number"
+
+
+def test_secrets_scan_flags_real_looking_keys_only():
+    checks = plugins.chosen(["secrets_scan"])
+    _, clean = _shop_with([])
+    assert plugins.extra_checks(checks, clean) == []  # the generated project itself is clean
+    leaked = {"deploy.yaml": "env:\n  token: ghp_" + "a" * 36 + "\n", "notes.md": "AKIA" + "B" * 16}
+    assert sorted(f.rule for f in plugins.extra_checks(checks, leaked)) == ["aws-access-key", "github-token"]
+
+
+def test_seed_script_fills_a_running_app_through_its_api():
+    """Start the generated shop (Flask) for real and run its scripts/seed.py against it."""
+    import subprocess
+    import sys
+
+    from app.preview import PreviewManager
+
+    spec, files = _shop_with(["seed_data"])
+    previews = PreviewManager()
+    try:
+        p = previews.start("seedtest", files, "flask")
+        script = p.workdir / "scripts" / "seed.py"
+        out = subprocess.run([sys.executable, str(script), p.base_url, "--email", "admin@vibestack.dev"],
+                             check=False, capture_output=True, text=True, timeout=120)
+        assert out.returncode == 0, out.stderr
+        for e in spec.entities:
+            assert f"{e.name}: 5 rows" in out.stdout, out.stdout
+    finally:
+        previews.stop_all()

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import create_engine, inspect, text
@@ -53,19 +54,23 @@ SCHEMA = [
 ]
 # Columns added after the first release, so older databases are upgraded in place.
 RUN_COLUMNS = {"project_id": "TEXT", "parent_run_id": "TEXT", "version": "INTEGER"}
+PROJECT_COLUMNS: dict[str, str] = {}
 
 
 class Store:
     def __init__(self, url: str) -> None:
         sqlite = url.startswith("sqlite")
+        if sqlite and url.startswith("sqlite:///"):  # a fresh machine: create the data folder first
+            Path(url[len("sqlite:///"):]).parent.mkdir(parents=True, exist_ok=True)
         self.engine = create_engine(url, connect_args={"check_same_thread": False} if sqlite else {}, pool_pre_ping=True)
         with self.engine.begin() as db:
             for statement in SCHEMA:
                 db.execute(text(statement.replace("INTEGER PRIMARY KEY", "SERIAL PRIMARY KEY") if not sqlite else statement))
-            existing = {c["name"] for c in inspect(db).get_columns("runs")}
-            for name, kind in RUN_COLUMNS.items():
-                if name not in existing:
-                    db.execute(text(f"ALTER TABLE runs ADD COLUMN {name} {kind}"))
+            for table, columns in (("runs", RUN_COLUMNS), ("projects", PROJECT_COLUMNS)):
+                existing = {c["name"] for c in inspect(db).get_columns(table)}
+                for name, kind in columns.items():
+                    if name not in existing:
+                        db.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {kind}"))
         with self.engine.begin() as db:
             db.execute(text("CREATE INDEX IF NOT EXISTS runs_by_project ON runs(project_id, version)"))
 
@@ -164,6 +169,17 @@ class Store:
 
     def run(self, run_id: str) -> dict[str, Any] | None:
         return self._one("SELECT * FROM runs WHERE id = :id", id=run_id)
+
+    def run_metrics(self) -> list[dict[str, Any]]:
+        """The numbers /api/metrics adds up, one row per run."""
+        return self._rows("SELECT status, created_at, finished_at, repairs, bugs_found, bugs_fixed, tokens, cost_usd FROM runs")
+
+    def project_running(self, project_id: str) -> bool:
+        return self._one("SELECT id FROM runs WHERE project_id = :p AND status = 'running' LIMIT 1", p=project_id) is not None
+
+    def unfinished_runs(self) -> list[dict[str, Any]]:
+        """Runs a server restart interrupted (still marked running)."""
+        return self._rows("SELECT * FROM runs WHERE status = 'running' ORDER BY created_at")
 
     def run_owner(self, run_id: str) -> int | None:
         row = self.run(run_id)

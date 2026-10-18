@@ -4,11 +4,14 @@ from pathlib import Path
 
 from django.db import connection
 from django.http import HttpResponse, JsonResponse
-
 from django.urls import path
 
+from app.middleware import problem_response
 {% if spec.auth %}
 from app.routers import auth
+{% endif %}
+{% if spec.has("audit_log") %}
+from app.routers import audit
 {% endif %}
 {% for e in spec.entities %}
 from app.routers import {{ e.module }}
@@ -25,7 +28,7 @@ def ready(request):
     try:
         connection.ensure_connection()
     except Exception:  # noqa: BLE001 - any failure means "not ready"
-        return JsonResponse({"detail": "database unavailable"}, status=503)
+        return problem_response(503, "database unavailable")
     return JsonResponse({"status": "ready"})
 
 
@@ -53,7 +56,7 @@ def static_file(request, name: str):
 
 
 def not_found(request, exception=None):
-    return JsonResponse({"detail": "not found"}, status=404)
+    return problem_response(404, "not found")
 
 
 handler404 = not_found
@@ -67,6 +70,9 @@ urlpatterns = [
     path("docs", docs),
 {% if spec.auth %}
     *auth.urlpatterns,
+{% endif %}
+{% if spec.has("audit_log") %}
+    *audit.urlpatterns,
 {% endif %}
 {% for e in spec.entities %}
     *{{ e.module }}.urlpatterns,

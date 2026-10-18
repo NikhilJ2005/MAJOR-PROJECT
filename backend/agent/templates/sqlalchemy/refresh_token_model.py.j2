@@ -1,0 +1,17 @@
+from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.database import Base
+
+
+class RefreshToken(Base):
+    """A refresh token (only its hash). Tokens from one login share a family."""
+
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    family: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    expires_at: Mapped[int] = mapped_column(Integer, nullable=False)  # unix time
+    revoked_at: Mapped[int | None] = mapped_column(Integer, nullable=True)

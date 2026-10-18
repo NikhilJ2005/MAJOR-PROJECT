@@ -22,6 +22,18 @@ WriteAccess = Literal["any_user", "owner", "admin"]
 RESERVED_FIELD_NAMES = {"id", "created_at", "metadata", "registry", "query", "objects", "pk", "save", "delete", "clean"}
 ACTION_PATH = re.compile(r"^(/\{item_id\})?/[a-z][a-z0-9_-]*$")
 
+# Production features the verified templates provide when the design turns them on (they need logins).
+FEATURES = {
+    "refresh_tokens": "short-lived access tokens plus rotating refresh tokens; reusing an old one logs out its family",
+    "account_lockout": "lock an account for 15 minutes after 5 failed logins (423)",
+    "audit_log": "an immutable audit_logs table of every change, readable by admins at GET /audit_logs/",
+    "rate_limit": "token-bucket rate limits on login, sign-up and custom actions (429); Redis when REDIS_URL is set",
+}
+# Role names that mean "super admin": those users come from ADMIN_EMAILS, not from the role list.
+ADMIN_ROLE_NAMES = {"admin", "super_admin", "superadmin", "administrator", "super_administrator"}
+# Tables the feature templates own; an entity with the same name would clash with them.
+FEATURE_ENTITIES = {"refresh_tokens": "RefreshToken", "audit_log": "AuditLog"}
+
 
 def to_snake(name: str) -> str:
     name = re.sub(r"[^0-9a-zA-Z]+", "_", name.strip())
@@ -83,6 +95,9 @@ class EntitySpec(BaseModel):
     )
     requirement_ids: list[str] = Field(default_factory=list, description="Requirements this entity covers")
     realtime: bool = Field(default=False, description="Stream create/update/delete events live (Server-Sent Events)")
+    write_roles: list[str] = Field(
+        default_factory=list, description="Only users with one of these roles (or admins) may create, change or delete"
+    )
 
     @field_validator("name")
     @classmethod
@@ -116,6 +131,8 @@ class ActionSpec(BaseModel):
     description: str = ""
     rules: list[str] = Field(default_factory=list, description="Business rules in plain English, incl. error codes")
     admin_only: bool = False
+    roles: list[str] = Field(default_factory=list, description="Only users with one of these roles (or admins) may call it")
+    locks: bool = Field(default=False, description="Moves money or stock: run it in a transaction with the row locked")
     requirement_ids: list[str] = Field(default_factory=list)
 
     @field_validator("name")
@@ -152,13 +169,29 @@ class Requirement(BaseModel):
     kind: Literal["data", "rule", "permission", "endpoint"] = "data"
 
 
+class RoleSpec(BaseModel):
+    """A kind of user, e.g. client or freelancer. Admins (ADMIN_EMAILS) are always there and may do everything."""
+
+    name: str = Field(description="snake_case, e.g. client")
+    self_signup: bool = Field(default=True, description="Users may pick it at sign-up; otherwise an admin assigns it")
+    description: str = ""
+
+    @field_validator("name")
+    @classmethod
+    def _snake(cls, v: str) -> str:
+        return to_snake(v)
+
+
 class ProjectSpec(BaseModel):
     project_name: str
     description: str = ""
     stack: StackName = "fastapi"
     entities: list[EntitySpec]
     auth: bool = Field(default=False, description="Add JWT register/login/me endpoints")
-    features: list[str] = Field(default_factory=list, description="e.g. pagination, search")
+    features: list[str] = Field(
+        default_factory=list, description="Production features: " + ", ".join(FEATURES) + " (others are kept as notes)"
+    )
+    roles: list[RoleSpec] = Field(default_factory=list, description="User roles; the first self-signup role is the default")
     requirements: list[Requirement] = Field(default_factory=list)
     actions: list[ActionSpec] = Field(default_factory=list)
 
@@ -183,12 +216,32 @@ class ProjectSpec(BaseModel):
             seen[ent.name] = ent
             if not self.auth:
                 ent.write_access = "any_user"  # ownership and admins need logins
+        self.features = list(dict.fromkeys(to_snake(f) if to_snake(f) in FEATURES else f for f in self.features))
+        if not self.auth:  # every production feature but rate limits is about logged-in users
+            self.features = [f for f in self.features if f not in FEATURES or f == "rate_limit"]
+        clash = {FEATURE_ENTITIES[f] for f in self.features if f in FEATURE_ENTITIES}
+        self.entities = [e for e in self.entities if e.name not in clash]
+        seen = {e.name: e for e in self.entities}
+        if not self.entities:
+            raise ValueError("spec must contain at least one entity of its own")
         known = set(seen) | ({"User"} if self.auth else set())
         for ent in self.entities:
             ent.fields = _clean_fields(ent, known)
         self.entities = topo_sort(self.entities)
         self.actions = _clean_actions(self.actions, seen)
+        _clean_roles(self)
         return self
+
+    def has(self, feature: str) -> bool:
+        return feature in self.features
+
+    @property
+    def role_names(self) -> list[str]:
+        return [r.name for r in self.roles]
+
+    @property
+    def default_role(self) -> str | None:
+        return next((r.name for r in self.roles if r.self_signup), None)
 
     def entity(self, name: str) -> EntitySpec:
         return next(e for e in self.entities if e.name == name)
@@ -258,6 +311,37 @@ def _clean_actions(actions: list[ActionSpec], entities: dict[str, EntitySpec]) -
         seen |= {key, route}
         out.append(a)
     return out
+
+
+def _clean_roles(spec: ProjectSpec) -> None:
+    """Roles need logins. "admin" means the ADMIN_EMAILS users; unknown role names are dropped."""
+    if not spec.auth:
+        spec.roles = []
+    roles: dict[str, RoleSpec] = {}
+    for r in spec.roles:
+        if r.name not in ADMIN_ROLE_NAMES and r.name not in roles:
+            roles[r.name] = r
+    spec.roles = list(roles.values())
+    if spec.roles and not any(r.self_signup for r in spec.roles):
+        spec.roles[0].self_signup = True  # somebody must be able to sign up
+
+    def clean(names: list[str]) -> tuple[list[str], bool]:
+        """(the known roles in names, whether only admins are left)"""
+        snake = [to_snake(n) for n in names]
+        kept = list(dict.fromkeys(n for n in snake if n in roles))
+        return kept, bool(snake) and not kept and any(n in ADMIN_ROLE_NAMES for n in snake)
+
+    for e in spec.entities:
+        e.write_roles, admins_only = clean(e.write_roles)
+        if admins_only:
+            e.write_access = "admin"
+        if e.write_access == "admin" or set(e.write_roles) == set(roles):
+            e.write_roles = []  # admins only, or everyone: nothing to check
+    for a in spec.actions:
+        a.roles, admins_only = clean(a.roles)
+        a.admin_only = a.admin_only or admins_only
+        if a.admin_only or set(a.roles) == set(roles):
+            a.roles = []
 
 
 def topo_sort(entities: list[EntitySpec]) -> list[EntitySpec]:
@@ -335,6 +419,7 @@ class AgentState(TypedDict, total=False):
     base_run_id: str  # follow-up edits: the version this run starts from
     base_spec: dict[str, Any]
     base_files: dict[str, str]
+    rule_tests_wanted: bool  # the Architect designed this run, so it also writes rule tests
     held_out: dict[str, str]  # ablation study: rule tests kept out of validation, run afterwards
     base_failed: bool  # the version being edited never passed validation: none of its code is reused
     changes: dict[str, list[str]]  # follow-up edits: entities added / changed / removed by the Architect

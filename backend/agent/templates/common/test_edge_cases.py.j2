@@ -11,7 +11,7 @@ AUTH = {{ spec.auth | string }}
 
 
 def _writer(edge, user_headers, admin_headers) -> dict:
-    return admin_headers if edge["access"] == "admin" else user_headers
+    return admin_headers if edge["access"] == "admin" or edge["roles"] else user_headers
 
 
 WITH_FKS = [e for e in EDGES if e["fk_payload"]]

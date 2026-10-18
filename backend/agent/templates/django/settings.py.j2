@@ -33,9 +33,4 @@ DATABASES = {"default": database_from_url(config.DATABASE_URL)}
 DEFAULT_AUTO_FIELD = "django.db.models.AutoField"
 USE_TZ = True
 TIME_ZONE = "UTC"
-
-LOGGING = {
-    "version": 1,
-    "handlers": {"console": {"class": "logging.StreamHandler"}},
-    "root": {"handlers": ["console"], "level": config.LOG_LEVEL},
-}
+LOGGING_CONFIG = None  # app.logs sets up logging (JSON lines with request ids)

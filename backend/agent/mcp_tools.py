@@ -3,6 +3,7 @@
 Any MCP server (documentation search, a company's internal API catalogue, a linter service ...)
 can lend its tools to the agents. List the servers in the MCP_SERVERS environment variable:
 
+    MCP_PRESETS=docs                   # well-known servers by name (see presets)
     MCP_SERVERS='[{"name": "docs", "url": "https://example.com/mcp", "headers": {"Authorization": "Bearer ..."}}]'
 
 At the start of a repair we ask each server for its tools and wrap every one as a `Tool`,
@@ -27,16 +28,25 @@ log = logging.getLogger(__name__)
 TIMEOUT_S = 30
 
 
+def presets() -> dict[str, dict[str, Any]]:
+    """Well-known MCP servers that one word in MCP_PRESETS turns on (URLs can be overridden)."""
+    docs_headers = {"CONTEXT7_API_KEY": os.environ["CONTEXT7_API_KEY"]} if os.environ.get("CONTEXT7_API_KEY") else {}
+    return {
+        # Current library documentation (FastAPI, Django, SQLAlchemy, Pydantic ...) for the repairs.
+        "docs": {"name": "docs", "url": os.environ.get("MCP_DOCS_URL", "https://mcp.context7.com/mcp"), "headers": docs_headers},
+    }
+
+
 def configured_servers() -> list[dict[str, Any]]:
-    """The servers from MCP_SERVERS (an empty list when unset or invalid)."""
+    """The servers from MCP_PRESETS (e.g. "docs") and MCP_SERVERS (a JSON list)."""
+    known = presets()
+    servers = [known[name.strip()] for name in os.environ.get("MCP_PRESETS", "").split(",") if name.strip() in known]
     raw = os.environ.get("MCP_SERVERS", "").strip()
-    if not raw:
-        return []
-    try:
-        servers = json.loads(raw)
-    except json.JSONDecodeError:
-        log.warning("MCP_SERVERS is not valid JSON; ignoring it")
-        return []
+    if raw:
+        try:
+            servers += json.loads(raw)
+        except json.JSONDecodeError:
+            log.warning("MCP_SERVERS is not valid JSON; ignoring it")
     return [s for s in servers if isinstance(s, dict) and s.get("name") and (s.get("url") or s.get("server"))]
 
 

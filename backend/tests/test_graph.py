@@ -89,7 +89,7 @@ def test_rule_tests_that_contradict_the_verified_contract_are_removed(monkeypatc
         "def test_stats_counts(client, user_headers):\n"
         "    assert client.get('/posts/stats', headers=user_headers).json()['count'] >= 0\n"
     )
-    monkeypatch.setattr("agent.nodes.write_rule_tests", lambda llm, spec: (wrong, llm_mod.Usage()))
+    monkeypatch.setattr("agent.nodes.write_rule_tests", lambda llm, spec, stream=None: (wrong, llm_mod.Usage()))
     values = _run(initial_state("blog", {"codegen_mode": "llm"}), FakeLLM())
     assert values["status"] == "succeeded", values.get("report")
     rules = values["files"]["tests/test_rules.py"]
@@ -135,7 +135,7 @@ def test_complex_spec_end_to_end_on_every_framework(stack):
     assert values["spec"]["stack"] == stack
     assert len(values["spec"]["requirements"]) == 3
     assert "tests/test_rules.py" in values["files"]  # the shop has actions, so the Architect wrote rule tests
-    assert fake.calls.index("rule_tests") < fake.calls.index("entity")  # tests before code
+    assert "rule_tests" in fake.calls and "entity" in fake.calls  # tests written from the design, beside the code
     migrations = [p for p in values["files"] if "migrations/" in p and p.endswith(".py") and "env.py" not in p]
     assert migrations, "packager should ship real migration files"
 
@@ -166,3 +166,44 @@ def test_sandbox_limit_is_retried_not_repaired(monkeypatch):
     retry = next(e for e in values["ledger"] if e["agent"] == "reflector")
     assert "sandbox limit" in retry["action"] and "diff" not in retry
     assert values["bugs"] == []
+
+
+def test_a_syntax_error_is_fixed_before_validation():
+    """The model breaks Python syntax; one quick fix call repairs it, so validation passes on the first try."""
+    fake = FakeLLM(mistake="syntax")
+    values = _run(initial_state("blog", {"codegen_mode": "llm"}), fake)
+    assert values["status"] == "succeeded", values.get("report")
+    assert "syntax_fix" in fake.calls
+    assert values["iteration"] == 0  # no repair round was needed
+    wrote = next(e for e in values["ledger"] if e["action"].startswith("wrote the business logic of Post"))
+    assert "fixed a syntax error before validation" in wrote["rationale"]
+
+
+def test_rule_tests_and_business_logic_run_at_the_same_time(monkeypatch):
+    """The Architect's rule tests are written in parallel with the code, not before it."""
+    import threading
+    import time as clock
+
+    from agent import nodes
+
+    inside = {"now": 0, "most": 0}
+    lock = threading.Lock()
+
+    def slow(original):
+        def wrapper(*args, **kwargs):
+            with lock:
+                inside["now"] += 1
+                inside["most"] = max(inside["most"], inside["now"])
+            clock.sleep(0.5)
+            try:
+                return original(*args, **kwargs)
+            finally:
+                with lock:
+                    inside["now"] -= 1
+        return wrapper
+
+    monkeypatch.setattr(nodes, "_rule_tests", slow(nodes._rule_tests))
+    monkeypatch.setattr(nodes, "_generate_service", slow(nodes._generate_service))
+    values = _run(initial_state("blog", {"codegen_mode": "llm"}), FakeLLM())
+    assert values["status"] == "succeeded"
+    assert inside["most"] >= 2

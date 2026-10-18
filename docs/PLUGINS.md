@@ -68,3 +68,7 @@ sent back to the model as text, and each call is recorded in the ledger.
 | `todo_check` | `extra_checks` | review note for each `TODO`/`FIXME` left in the code |
 | `strict_inputs` | `prompt_notes` | asks the AI to trim text and reject blank strings |
 | `pypi_lookup` | `tools` | the Reflector can check a package's latest version and summary on PyPI |
+| `deploy_targets` | `extra_files` | `render.yaml`, `fly.toml` and `railway.json`: the generated app deploys to Render, Fly.io or Railway |
+| `seed_data` | `extra_files` | `scripts/seed.py`: fills a running app with sample rows through its own API (links, choices and value ranges respected) |
+| `openapi_export` | `extra_files` | `openapi.json` (OpenAPI 3.1) built from the design, for Flask and Django too |
+| `secrets_scan` | `extra_checks` | fails validation when a real-looking key or token appears in any file (YAML, JSON, `.env`, Markdown …) |

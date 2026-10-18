@@ -1,0 +1,54 @@
+"""The audit log, read-only and for admins. There are no routes that change or delete entries."""
+
+from django.http import JsonResponse
+from django.urls import path
+
+from app.errors import ApiError
+from app.models.audit_log import AuditLog
+from app.security import current_user, require_admin
+
+
+def _entry(row: AuditLog) -> dict:
+    return {
+        "id": row.id, "actor_id": row.actor_id, "action": row.action, "entity": row.entity, "row_id": row.row_id,
+        "before": row.before, "after": row.after, "request_id": row.request_id, "created_at": row.created_at.isoformat(),
+    }
+
+
+def _int(request, name: str, default: int | None, low: int, high: int | None = None) -> int | None:
+    raw = request.GET.get(name)
+    if raw is None:
+        return default
+    if not raw.isdigit() or int(raw) < low or (high is not None and int(raw) > high):
+        raise ApiError(422, f"{name} is not a valid number")
+    return int(raw)
+
+
+def collection(request):
+    if request.method != "GET":
+        raise ApiError(405, "audit log entries cannot be created, changed or deleted")
+    require_admin(current_user(request))
+    rows = AuditLog.objects.all()
+    if request.GET.get("entity"):
+        rows = rows.filter(entity=request.GET["entity"])
+    row_id = _int(request, "row_id", None, 0)
+    if row_id is not None:
+        rows = rows.filter(row_id=row_id)
+    skip, limit = _int(request, "skip", 0, 0), _int(request, "limit", 50, 1, 100)
+    return JsonResponse([_entry(row) for row in rows.order_by("-id")[skip : skip + limit]], safe=False)
+
+
+def item(request, entry_id: int):
+    if request.method != "GET":
+        raise ApiError(405, "audit log entries cannot be created, changed or deleted")
+    require_admin(current_user(request))
+    row = AuditLog.objects.filter(id=entry_id).first()
+    if row is None:
+        raise ApiError(404, "audit log entry not found")
+    return JsonResponse(_entry(row))
+
+
+urlpatterns = [
+    path("audit_logs/", collection),
+    path("audit_logs/<int:entry_id>", item),
+]

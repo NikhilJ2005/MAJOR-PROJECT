@@ -212,15 +212,22 @@ def repair_rung(history: list[dict], llm_available: bool) -> str | None:
 
 
 def should_continue(
-    history: list[dict], tokens_used: int, token_budget: int, llm_available: bool, safety_limit: int
+    history: list[dict], tokens_used: int, token_budget: int, llm_available: bool, safety_limit: int,
+    budget_problem: str | None = None,
 ) -> tuple[bool, str]:
-    """Decide whether another repair attempt is worth it. Returns (continue?, reason)."""
+    """Decide whether another repair attempt is worth it. Returns (continue?, reason).
+
+    budget_problem: why the money or token budget is used up (llm.budget_left), if it is. Every run
+    still gets its first repair, so a build is never given up without one try at fixing it.
+    """
     if not history:
         return True, "nothing validated yet"
     attempts = len(history) - 1
     if attempts >= safety_limit:
         return False, f"safety limit of {safety_limit} repair attempts reached"
-    if tokens_used >= token_budget:
+    if attempts > 0 and budget_problem:
+        return False, budget_problem
+    if attempts > 0 and tokens_used >= token_budget:
         return False, f"token budget used up ({tokens_used} of {token_budget})"
     last = history[-1]
     # Circles: the code is back to a version before the previous one. (A repair that changed

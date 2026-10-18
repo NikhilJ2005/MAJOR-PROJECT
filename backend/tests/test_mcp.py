@@ -48,7 +48,8 @@ def test_generate_backend_through_mcp(fake_llm):
     server, thread, port = _serve(app)
     try:
         tools, result = asyncio.run(_call(port, token, "generate_backend", {"prompt": "A blog with posts and comments", "stack": "flask"}))
-        assert tools == ["edit_project", "generate_backend", "list_files", "list_projects", "read_file", "run_status"]
+        assert tools == ["download_url", "edit_project", "generate_backend", "keep_fixing", "list_files", "list_projects",
+                         "preview_url", "read_file", "run_status"]
         assert not result.is_error, result
         data = result.structured_content
         assert data["status"] == "succeeded" and data["stack"] == "flask"
@@ -56,6 +57,11 @@ def test_generate_backend_through_mcp(fake_llm):
 
         _, readme = asyncio.run(_call(port, token, "read_file", {"run_id": data["run_id"], "path": "README.md"}))
         assert "Flask" in readme.content[0].text
+
+        _, link = asyncio.run(_call(port, token, "download_url", {"run_id": data["run_id"]}))
+        assert link.content[0].text.endswith(f"/api/runs/{data['run_id']}/download")
+        _, live = asyncio.run(_call(port, token, "preview_url", {"run_id": data["run_id"]}))
+        assert not live.is_error and "/preview/" in live.content[0].text
 
         _, denied = asyncio.run(_call(port, None, "list_projects", {}))
         assert denied.is_error and "Bearer" in denied.content[0].text

@@ -52,3 +52,4 @@ def user_id_from_token(token: str | None) -> int | None:
         return int(jwt.decode(token, _secret(), algorithms=["HS256"])["sub"])
     except (jwt.PyJWTError, KeyError, ValueError):
         return None
+

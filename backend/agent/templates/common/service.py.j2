@@ -22,6 +22,13 @@ def {{ a.name }}(db: Session, obj: "{{ e.name }} | None", payload: dict, user) -
 {% for rule in a.rules %}
     - {{ rule }}
 {% endfor %}
+{% if a.locks %}
+{% if stack.name == "django" %}
+    obj is locked (select_for_update) and this runs in one transaction; lock other rows the same way.
+{% else %}
+    obj is locked (SELECT ... FOR UPDATE); lock other rows with db.get(Model, id, with_for_update=True), then db.commit() once.
+{% endif %}
+{% endif %}
     """
     raise ApiError(501, "{{ a.name }} is not implemented yet")
 {% endfor %}

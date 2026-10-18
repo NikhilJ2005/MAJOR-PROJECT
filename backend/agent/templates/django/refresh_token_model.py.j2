@@ -1,0 +1,14 @@
+from django.db import models
+
+
+class RefreshToken(models.Model):
+    """A refresh token (only its hash). Tokens from one login share a family."""
+
+    user = models.ForeignKey("User", on_delete=models.CASCADE, related_name="+")
+    token_hash = models.CharField(max_length=64, unique=True)
+    family = models.CharField(max_length=32, db_index=True)
+    expires_at = models.IntegerField()  # unix time
+    revoked_at = models.IntegerField(null=True)
+
+    class Meta:
+        db_table = "refresh_tokens"

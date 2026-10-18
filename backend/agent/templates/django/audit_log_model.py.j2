@@ -1,0 +1,26 @@
+from django.db import models
+
+
+class AuditLog(models.Model):
+    """One change: who did it, what, to which row, and the row before and after. Never updated or deleted."""
+
+    actor_id = models.IntegerField(null=True, db_index=True)
+    action = models.CharField(max_length=50)
+    entity = models.CharField(max_length=50, db_index=True)
+    row_id = models.IntegerField(null=True)
+    before = models.JSONField(null=True)
+    after = models.JSONField(null=True)
+    request_id = models.CharField(max_length=64, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "audit_logs"
+        ordering = ["-id"]
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None:
+            raise ValueError("audit log entries cannot be changed")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("audit log entries cannot be deleted")

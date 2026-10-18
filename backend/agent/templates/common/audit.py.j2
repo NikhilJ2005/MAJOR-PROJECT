@@ -1,0 +1,29 @@
+"""The audit log: who did what to which row, with the row before and after. Rows are never changed or deleted."""
+
+import json
+
+from app.logs import request_id
+from app.models.audit_log import AuditLog
+
+
+def _plain(value):
+    """Rows and results as plain JSON (dates become strings)."""
+    return None if value is None else json.loads(json.dumps(value, default=str))
+
+
+{% if stack.name == "django" %}
+def record(user, action: str, entity: str, row_id: int | None = None, before=None, after=None) -> None:
+    """Write one audit entry, e.g. record(user, "update", "Order", 7, before, after)."""
+    AuditLog.objects.create(
+        actor_id=getattr(user, "id", None), action=action, entity=entity, row_id=row_id,
+        before=_plain(before), after=_plain(after), request_id=request_id.get(),
+    )
+{% else %}
+def record(db, user, action: str, entity: str, row_id: int | None = None, before=None, after=None) -> None:
+    """Write one audit entry, e.g. record(db, user, "update", "Order", 7, before, after). It commits."""
+    db.add(AuditLog(
+        actor_id=getattr(user, "id", None), action=action, entity=entity, row_id=row_id,
+        before=_plain(before), after=_plain(after), request_id=request_id.get(),
+    ))
+    db.commit()
+{% endif %}

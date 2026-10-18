@@ -1,0 +1,81 @@
+"""Rate limits: a token bucket per client and per kind of request (429 with Retry-After when empty).
+
+Buckets live in this process by default. With REDIS_URL set they live in Redis, so every server
+process shares them; if Redis is unreachable the limits fall back to this process instead of failing.
+"""
+
+import logging
+import math
+import threading
+import time
+
+from app import config
+from app.errors import ApiError
+
+log = logging.getLogger("app.ratelimit")
+
+
+def _parse(rule: str) -> tuple[int, float]:
+    count, _, seconds = rule.partition("/")
+    return int(count), float(seconds or 60)
+
+
+# kind -> (bucket size, seconds to refill it completely). Tests may change these.
+LIMITS = {
+    "login": _parse(config.RATE_LIMIT_LOGIN),
+    "register": _parse(config.RATE_LIMIT_REGISTER),
+    "action": _parse(config.RATE_LIMIT_ACTIONS),
+}
+ENABLED = config.RATE_LIMITS
+_buckets: dict[str, tuple[float, float]] = {}  # key -> (tokens left, last update)
+_lock = threading.Lock()
+_redis = None
+
+# Refill the bucket, take one token if there is one, and return the seconds to wait (0 = allowed).
+_LUA = """
+local size, rate, now = tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[3])
+local b = redis.call('HMGET', KEYS[1], 'tokens', 'at')
+local tokens = math.min(size, (tonumber(b[1]) or size) + (now - (tonumber(b[2]) or now)) * rate)
+local wait = 0
+if tokens >= 1 then tokens = tokens - 1 else wait = (1 - tokens) / rate end
+redis.call('HSET', KEYS[1], 'tokens', tokens, 'at', now)
+redis.call('EXPIRE', KEYS[1], math.ceil(size / rate) + 1)
+return tostring(wait)
+"""
+
+
+def _take_local(key: str, size: int, rate: float, now: float) -> float:
+    with _lock:
+        tokens, at = _buckets.get(key, (float(size), now))
+        tokens = min(size, tokens + (now - at) * rate)
+        if tokens >= 1:
+            _buckets[key] = (tokens - 1, now)
+            return 0.0
+        _buckets[key] = (tokens, now)
+        return (1 - tokens) / rate
+
+
+def _take_redis(key: str, size: int, rate: float, now: float) -> float | None:
+    global _redis
+    try:
+        if _redis is None:
+            import redis
+
+            _redis = redis.Redis.from_url(config.REDIS_URL, socket_timeout=0.5)
+        return float(_redis.eval(_LUA, 1, f"ratelimit:{key}", size, rate, now))
+    except Exception as exc:  # noqa: BLE001 - never fail a request because Redis is down
+        log.warning("rate limit store unavailable, using this process only: %s", exc)
+        return None
+
+
+def hit(kind: str, who: str) -> None:
+    """Count one request of `kind` by `who` (a user id or an IP address); 429 when over the limit."""
+    if not ENABLED:
+        return
+    size, seconds = LIMITS[kind]
+    rate, now, key = size / seconds, time.time(), f"{kind}:{who}"
+    wait = _take_redis(key, size, rate, now) if config.REDIS_URL else None
+    if wait is None:
+        wait = _take_local(key, size, rate, now)
+    if wait > 0:
+        raise ApiError(429, f"too many {kind} requests; try again later", {"Retry-After": str(math.ceil(wait))})

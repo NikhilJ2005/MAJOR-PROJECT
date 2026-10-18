@@ -6,6 +6,9 @@ from pydantic import BaseModel, ConfigDict, Field
 class UserCreate(BaseModel):
     email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", max_length=255)
     password: str = Field(min_length=8, max_length=128)
+{% if spec.roles %}
+    role: str | None = Field(default=None, max_length=50, description="One of the sign-up roles; empty for the default")
+{% endif %}
 
 
 class UserRead(BaseModel):
@@ -13,9 +16,26 @@ class UserRead(BaseModel):
 
     id: int
     email: str
+{% if spec.roles %}
+    role: str
+{% endif %}
+    is_admin: bool = False
     created_at: datetime
+{% if spec.roles %}
+
+
+class RoleChange(BaseModel):
+    role: str = Field(max_length=50)
+{% endif %}
 
 
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
+{% if spec.has("refresh_tokens") %}
+    refresh_token: str | None = None
+
+
+class RefreshIn(BaseModel):
+    refresh_token: str = Field(min_length=1, max_length=200)
+{% endif %}

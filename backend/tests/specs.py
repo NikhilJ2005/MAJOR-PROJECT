@@ -62,4 +62,44 @@ WORKFLOW = {
     ],
 }
 
-ALL_SPECS = {"blog": BLOG_SPEC, "no-auth": NO_AUTH, "shop": SHOP, "workflow": WORKFLOW}
+# The enterprise escrow marketplace prompt: roles, a milestone state machine, wallets and a ledger,
+# money-moving actions with row locks, refresh tokens, lockout, an audit log and rate limits.
+ESCROW = {
+    "project_name": "escrow_market",
+    "auth": True,
+    "features": ["refresh_tokens", "account_lockout", "audit_log", "rate_limit"],
+    "roles": [{"name": "client"}, {"name": "freelancer"}, {"name": "dispute_admin", "self_signup": False},
+              {"name": "super_admin"}],
+    "entities": [
+        {"name": "Project", "write_roles": ["client"], "fields": [
+            {"name": "title"}, {"name": "budget", "type": "decimal", "min": 0},
+            {"name": "status", "choices": ["open", "in_progress", "closed"],
+             "transitions": {"open": ["in_progress", "closed"], "in_progress": ["closed"]}}]},
+        {"name": "Bid", "write_roles": ["freelancer"], "fields": [
+            {"name": "project_id", "references": "Project", "on_delete": "cascade"},
+            {"name": "amount", "type": "decimal", "min": 1}, {"name": "status", "choices": ["pending", "accepted", "rejected"]}]},
+        {"name": "Wallet", "write_access": "owner", "fields": [
+            {"name": "balance", "type": "decimal", "min": 0}, {"name": "currency", "choices": ["USD", "EUR"]}]},
+        {"name": "Milestone", "write_roles": ["client"], "fields": [
+            {"name": "project_id", "references": "Project", "on_delete": "cascade"}, {"name": "title"},
+            {"name": "amount", "type": "decimal", "min": 0},
+            {"name": "state", "choices": ["draft", "funded", "submitted", "approved", "disputed"],
+             "transitions": {"draft": ["funded"], "funded": ["submitted"], "submitted": ["approved", "disputed"],
+                             "disputed": ["approved"]}}]},
+        {"name": "LedgerEntry", "write_roles": ["admin"], "fields": [
+            {"name": "milestone_id", "references": "Milestone", "on_delete": "restrict"},
+            {"name": "amount", "type": "decimal"}, {"name": "direction", "choices": ["debit", "credit"]}]},
+    ],
+    "actions": [
+        {"name": "fund", "entity": "Milestone", "path": "/{item_id}/fund", "roles": ["client"], "locks": True,
+         "description": "Move the amount from the client's wallet into escrow", "rules": ["409 unless draft"]},
+        {"name": "submit", "entity": "Milestone", "path": "/{item_id}/submit", "roles": ["freelancer"],
+         "description": "Submit the work", "rules": ["409 unless funded"]},
+        {"name": "approve", "entity": "Milestone", "path": "/{item_id}/approve", "roles": ["client"], "locks": True,
+         "description": "Release escrow to the freelancer", "rules": ["409 unless submitted"]},
+        {"name": "resolve", "entity": "Milestone", "path": "/{item_id}/resolve", "roles": ["dispute_admin"], "locks": True,
+         "description": "Settle a dispute", "rules": ["409 unless disputed"]},
+    ],
+}
+
+ALL_SPECS = {"blog": BLOG_SPEC, "no-auth": NO_AUTH, "shop": SHOP, "workflow": WORKFLOW, "escrow": ESCROW}

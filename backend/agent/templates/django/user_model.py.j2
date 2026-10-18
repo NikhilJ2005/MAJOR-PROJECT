@@ -1,10 +1,24 @@
 from django.db import models
 
+from app import config
+
 
 class User(models.Model):
     email = models.CharField(max_length=255, unique=True)
     password_hash = models.CharField(max_length=255)
+{% if spec.roles %}
+    role = models.CharField(max_length=50, default="{{ spec.default_role }}")
+{% endif %}
+{% if spec.has("account_lockout") %}
+    failed_logins = models.IntegerField(default=0)
+    locked_until = models.IntegerField(default=0)  # unix time
+{% endif %}
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = "users"
+
+    @property
+    def is_admin(self) -> bool:
+        """Admins are the users listed in ADMIN_EMAILS; they may do everything."""
+        return self.email.lower() in config.ADMIN_EMAILS

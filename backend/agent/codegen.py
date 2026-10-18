@@ -16,7 +16,7 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from .stacks import Stack, get_stack
-from .state import EntitySpec, FieldSpec, ProjectSpec, pluralize, to_snake
+from .state import FEATURES, EntitySpec, FieldSpec, ProjectSpec, pluralize, to_snake
 
 TEMPLATE_ROOT = Path(__file__).parent / "templates"
 
@@ -122,6 +122,8 @@ def access_text(e: EntitySpec, auth: bool) -> str:
         return "only the owner (rows are private to the user who created them)"
     if e.write_access == "admin":
         return "admins only (everyone can read)"
+    if e.write_roles:
+        return f"users with the role {' or '.join(e.write_roles)}, and admins (everyone can read)"
     return "any logged-in user (everyone can read)" if auth else "anyone"
 
 
@@ -155,6 +157,8 @@ def _context(spec: ProjectSpec, stack: Stack, **extra: Any) -> dict[str, Any]:
         "entities_json": pprint.pformat(smoke_cases(spec), width=96),
         "edges_json": pprint.pformat(edge_cases(spec), width=96),
         "delete_rules_json": pprint.pformat(delete_rules(spec), width=96),
+        "role_actions_json": pprint.pformat(role_actions(spec), width=96),
+        "features_known": FEATURES,
         "has_rule_tests": False,
         "has_edge_tests": False,
         **extra,
@@ -261,7 +265,7 @@ def smoke_cases(spec: ProjectSpec) -> list[dict[str, Any]]:
             update[sf] = f"updated {e.module} {sf}"
         cases.append({"name": e.name, "table": e.table, "access": e.write_access, "payload": payload,
                       "update": update, "invalid": _invalid_payload(e), "transition": _transition_case(e),
-                      "realtime": e.realtime})
+                      "realtime": e.realtime, "roles": e.write_roles})
     return cases
 
 
@@ -289,9 +293,16 @@ def edge_cases(spec: ProjectSpec) -> list[dict[str, Any]]:
         # Unknown ids everywhere: validation passes, the database must refuse it (409 or 422, never 500).
         base = {k: (999999 if isinstance(v, str) and v.startswith("@ref:") else v)
                 for k, v in smoke_cases_for(spec, e)["payload"].items()}
-        cases.append({"name": e.name, "table": e.table, "access": e.write_access,
+        cases.append({"name": e.name, "table": e.table, "access": e.write_access, "roles": e.write_roles,
                       "fk_payload": base if e.foreign_keys else None, "bad": _bad_values(e, base)})
     return cases
+
+
+def role_actions(spec: ProjectSpec) -> list[dict[str, Any]]:
+    """Actions limited to some roles: another role calling them must get 403 (checked before the row is read)."""
+    return [{"name": f"{a.entity}.{a.name}", "method": a.method, "roles": a.roles,
+             "url": f"/{spec.entity(a.entity).table}{a.path.replace('{item_id}', '999999')}"}
+            for a in spec.actions if a.roles]
 
 
 def smoke_cases_for(spec: ProjectSpec, e: EntitySpec) -> dict[str, Any]:
@@ -349,6 +360,18 @@ def openapi_document(spec: ProjectSpec) -> dict[str, Any]:
         paths["/auth/register"] = {"post": {"tags": ["auth"], "requestBody": body("Credentials"), "responses": ok("201", "created")}}
         paths["/auth/login"] = {"post": {"tags": ["auth"], "requestBody": body("Credentials"), "responses": ok("200", "token")}}
         paths["/auth/me"] = {"get": {"tags": ["auth"], "security": security, "responses": ok("200", "current user")}}
+        if spec.has("refresh_tokens"):
+            schemas["Refresh"] = {"type": "object", "required": ["refresh_token"], "properties": {"refresh_token": {"type": "string"}}}
+            paths["/auth/refresh"] = {"post": {"tags": ["auth"], "requestBody": body("Refresh"), "responses": ok("200", "new token pair")}}
+            paths["/auth/logout"] = {"post": {"tags": ["auth"], "requestBody": body("Refresh"), "responses": ok("204", "logged out")}}
+        if spec.roles:
+            paths["/auth/roles"] = {"get": {"tags": ["auth"], "responses": ok("200", "the roles")}}
+            paths["/auth/users"] = {"get": {"tags": ["auth"], "security": security, "responses": ok("200", "users (admins)")}}
+            paths["/auth/users/{user_id}/role"] = {"patch": {
+                "tags": ["auth"], "security": security, "responses": ok("200", "role changed (admins)"),
+                "parameters": [{"name": "user_id", "in": "path", "required": True, "schema": {"type": "integer"}}]}}
+        if spec.has("audit_log"):
+            paths["/audit_logs/"] = {"get": {"tags": ["audit"], "security": security, "responses": ok("200", "audit entries (admins)")}}
     for e in spec.entities:
         schemas[f"{e.name}Create"] = _schema(e, read=False)
         tag = [e.name]

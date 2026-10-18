@@ -71,6 +71,10 @@ class PreviewManager:
         self._lock = threading.Lock()
         self._sandbox = LocalSandbox()
 
+    def count(self) -> int:
+        """Previews running now."""
+        return len(self._previews)
+
     def get(self, run_id: str) -> Preview | None:
         p = self._previews.get(run_id)
         if p and p.alive:

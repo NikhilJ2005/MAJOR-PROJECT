@@ -146,3 +146,14 @@ def test_tools_can_be_switched_off_for_the_ablation_study():
     assert values["status"] == "succeeded"
     reflector = next(e for e in values["ledger"] if e["agent"].startswith("reflector"))
     assert "tools" not in reflector
+
+
+def test_mcp_presets_are_turned_on_by_name(monkeypatch):
+    from agent.mcp_tools import configured_servers
+
+    monkeypatch.setenv("MCP_PRESETS", "docs, nope")
+    monkeypatch.setenv("CONTEXT7_API_KEY", "c7")
+    monkeypatch.setenv("MCP_SERVERS", '[{"name": "mine", "url": "http://127.0.0.1:9/mcp"}]')
+    servers = configured_servers()
+    assert [s["name"] for s in servers] == ["docs", "mine"]
+    assert servers[0]["headers"] == {"CONTEXT7_API_KEY": "c7"}

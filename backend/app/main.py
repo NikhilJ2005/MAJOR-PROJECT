@@ -18,23 +18,26 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from agent import plugins
+from agent import plugins, storage
 from agent.config import settings
 from agent.stacks import STACKS
 
 from .accounts import create_token, hash_password, user_id_from_token, verify_password
 from .mcp_server import build_mcp
+from .ops import RateLimiter, RequestContext, client_ip, metrics_text, setup_logging, setup_sentry
 from .preview import PreviewError, PreviewManager
+from .queue import make_queue
 from .runs import TERMINAL, RunManager
 from .store import IntegrityError, Store
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+setup_logging()
+setup_sentry()
 log = logging.getLogger("vibestack")
 
 previews = PreviewManager()
@@ -44,7 +47,7 @@ previews = PreviewManager()
 async def lifespan(_: FastAPI):
     app.state.proxy = httpx.AsyncClient(timeout=30, trust_env=False)
     # A fresh MCP server per lifespan: its session manager can only run once.
-    mcp = build_mcp(manager, store, start_run)
+    mcp = build_mcp(manager, store, start_run, preview=_preview_path)
     app.state.mcp_app = mcp.streamable_http_app(
         streamable_http_path="/",
         stateless_http=True,
@@ -53,6 +56,7 @@ async def lifespan(_: FastAPI):
         # DNS-rebinding protection (a localhost-only default) is not needed behind a public domain.
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     )
+    manager.recover()  # builds a restart or redeploy interrupted continue from their last checkpoint
     async with mcp.session_manager.run():
         yield
     await app.state.proxy.aclose()
@@ -65,6 +69,7 @@ app = FastAPI(
     description="Agentic natural-language-to-backend harness",
     lifespan=lifespan,
 )
+app.add_middleware(RequestContext)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",") if o],
@@ -73,7 +78,7 @@ app.add_middleware(
 )
 
 store = Store(settings.platform_database_url)
-manager = RunManager(store)
+manager = RunManager(store, queue=make_queue())
 
 
 # --------------------------------------------------------------------------- accounts
@@ -106,8 +111,18 @@ def own_run(run_id: str, user: dict[str, Any]) -> None:
         raise HTTPException(status_code=404, detail="run not found")
 
 
+# Per IP: slows down password guessing (AUTH_RATE_LIMIT attempts per minute).
+auth_limit = RateLimiter(limit=int(os.getenv("AUTH_RATE_LIMIT", "20")), seconds=60)
+
+
+def check_auth_rate(request: Request) -> None:
+    if not auth_limit.allow(client_ip(request)):
+        raise HTTPException(status_code=429, detail="too many attempts; wait a minute and try again")
+
+
 @app.post("/api/auth/register", status_code=201)
-def register(body: Credentials) -> dict[str, Any]:
+def register(body: Credentials, request: Request) -> dict[str, Any]:
+    check_auth_rate(request)
     if settings.access_code and body.invite_code != settings.access_code:
         raise HTTPException(status_code=403, detail="a valid invite code is required")
     email = body.email.lower()
@@ -119,7 +134,8 @@ def register(body: Credentials) -> dict[str, Any]:
 
 
 @app.post("/api/auth/login")
-def login(body: Credentials) -> dict[str, Any]:
+def login(body: Credentials, request: Request) -> dict[str, Any]:
+    check_auth_rate(request)
     user = store.user_by_email(body.email.lower())
     if user is None or not verify_password(body.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="wrong email or password")
@@ -150,6 +166,18 @@ class Message(BaseModel):
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/metrics", response_class=PlainTextResponse)
+def metrics(authorization: str | None = Header(default=None)) -> str:
+    """Prometheus metrics. Send `Authorization: Bearer <METRICS_TOKEN>`, or an admin's login token."""
+    raw = authorization[7:] if authorization and authorization.startswith("Bearer ") else ""
+    expected = os.getenv("METRICS_TOKEN", "")
+    user_id = user_id_from_token(raw)
+    user = store.user_by_id(user_id) if user_id is not None else None
+    if not ((expected and raw == expected) or (user and user["email"] in settings.admin_emails)):
+        raise HTTPException(status_code=401, detail="metrics need METRICS_TOKEN or an admin login")
+    return metrics_text(store.run_metrics(), manager.active_count(), previews.count())
 
 
 @app.get("/api/config")
@@ -308,7 +336,7 @@ async def events(
 ) -> StreamingResponse:
     """Server-sent events. Resume with the Last-Event-ID header or ?after=<seq>."""
     own_run(run_id, user)
-    run = manager.runs.get(run_id)
+    run = manager.get_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="run not found (or server restarted; fetch /api/runs/{id})")
     start = int(last_event_id) + 1 if last_event_id and last_event_id.isdigit() else after + 1
@@ -349,9 +377,12 @@ def get_file(run_id: str, path: str, user: CurrentUser) -> str:
 
 
 @app.get("/api/runs/{run_id}/download")
-def download(run_id: str, user: CurrentUser) -> FileResponse:
+def download(run_id: str, user: CurrentUser) -> Response:
     own_run(run_id, user)
     path = manager.artifact(run_id)
+    link = storage.download_link(path) if path else None
+    if link:  # kept in an S3-compatible bucket: a short-lived signed link
+        return RedirectResponse(link)
     if not path or not Path(path).exists():
         raise HTTPException(status_code=404, detail="no artifact for this run")
     return FileResponse(path, media_type="application/zip", filename=Path(path).name)
@@ -389,6 +420,18 @@ async def start_preview(run_id: str, user: CurrentUser, draft: bool = False) -> 
     except PreviewError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return _preview_info(p)
+
+
+def _preview_path(run_id: str) -> str:
+    """Start (or reuse) the live preview of a successful run; its private path (used by MCP)."""
+    running = previews.get(run_id)
+    if running:
+        return running.public_path
+    snap = manager.snapshot(run_id) or {}
+    try:
+        return previews.start(run_id, manager.files(run_id), (snap.get("spec") or {}).get("stack", "fastapi")).public_path
+    except PreviewError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/api/runs/{run_id}/preview")
