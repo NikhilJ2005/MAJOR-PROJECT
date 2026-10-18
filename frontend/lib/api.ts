@@ -10,6 +10,7 @@ export type LedgerEntry = {
   model?: string;
   diff?: Record<string, string>;
   tools?: ToolCall[];
+  ts?: number;
 };
 
 export type ToolCall = { tool: string; args: Record<string, unknown>; result: string };
@@ -120,6 +121,8 @@ export type Snapshot = {
   bugs?: Bug[];
   review?: ReviewNote[];
   stop_reason?: string | null;
+  error_class?: string | null;
+  budget_usd?: number;
   report?: string | null;
   has_artifact?: boolean;
   has_draft?: boolean;

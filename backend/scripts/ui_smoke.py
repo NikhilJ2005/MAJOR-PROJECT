@@ -26,7 +26,7 @@ with sync_playwright() as p:
     page.get_by_role("button", name="Create account").click()
     page.get_by_role("button", name="Agent orchestrator").click()
     page.screenshot(path=f"{SP}/v3-home.png")
-    page.get_by_role("button", name="Build it").click()
+    page.get_by_role("button", name="Build it", exact=True).click()
     page.get_by_text("Version 1").wait_for()
     # Nothing is built before the user approves the Architect's design.
     page.get_by_role("button", name="Approve and build").wait_for(timeout=60000)

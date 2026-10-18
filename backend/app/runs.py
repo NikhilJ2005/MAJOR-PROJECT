@@ -363,6 +363,8 @@ class RunManager:
             "review": values.get("review", []),
             "heal_history": values.get("heal_history", []),
             "stop_reason": values.get("stop_reason"),
+            "error_class": values.get("error_class"),
+            "budget_usd": _budget(values.get("spec")),
             "report": values.get("report"),
             "has_artifact": bool(values.get("artifact_path")),
             # The verified template build (every screen, actions still stubbed) can be previewed as a draft.
@@ -382,6 +384,20 @@ class RunManager:
 
     def artifact(self, run_id: str) -> str | None:
         return self.graph.get_state(self._config(run_id)).values.get("artifact_path")
+
+
+def _budget(spec: dict | None) -> float:
+    """This build's money budget (bigger apps get more, see healing.scaled_limits)."""
+    from agent.healing import scaled_limits
+    from agent.state import ProjectSpec
+
+    if not spec:
+        return settings.max_cost_per_run_usd
+    try:
+        return round(scaled_limits(ProjectSpec.model_validate(spec), settings.max_heal_safety,
+                                   settings.max_cost_per_run_usd)[1], 2)
+    except ValueError:
+        return settings.max_cost_per_run_usd
 
 
 def _trim_validation(v: dict[str, Any] | None) -> dict[str, Any] | None:

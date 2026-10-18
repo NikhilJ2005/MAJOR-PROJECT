@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Architecture } from "@/components/Architecture";
-import { AgentSteps, deriveSteps } from "@/components/AgentSteps";
+import { AgentSteps, BuildMeter, deriveSteps, explainStop } from "@/components/AgentSteps";
 import { DeployButton } from "@/components/DeployPanel";
 import { DesignReview } from "@/components/DesignReview";
 import { Files } from "@/components/Files";
@@ -312,7 +312,7 @@ function Message({
   const changes = snap?.changes;
   return (
     <div className="space-y-2">
-      <div className="ml-8 rounded-2xl rounded-tr-sm bg-ink-800 px-4 py-2.5 text-sm leading-relaxed text-ink-50">{version.prompt}</div>
+      <div className="ml-8 max-h-64 overflow-y-auto whitespace-pre-line rounded-2xl rounded-tr-sm bg-ink-800 px-4 py-2.5 text-sm leading-relaxed text-ink-50">{version.prompt}</div>
       <div
         className={`rounded-2xl rounded-tl-sm border px-4 py-3 ${isSelected ? "border-ink-600 bg-ink-900" : "border-ink-800 bg-ink-900/50"}`}
       >
@@ -342,6 +342,7 @@ function Message({
             {changes.removed.map((n) => <span key={n} className="rounded bg-rose-500/15 px-1.5 py-0.5 text-rose-300">− {n}</span>)}
           </div>
         )}
+        {snap && isSelected && <BuildMeter snap={snap} startedAt={version.created_at} finishedAt={version.finished_at} />}
         {steps && (
           <div className="mt-3">
             <AgentSteps steps={steps} compact={version.status !== "running"} />
@@ -361,6 +362,7 @@ function FailureSummary({ snap }: { snap: Snapshot }) {
   return (
     <div className="mt-2 rounded-lg border border-rose-400/30 bg-rose-500/5 px-3 py-2 text-sm">
       {snap.stop_reason && <p className="text-rose-200">Stopped: {snap.stop_reason}</p>}
+      {explainStop(snap.stop_reason, snap.error_class) && <p className="mt-1 text-ink-200">{explainStop(snap.stop_reason, snap.error_class)}</p>}
       {open.length > 0 && (
         <ul className="mt-1 space-y-1 text-ink-200">
           {open.map((b) => (

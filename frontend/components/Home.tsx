@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { PromptBuilder } from "@/components/PromptBuilder";
 import type { Project, ServerConfig } from "@/lib/api";
 
 const EXAMPLES: [string, string][] = [
@@ -52,6 +53,7 @@ export function Home({
   // Plugins are chosen by the agents; the user may force one on or off.
   const [force, setForce] = useState<Record<string, "on" | "off">>({});
   const [busy, setBusy] = useState(false);
+  const [guided, setGuided] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const plugins = config?.plugins ?? [];
   const forced = (mode: "on" | "off") => Object.keys(force).filter((n) => force[n] === mode);
@@ -146,8 +148,12 @@ export function Home({
           </div>
         </form>
         {error && <p className="mt-3 text-sm text-rose-300">{error}</p>}
+        {guided && <PromptBuilder onClose={() => setGuided(false)} onUse={(text) => { setPrompt(text); setGuided(false); }} />}
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          <span className="text-sm text-ink-400">Try:</span>
+          <button onClick={() => setGuided(true)} className="rounded-full bg-signal-400/15 px-3 py-1 text-sm font-medium text-signal-200 hover:bg-signal-400/25">
+            Build it step by step
+          </button>
+          <span className="text-sm text-ink-400">or try:</span>
           {EXAMPLES.map(([name, text]) => (
             <button
               key={name}
