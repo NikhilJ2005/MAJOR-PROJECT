@@ -191,6 +191,7 @@ function ChatPanel({
         <button onClick={onHome} className="text-sm text-ink-400 hover:text-ink-50" aria-label="All projects">All projects</button>
         <span className="text-ink-600">/</span>
         <span className="truncate font-medium text-ink-50">{project.name}</span>
+        <ProjectRules project={project} />
       </div>
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5">
         {project.versions.map((v) => (
@@ -252,6 +253,47 @@ function ChatPanel({
         {error && <p className="mt-2 text-sm text-rose-300">{error}</p>}
       </form>
     </aside>
+  );
+}
+
+/** Rules every agent follows on every build of this project (like a knowledge file). */
+function ProjectRules({ project }: { project: ProjectDetail }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState(project.instructions ?? "");
+  const [saved, setSaved] = useState(project.instructions ?? "");
+  return (
+    <div className="relative ml-auto">
+      <button onClick={() => setOpen((o) => !o)} className="rounded-md px-2 py-1 text-xs text-ink-400 hover:bg-ink-800 hover:text-ink-50">
+        Rules{saved ? " ✓" : ""}
+      </button>
+      {open && (
+        <div className="absolute right-0 z-20 mt-2 w-80 rounded-xl border border-ink-700 bg-ink-900 p-3 shadow-2xl">
+          <p className="text-sm font-medium text-ink-100">Project rules</p>
+          <p className="mb-2 text-xs text-ink-400">Every agent follows these on every build of this project.</p>
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            rows={6}
+            placeholder={"Prices are in cents.\nUse British English in the app.\nOnly admins may delete invoices."}
+            className="w-full resize-none rounded-lg border border-ink-700 bg-ink-950 p-2 text-sm text-ink-100 outline-none focus:border-ink-500"
+          />
+          <div className="mt-2 flex justify-end gap-2">
+            <button onClick={() => setOpen(false)} className="px-2 text-sm text-ink-400 hover:text-ink-100">Close</button>
+            <button
+              disabled={text === saved}
+              onClick={async () => {
+                await api.setRules(project.id, text);
+                setSaved(text);
+                setOpen(false);
+              }}
+              className="rounded-lg bg-signal-400 px-3 py-1 text-sm font-semibold text-ink-950 disabled:opacity-40"
+            >
+              Save rules
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

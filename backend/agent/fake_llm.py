@@ -59,6 +59,7 @@ class FakeLLM:
         self.mistake_name = mistake or ("typo" if buggy else None)
         self._made_typo = False
         self.calls: list[str] = []
+        self.systems: list[tuple[str, str]] = []  # (role, system prompt) of every call, for tests
 
     # -- roles -------------------------------------------------------------------------
 
@@ -145,6 +146,7 @@ class FakeLLM:
     # -- entry point ---------------------------------------------------------------------
 
     def complete(self, role, system, user, effort=None, stream=None):
+        self.systems.append((role, system))
         text, usage = self._reply(role, system, user)
         if stream:  # like a real model: the reply arrives in pieces (FAKE_LLM_DELAY slows it down for demos)
             delay = float(os.environ.get("FAKE_LLM_DELAY", "0"))

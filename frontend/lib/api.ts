@@ -37,7 +37,7 @@ export type Project = {
   versions?: number;
   latest_status?: string | null;
 };
-export type ProjectDetail = Omit<Project, "versions"> & { versions: Version[]; busy: boolean };
+export type ProjectDetail = Omit<Project, "versions"> & { versions: Version[]; busy: boolean; instructions?: string | null };
 
 export type Field = {
   name: string;
@@ -243,6 +243,8 @@ export const api = {
   project: (id: string) => request<ProjectDetail>(`/api/projects/${id}`),
   message: (id: string, prompt: string, mode: "edit" | "fix" = "edit") =>
     request<{ run_id: string; project_id: string }>(`/api/projects/${id}/messages`, post({ prompt, mode, review_design: mode === "edit" })),
+  setRules: (projectId: string, instructions: string) =>
+    request<Project>(`/api/projects/${projectId}`, { method: "PATCH", body: JSON.stringify({ instructions }) }),
   cancel: (id: string) => request<{ status: string }>(`/api/runs/${id}/cancel`, { method: "POST" }),
   approve: (id: string, body: { spec?: Spec; instruction?: string }) => request<{ status: string }>(`/api/runs/${id}/approve`, post(body)),
   restore: (id: string, run_id: string) => request<{ current_run_id: string }>(`/api/projects/${id}/current`, post({ run_id })),

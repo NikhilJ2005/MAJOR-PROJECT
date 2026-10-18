@@ -68,7 +68,7 @@ SCHEMA = [
 ]
 # Columns added after the first release, so older databases are upgraded in place.
 RUN_COLUMNS = {"project_id": "TEXT", "parent_run_id": "TEXT", "version": "INTEGER"}
-PROJECT_COLUMNS: dict[str, str] = {}
+PROJECT_COLUMNS: dict[str, str] = {"instructions": "TEXT"}  # project rules every agent follows
 
 
 class Store:
@@ -146,6 +146,10 @@ class Store:
         """The version the workspace shows and the next edit starts from."""
         self._write("UPDATE projects SET current_run_id = :run, updated_at = :now, name = COALESCE(:name, name) WHERE id = :id",
                     run=run_id, now=time.time(), name=name, id=project_id)
+
+    def set_instructions(self, project_id: str, instructions: str) -> None:
+        self._write("UPDATE projects SET instructions = :i, updated_at = :now WHERE id = :id",
+                    i=instructions.strip() or None, now=time.time(), id=project_id)
 
     def touch_project(self, project_id: str) -> None:
         self._write("UPDATE projects SET updated_at = :now WHERE id = :id", now=time.time(), id=project_id)

@@ -423,6 +423,7 @@ class Options(TypedDict, total=False):
     rule_tests: bool  # use the Architect's rule tests during validation (default True)
     calibrate: bool  # check the rule tests against the verified templates before any code (default True)
     resume: bool  # "keep fixing": validate and heal the given files, skipping design and code generation
+    instructions: str  # project rules from the user: every agent follows them
     review_design: bool  # wait for the user to approve (or edit) the design before any code is written
 
 

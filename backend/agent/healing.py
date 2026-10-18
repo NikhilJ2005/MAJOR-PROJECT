@@ -54,6 +54,24 @@ def repair_target(path: str | None, files: dict[str, str]) -> str | None:
     return service if service in files else path
 
 
+def failing_targets(log: str, files: dict[str, str], spec: ProjectSpec, first: str | None, limit: int = 3) -> list[str]:
+    """Up to `limit` distinct business-logic files with failing tests, starting with `first`.
+
+    A complex app often fails in several independent places; repairing them in the same attempt keeps
+    healing from needing one attempt per file.
+    """
+    targets = [first] if first and editable(first) else []
+    for test_path, name in re.findall(r"^(?:FAILED|ERROR) (tests/[\w/]+\.py)::(\w+)", log, re.MULTILINE):
+        if len(targets) >= limit:
+            break
+        if test_path not in files:
+            continue
+        target = repair_target(file_for_test(_function_source(files[test_path], name), spec), files)
+        if target and editable(target) and target not in targets:
+            targets.append(target)
+    return targets
+
+
 def guess_service(log: str, files: dict[str, str], spec: ProjectSpec) -> str | None:
     """When nothing in the log points at a file: the business-logic file whose entity the log mentions most."""
     counts = {}

@@ -225,3 +225,17 @@ def test_runs_can_be_stopped_and_have_a_deadline(fake_llm, monkeypatch):
         run_id = client.post("/api/runs", json={"prompt": "A blog with posts and comments"}, headers=me).json()["run_id"]
         snap = _wait(client, run_id, {"failed", "succeeded", "error"}, me)
         assert snap["status"] == "failed" and snap["spec"]  # the design made before the stop is kept
+
+
+def test_project_rules_reach_every_agent(fake_llm):
+    from app.main import app
+
+    with TestClient(app) as client:
+        me = _login(client)
+        r = client.post("/api/projects", json={"prompt": "A blog with posts and comments",
+                                               "instructions": "Money is always stored in cents."}, headers=me)
+        project_id, run_id = r.json()["project_id"], r.json()["run_id"]
+        _wait(client, run_id, {"succeeded", "failed", "error"}, me)
+        assert any("Money is always stored in cents." in system for _, system in fake_llm.systems)
+        r = client.patch(f"/api/projects/{project_id}", json={"instructions": "Use British English."}, headers=me)
+        assert r.status_code == 200 and r.json()["instructions"] == "Use British English."

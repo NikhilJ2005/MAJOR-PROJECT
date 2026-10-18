@@ -36,6 +36,7 @@ from .healing import (
     best_index,
     classify_error,
     editable,
+    failing_targets,
     guess_service,
     history_entry,
     locate_failing_file,
@@ -104,6 +105,12 @@ def _plugins(state: AgentState) -> list[tuple[str, Any]]:
     return plugins.chosen(_opts(state).get("plugins"))
 
 
+def _rules(state: AgentState) -> str:
+    """The user's project rules, as a prompt section ("" when there are none)."""
+    rules = (_opts(state).get("instructions") or "").strip()
+    return prompts.PROJECT_RULES.format(rules=rules) if rules else ""
+
+
 def _count_tests(source: str) -> int:
     return len(re.findall(r"^def test_", source, re.MULTILINE))
 
@@ -140,7 +147,7 @@ def _design(llm: Any, state: AgentState) -> tuple[ProjectSpec, list[str], Usage]
     live = LiveText(live_writer(), "architect", "Design (JSON)")
 
     def design(text: str, usage: Usage | None = None) -> tuple[ProjectSpec, Usage]:
-        system = prompts.SPEC_SYSTEM + prompts.PLUGIN_CATALOG.format(catalog=plugins.catalog() or "(none)")
+        system = prompts.SPEC_SYSTEM + prompts.PLUGIN_CATALOG.format(catalog=plugins.catalog() or "(none)") + _rules(state)
         spec, used = structured(llm, "strong", system, text, ProjectSpec, effort="high", stream=live)
         live.done()
         if usage:
@@ -455,6 +462,7 @@ def _generate_service(
     notes = plugins.prompt_notes(_plugins(state), stack.name)
     if notes:
         system += f"\n\nAlso follow these project rules:\n{notes}"
+    system += _rules(state)
     user = prompts.SERVICE_USER.format(
         prompt=state["prompt"],
         requirements=requirements_text(spec.requirements),
@@ -646,13 +654,11 @@ def reflect(state: AgentState) -> dict[str, Any]:
             if attempt > 1:  # the first repair always happens
                 check_budget(state.get("usage"),
                              scaled_limits(_spec(state), settings.max_heal_safety, settings.max_cost_per_run_usd)[1])
-            progress("reflect", f"Repairing {path} with the {rung} model…")
-            text, usage, box = _llm_repair(llm, rung, state, path, attempt)
+            targets = failing_targets(v["log"], files, _spec(state), path, limit=max(1, min(3, settings.llm_max_parallel)))
+            targets = targets or [path]
+            progress("reflect", f"Repairing {', '.join(targets)} with the {rung} model…")
             agent = f"reflector ({rung})"
-            changed, diagnosis = _parse_repair(text, files)
-            if box is not None:
-                changed = {**box.changes(), **changed}  # staged with write_file, unless the answer repeats it
-                tool_calls = box.calls
+            text, usage, changed, diagnosis, tool_calls = _repair_files(llm, rung, state, targets, attempt)
             dispute = parse_dispute(text)
             if not changed and dispute:
                 changed, diagnosis, agent, more = _settle_dispute(llm, state, *dispute)
@@ -726,6 +732,7 @@ def _llm_repair(llm: Any, role: str, state: AgentState, path: str, attempt: int)
     notes = plugins.prompt_notes(_plugins(state), spec.stack)
     if notes:
         system += f"\n- Also follow these project rules:\n{notes}"
+    system += _rules(state)
     if _opts(state).get("tools", True) and hasattr(llm, "complete_with_tools"):
         box = Toolbox(files, spec, extra=plugins.tools(_plugins(state)) + load_mcp_tools())
         try:
@@ -737,6 +744,47 @@ def _llm_repair(llm: Any, role: str, state: AgentState, path: str, attempt: int)
             log.warning("tool-using repair failed (%s); repairing without tools", exc)
     text, usage = ask(llm, role, system, user, effort="high" if role == "strong" else "low")
     return text, usage, None
+
+
+def _repair_files(llm: Any, rung: str, state: AgentState, targets: list[str], attempt: int
+                  ) -> tuple[str, Usage, dict[str, str], str, list[dict[str, Any]]]:
+    """Repair one file, or several independent ones at the same time (each with its own tools and tests).
+
+    Returns (the first reply, usage, changed files, diagnosis, tool calls)."""
+    files = state["files"]
+
+    def one(path: str) -> tuple[str, Usage, dict[str, str], str, list[dict[str, Any]]]:
+        text, usage, box = _llm_repair(llm, rung, state, path, attempt)
+        changed, diagnosis = _parse_repair(text, files)
+        if box is not None:
+            changed = {**box.changes(), **changed}  # staged with write_file, unless the answer repeats it
+        return text, usage, changed, diagnosis, (box.calls if box is not None else [])
+
+    if len(targets) == 1:
+        return one(targets[0])
+    pool = ThreadPoolExecutor(max_workers=len(targets))
+    try:
+        jobs = [_submit(pool, one, path) for path in targets]
+        results = []
+        for path, job in zip(targets, jobs, strict=True):
+            try:
+                results.append((path, job.result(timeout=3 * settings.llm_call_deadline_s)))
+            except LLMError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - one target failing must not lose the others' repairs
+                log.warning("repair of %s failed: %s", path, exc)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    if not results:
+        raise LLMError("every repair failed")
+    usage, changed, notes, calls = Usage(), {}, [], []
+    for path, (_, used, files_changed, diagnosis, tool_calls) in results:
+        usage.add(used)
+        changed.update(files_changed)
+        calls += tool_calls
+        if diagnosis:
+            notes.append(f"{path}: {diagnosis}")
+    return results[0][1][0], usage, changed, "; ".join(notes), calls
 
 
 def _parse_repair(text: str, files: dict[str, str]) -> tuple[dict[str, str], str]:

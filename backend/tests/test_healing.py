@@ -191,3 +191,23 @@ def test_sandbox_limits_are_not_code_bugs():
     log = "Traceback ...\nRuntimeError: can't start new thread\nTimeoutError: /health did not respond"
     assert classify_error(log) == "sandbox"
     assert problems_in({"gate": "boot", "log": log}) == []
+
+
+def test_several_failing_services_are_targeted_in_one_attempt():
+    from agent.healing import failing_targets
+    from tests.specs import ESCROW
+
+    spec = ProjectSpec.model_validate(ESCROW)
+    rules = (
+        'def test_fund(client):\n    client.post("/milestones/1/fund")\n\n'
+        'def test_bid(client):\n    client.get("/bids/")\n\n'
+        'def test_submit(client):\n    client.post("/milestones/1/submit")\n'
+    )
+    files = {"tests/test_rules.py": rules, "app/services/milestone.py": "", "app/services/bid.py": "",
+             "app/routers/bid.py": ""}
+    log = ("FAILED tests/test_rules.py::test_fund - assert 500 == 200\n"
+           "FAILED tests/test_rules.py::test_bid - assert 500 == 200\n"
+           "FAILED tests/test_rules.py::test_submit - assert 500 == 200\n")
+    # Bid has no actions in this design, so its router failure points at app/services/bid.py (its business logic).
+    assert failing_targets(log, files, spec, "app/services/milestone.py") == ["app/services/milestone.py", "app/services/bid.py"]
+    assert failing_targets(log, files, spec, None, limit=1) == ["app/services/milestone.py"]

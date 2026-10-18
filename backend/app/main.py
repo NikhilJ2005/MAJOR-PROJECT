@@ -164,6 +164,7 @@ class RunRequest(BaseModel):
     plugins_off: list[str] | None = None  # plugins forced off
     auto_plugins: bool = True  # let the Architect and Planner choose plugins
     review_design: bool = False  # wait for the user to approve the design before any code is written
+    instructions: str | None = Field(default=None, max_length=4000)  # project rules every agent follows
 
 
 class Message(BaseModel):
@@ -235,8 +236,12 @@ def start_run(
     options = {"codegen_mode": settings.codegen_mode, **options}
     if project_id is None:
         project_id = store.add_project(user["id"], " ".join(prompt.split()[:6]), options.get("stack", "fastapi"))
+        if options.get("instructions"):
+            store.set_instructions(project_id, options["instructions"])
     elif manager.project_busy(project_id):
         raise HTTPException(status_code=409, detail="this project is already being built; wait for it to finish")
+    rules = (store.project(project_id, user["id"]) or {}).get("instructions")
+    options = {**options, "instructions": rules} if rules else {k: v for k, v in options.items() if k != "instructions"}
     try:
         return manager.start(prompt, options, owner_id=user["id"], project_id=project_id, base_run_id=base_run_id).id
     except RuntimeError as exc:
@@ -256,6 +261,8 @@ def _options(body: RunRequest) -> dict[str, Any]:
         options[key] = names
     options["auto_plugins"] = body.auto_plugins
     options["review_design"] = body.review_design
+    if body.instructions:
+        options["instructions"] = body.instructions
     return options
 
 
@@ -303,6 +310,18 @@ def own_project(project_id: str, user: dict[str, Any]) -> dict[str, Any]:
     if project is None:
         raise HTTPException(status_code=404, detail="project not found")
     return project
+
+
+class ProjectRules(BaseModel):
+    instructions: str = Field(default="", max_length=4000)
+
+
+@app.patch("/api/projects/{project_id}")
+def update_project(project_id: str, body: ProjectRules, user: CurrentUser) -> dict[str, Any]:
+    """Project rules (like a knowledge file): every agent follows them on every later build of this project."""
+    own_project(project_id, user)
+    store.set_instructions(project_id, body.instructions)
+    return own_project(project_id, user)
 
 
 @app.post("/api/projects", status_code=201)
