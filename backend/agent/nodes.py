@@ -33,13 +33,17 @@ from .codegen import plan_files, render_project
 from .config import settings
 from .frontend import UI, UIConfig, check_frontend, default_ui
 from .healing import (
+    best_index,
     classify_error,
     editable,
+    guess_service,
     history_entry,
     locate_failing_file,
+    regressed,
     related_files,
     repair_rung,
     repair_target,
+    scaled_limits,
     should_continue,
 )
 from .ledger import (
@@ -503,7 +507,11 @@ def validate(state: AgentState) -> dict[str, Any]:
     if _opts(state).get("resume") and not state.get("heal_history"):
         ledger.insert(0, entry("validator", "kept fixing the previous version's code",
                                "same design and code; healing starts again from where it stopped"))
+    out: dict[str, Any] = {}
+    if not result.ok and best_index(history) == len(history) - 1:  # the best version so far: remember it
+        out = {"best_files": dict(files), "best_validation": validation}
     return {
+        **out,
         "validation": validation,
         "heal_history": history,
         "bugs": bugs,
@@ -524,13 +532,14 @@ def _keep_healing(state: AgentState) -> tuple[bool, str]:
         attempts = max(len(state.get("heal_history", [])) - 1, 0)
         return (True, f"fixed policy: repair {attempts + 1} of {fixed}") if attempts < fixed else (
             False, f"fixed limit of {fixed} repair attempts reached")
+    safety, budget = scaled_limits(_spec(state), settings.max_heal_safety, settings.max_cost_per_run_usd)
     return should_continue(
         state.get("heal_history", []),
         tokens_used=int((state.get("usage") or {}).get("total_tokens", 0)),
-        token_budget=settings.max_tokens_per_run,
+        token_budget=int(settings.max_tokens_per_run * budget / settings.max_cost_per_run_usd),
         llm_available=get_llm() is not None,
-        safety_limit=settings.max_heal_safety,
-        budget_problem=budget_left(state.get("usage")),
+        safety_limit=safety,
+        budget_problem=budget_left(state.get("usage"), budget),
     )
 
 
@@ -549,6 +558,8 @@ def classify(state: AgentState) -> dict[str, Any]:
     v = state["validation"]
     error_class = classify_error(v["log"])
     path = repair_target(locate_failing_file(v["log"], state["files"], spec), state["files"])
+    if path is None or not editable(path):  # nothing in the log points at the business logic: best guess
+        path = guess_service(v["log"], state["files"], spec) or path
     return {
         "error_class": error_class,
         "validation": {**v, "failing_file": path},
@@ -576,12 +587,26 @@ def reflect(state: AgentState) -> dict[str, Any]:
     v = state["validation"]
     files = state["files"]
     attempt = state.get("iteration", 0) + 1
-    if state.get("error_class") == "sandbox":
-        # The server ran out of threads/processes, not the code: change nothing, wait, validate again.
-        time.sleep(SANDBOX_RETRY_WAIT_S)
-        note = entry("reflector", f"attempt {attempt}: sandbox limit hit; re-running validation",
+    history = state.get("heal_history", [])
+    if history and history[-1].get("transient"):
+        # The machine was busy (sandbox limits, a timeout with no test result): change nothing, wait, test again.
+        busy = sum(1 for h in reversed(history) if h.get("transient"))
+        time.sleep(SANDBOX_RETRY_WAIT_S * busy)
+        note = entry("reflector", f"attempt {attempt}: the machine was busy; testing again unchanged",
                      prompts.ERROR_HINTS["sandbox"], iteration=attempt)
         return {"files": {}, "iteration": attempt, "status": "repaired", "ledger": [note]}
+    rollback: dict[str, str] = {}
+    if regressed(history) and state.get("best_files"):
+        # The last repair made things worse: start again from the best version, with its failures.
+        rollback = {p: c for p, c in state["best_files"].items() if files.get(p) != c}
+        files = {**files, **state["best_files"]}
+        spec = _spec(state)
+        best_v = state.get("best_validation") or v
+        target = repair_target(locate_failing_file(best_v["log"], files, spec), files)
+        if target is None or not editable(target):
+            target = guess_service(best_v["log"], files, spec) or target
+        v = {**best_v, "failing_file": target}
+        state = {**state, "files": files, "validation": v}
     path = v.get("failing_file")
     usage = Usage()
     changed: dict[str, str] = {}
@@ -594,7 +619,8 @@ def reflect(state: AgentState) -> dict[str, Any]:
     if llm is not None and path and rung in ("cheap", "strong"):
         try:
             if attempt > 1:  # the first repair always happens
-                check_budget(state.get("usage"))
+                check_budget(state.get("usage"),
+                             scaled_limits(_spec(state), settings.max_heal_safety, settings.max_cost_per_run_usd)[1])
             progress("reflect", f"Repairing {path} with the {rung} model…")
             text, usage, box = _llm_repair(llm, rung, state, path, attempt)
             agent = f"reflector ({rung})"
@@ -616,11 +642,13 @@ def reflect(state: AgentState) -> dict[str, Any]:
             diagnosis = (diagnosis + "; " if diagnosis else "") + f"restored {', '.join(changed)} from verified templates"
     if not changed:
         diagnosis = diagnosis or "no repair candidate found"
+    if rollback:
+        diagnosis = f"rolled back the previous repair (it made things worse); {diagnosis}"
 
     out: dict[str, Any] = {
-        "files": changed,
+        "files": {**rollback, **changed},
         "iteration": attempt,
-        "status": "repaired" if changed else "repair_failed",
+        "status": "repaired" if changed or rollback else "repair_failed",
         "ledger": [
             entry(
                 agent,
@@ -747,10 +775,16 @@ def failure_report(state: AgentState) -> dict[str, Any]:
         f"- Suspected file: `{v.get('failing_file')}`\n\n## Last log\n\n```\n{v['log'][-3000:]}\n```\n"
     )
     stop = entry("circuit_breaker", "stopped healing; produced diagnostic report", reason)
-    final = {**state, "ledger": [*state.get("ledger", []), stop]}
+    shipped: dict[str, str] = {}
+    if regressed(state.get("heal_history", [])) and state.get("best_files"):
+        # Ship the best version reached, not whatever the last repair left.
+        shipped = {p: c for p, c in state["best_files"].items() if state["files"].get(p) != c}
+        stop["rationale"] += "; the zip holds the best version reached, not the last attempt"
+    final = {**state, "files": {**state["files"], **shipped}, "ledger": [*state.get("ledger", []), stop]}
     path = write_artifact(final, _spec(state).project_name,
                           {"VIBESTACK_LEDGER.md": ledger_markdown(final), "VIBESTACK_FAILURE.md": report})
-    return {"artifact_path": path, "report": report, "stop_reason": reason, "status": "failed", "ledger": [stop]}
+    return {"artifact_path": path, "report": report, "stop_reason": reason, "status": "failed", "ledger": [stop],
+            **({"files": shipped} if shipped else {})}
 
 
 __all__ = [

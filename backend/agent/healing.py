@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from itertools import pairwise
 
 from .state import ProjectSpec
 
@@ -51,6 +52,24 @@ def repair_target(path: str | None, files: dict[str, str]) -> str | None:
     m = re.match(r"app/(?:routers|models|schemas)/(\w+\.py)$", path)
     service = f"app/services/{m.group(1)}" if m else None
     return service if service in files else path
+
+
+def guess_service(log: str, files: dict[str, str], spec: ProjectSpec) -> str | None:
+    """When nothing in the log points at a file: the business-logic file whose entity the log mentions most."""
+    counts = {}
+    for e in spec.entities:
+        path = f"app/services/{e.module}.py"
+        if path in files and spec.actions_for(e):
+            counts[path] = log.count(f"/{e.table}") + log.count(e.name)
+    best = max(counts, key=counts.get, default=None)
+    return best if best and counts[best] > 0 else None
+
+
+def scaled_limits(spec: ProjectSpec, safety: int, budget_usd: float) -> tuple[int, float]:
+    """Bigger apps get more repairs and more budget: the settings are for an app of up to 6 tables."""
+    services = sum(1 for e in spec.entities if spec.actions_for(e))
+    extra_tables = max(0, len(spec.entities) - 6)
+    return max(safety, min(30, 6 + 2 * services)), budget_usd * (1 + extra_tables / 6)
 
 
 def locate_failing_file(log: str, files: dict[str, str], spec: ProjectSpec) -> str | None:
@@ -131,18 +150,23 @@ def related_files(path: str, files: dict[str, str]) -> list[str]:
 # After every validation we store a small record (see `history_entry`); the
 # rules below read that history:
 #
-#   1. progress (a later gate reached, fewer failing tests, or a never-seen error
-#      because the previous one got fixed) -> keep going,
-#      and drop back to the cheap model for the next (new) problem
+#   1. progress -> keep going, and drop back to the cheap model for the next (new) problem. Progress is
+#      a better result than ever before, a better result than the attempt before (after a bad repair was
+#      rolled back), some failing tests fixed, or a never-seen error because the previous one got fixed
 #   2. no progress -> climb one rung of the ladder: cheap -> strong -> templates
 #   3. top rung tried without progress                 -> stop
-#   4. code back to an earlier, different version (circles) -> stop
-#   5. token budget spent                               -> stop
-#   6. MAX_HEAL_SAFETY attempts (a seatbelt, not the rule) -> stop
+#   4. the same change between two versions happens again (circles) -> stop
+#   5. budget spent                                     -> stop
+#   6. the safety limit of attempts (a seatbelt, not the rule; it grows with the app) -> stop
+# A validation that failed because the machine was busy (sandbox limits, a gate timeout without any test
+# result) is "transient": it is retried without counting as a stall, at most MAX_TRANSIENT times in a row.
+# A repair that makes things worse is rolled back to the best version (nodes.reflect), and a run that
+# stops ships its best version, not its last.
 
 GATE_ORDER = ["static", "import", "boot", "tests"]  # the order validation runs them
 LADDER_WITH_LLM = ["cheap", "strong", "template"]
 LADDER_OFFLINE = ["template"]
+MAX_TRANSIENT = 3
 
 
 def failing_count(log: str) -> int | None:
@@ -151,6 +175,19 @@ def failing_count(log: str) -> int | None:
     if counts:
         return sum(counts)
     return 0 if re.search(r"\d+ passed", log) else None
+
+
+def failed_tests(log: str) -> list[str]:
+    """The ids of the failing tests in a pytest log ("tests/test_rules.py::test_refund"), sorted."""
+    return sorted(set(re.findall(r"^(?:FAILED|ERROR) (tests/[\w/]+\.py::[\w\[\]\-. ]+?)(?: - |$)", log, re.MULTILINE)))
+
+
+def transient(validation: dict) -> bool:
+    """The machine was busy, not the code broken: sandbox limits, or a gate timeout with no test result at all."""
+    log = validation.get("log", "")
+    if SANDBOX_LIMIT.search(log):
+        return True
+    return "TimeoutError" in log and failing_count(log) is None and validation.get("gate") in ("boot", "tests")
 
 
 def error_signature(gate: str, log: str) -> str:
@@ -171,12 +208,15 @@ def fingerprint(files: dict[str, str]) -> str:
 def history_entry(validation: dict, files: dict[str, str]) -> dict:
     """What we remember about one validation."""
     log = validation.get("log", "")
+    tests_gate = validation.get("gate") == "tests"
     return {
         "ok": validation.get("ok", False),
         "gate": validation.get("gate", ""),
-        "failing": failing_count(log) if validation.get("gate") == "tests" else None,
+        "failing": failing_count(log) if tests_gate else None,
+        "failed_tests": failed_tests(log) if tests_gate else [],
         "signature": error_signature(validation.get("gate", ""), log),
         "fingerprint": fingerprint(files),
+        "transient": transient(validation),
     }
 
 
@@ -187,20 +227,58 @@ def score(entry: dict) -> tuple[int, int]:
     return gate, -failing
 
 
+def _real(history: list[dict]) -> list[dict]:
+    return [h for h in history if not h.get("transient")]
+
+
 def made_progress(entry: dict, earlier: list[dict]) -> bool:
-    """Better than everything before it, or a brand-new error (so the previous one was fixed)."""
+    """Did this validation move healing forward compared with the ones before it?"""
+    earlier = _real(earlier)
     if not earlier:
         return True
     if score(entry) > max(score(h) for h in earlier):
-        return True
+        return True  # the best result so far
+    previous = earlier[-1]
+    if score(entry) > score(previous):
+        return True  # better than the attempt before (e.g. a bad repair was rolled back and improved on)
+    if score(entry) < score(previous):
+        return False  # worse: never progress (the repair is rolled back)
+    fixed = set(previous.get("failed_tests") or []) - set(entry.get("failed_tests") or [])
+    if fixed and entry["gate"] == previous["gate"] == "tests":
+        return True  # as many failures, but some old ones are fixed: a different problem now
     return entry["signature"] not in {h["signature"] for h in earlier}
 
 
 def stalls(history: list[dict]) -> int:
-    """How many attempts in a row made no progress."""
+    """How many attempts in a row made no progress (transient validations do not count either way)."""
     count = 0
     for i, entry in enumerate(history):
+        if entry.get("transient"):
+            continue
         count = 0 if made_progress(entry, history[:i]) else count + 1
+    return count
+
+
+def best_index(history: list[dict]) -> int | None:
+    """The validation with the best result (the earliest one on ties), ignoring transient ones."""
+    real = [i for i, h in enumerate(history) if not h.get("transient")]
+    if not real:
+        return None
+    return max(real, key=lambda i: (score(history[i]), -i))
+
+
+def regressed(history: list[dict]) -> bool:
+    """The last (real) validation is worse than the best one: the last repair should be rolled back."""
+    best = best_index(history)
+    return bool(history) and best is not None and not history[-1].get("transient") and score(history[-1]) < score(history[best])
+
+
+def trailing_transient(history: list[dict]) -> int:
+    count = 0
+    for entry in reversed(history):
+        if not entry.get("transient"):
+            break
+        count += 1
     return count
 
 
@@ -229,11 +307,15 @@ def should_continue(
         return False, budget_problem
     if attempts > 0 and tokens_used >= token_budget:
         return False, f"token budget used up ({tokens_used} of {token_budget})"
-    last = history[-1]
-    # Circles: the code is back to a version before the previous one. (A repair that changed
-    # nothing is just a stall: it climbs the ladder below instead of ending the run.)
-    if any(h["fingerprint"] == last["fingerprint"] for h in history[:-2]) and history[-2]["fingerprint"] != last["fingerprint"]:
-        return False, "going in circles: the code is back to an earlier version"
+    if trailing_transient(history) > MAX_TRANSIENT:
+        return False, "the server kept running out of time or resources while testing (not a bug in your app); try again"
+    if history[-1].get("transient"):
+        return True, "the machine was busy: testing again"
+    # Circles: the same change between two versions happens again. (Going back to an earlier version once
+    # is fine, e.g. after a bad repair was rolled back; a repair that changed nothing is just a stall.)
+    steps = [(a["fingerprint"], b["fingerprint"]) for a, b in pairwise(history) if a["fingerprint"] != b["fingerprint"]]
+    if steps and history[-2]["fingerprint"] != history[-1]["fingerprint"] and steps[-1] in steps[:-1]:
+        return False, "going in circles: the same change keeps coming back"
     rung = repair_rung(history, llm_available)
     if rung is None:
         tried = " -> ".join(LADDER_WITH_LLM if llm_available else LADDER_OFFLINE)

@@ -67,7 +67,13 @@ class Settings:
     # Empty sends nothing (the model's default).
     strong_reasoning: str = field(default_factory=lambda: os.environ.get("STRONG_REASONING", "high"))
     cheap_reasoning: str = field(default_factory=lambda: os.environ.get("CHEAP_REASONING", "low"))
-    llm_max_retries: int = field(default_factory=lambda: _env_int("LLM_MAX_RETRIES", 6))
+    # Retries inside one call (429s, server errors). Kept low: the fallback model is the next try, and a
+    # call that waits on retries holds one of the LLM_MAX_PARALLEL slots.
+    llm_max_retries: int = field(default_factory=lambda: _env_int("LLM_MAX_RETRIES", 2))
+    # A whole model call (all its retries and every streamed piece) may take this long, then the fallback
+    # model is tried. Stops one slow or stuck call from freezing a build.
+    llm_call_deadline_s: int = field(default_factory=lambda: _env_int("LLM_CALL_DEADLINE_S", 420))
+    llm_read_timeout_s: int = field(default_factory=lambda: _env_int("LLM_READ_TIMEOUT_S", 240))
 
     # "llm" lets the model write entity files; "template" is fully deterministic.
     codegen_mode: str = field(default_factory=lambda: os.environ.get("CODEGEN_MODE", "llm"))

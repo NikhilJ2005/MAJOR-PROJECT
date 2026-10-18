@@ -445,6 +445,8 @@ class AgentState(TypedDict, total=False):
     template_files: dict[str, str]
     validation: Validation
     iteration: int
+    best_files: dict[str, str]  # the version with the best validation so far (rolled back to after a bad repair)
+    best_validation: dict[str, Any]
     heal_history: list[dict[str, Any]]  # one entry per validation, read by healing.should_continue
     bugs: list[dict[str, Any]]  # every problem found during the run, and whether it was fixed
     review: list[dict[str, Any]]  # low-severity static-check notes

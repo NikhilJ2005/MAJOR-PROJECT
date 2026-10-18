@@ -10,6 +10,7 @@ Responsibilities:
 
 from __future__ import annotations
 
+import contextvars
 import inspect
 import json
 import logging
@@ -154,8 +155,12 @@ def model_options(model: str, reasoning: str) -> dict[str, Any]:
     - Gemini 4 ignores sampling settings such as temperature, so none is sent; older models get 0.1.
     - Thinking counts against the output limit, so no low max_tokens is set.
     """
+    import httpx
+
     options: dict[str, Any] = {
-        "timeout": 300,
+        # Waiting for the next bytes may take a while (a thinking model says nothing until it has thought),
+        # connecting may not. The whole call is also capped by LLM_CALL_DEADLINE_S (with_deadline).
+        "timeout": httpx.Timeout(settings.llm_read_timeout_s, connect=15.0),
         # The OpenAI SDK retries rate limits (429) and server errors with exponential
         # backoff and honours the provider's retry-after header.
         "max_retries": settings.llm_max_retries,
@@ -166,6 +171,31 @@ def model_options(model: str, reasoning: str) -> dict[str, Any]:
     if not model.startswith("gemini-4"):
         options["temperature"] = 0.1
     return options
+
+
+def with_deadline(fn: Callable[[], Any], seconds: float, what: str) -> Any:
+    """Run fn, but give up after `seconds` (TimeoutError), saying every 30 s that we are still waiting.
+
+    The call runs in its own thread (with this thread's context, so live streaming still works). A call
+    that misses its deadline is abandoned, not killed: its read timeout ends it soon after.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import TimeoutError as Late
+
+    from .ledger import progress
+
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="llm")
+    future = pool.submit(contextvars.copy_context().run, fn)
+    pool.shutdown(wait=False)
+    started = time.monotonic()
+    while True:
+        left = seconds - (time.monotonic() - started)
+        if left <= 0:
+            raise TimeoutError(f"{what} took longer than {seconds:.0f}s")
+        try:
+            return future.result(timeout=min(30.0, left))
+        except Late:
+            progress("llm", f"Still waiting for {what} ({time.monotonic() - started:.0f}s)…")
 
 
 class ProviderLLM:
@@ -201,10 +231,14 @@ class ProviderLLM:
             if effort and "reasoning_effort" in model_options(name, effort):
                 chat = chat.bind(reasoning_effort=effort)  # this job's thinking level
             t0 = time.monotonic()
-            try:
+
+            def call(chat: Any = chat) -> Any:
                 with self._slots:  # at most LLM_MAX_PARALLEL calls at once
-                    msg = self._stream(chat, system, user, stream) if stream else chat.invoke(
+                    return self._stream(chat, system, user, stream) if stream else chat.invoke(
                         [("system", system), ("user", user)])
+
+            try:
+                msg = with_deadline(call, settings.llm_call_deadline_s, f"the {role} model ({name})")
             except Exception as exc:  # noqa: BLE001 - any provider failure triggers fallback
                 log.warning("model %s failed after %.1fs: %s", name, time.monotonic() - t0, exc)
                 last = exc
@@ -239,10 +273,18 @@ class ProviderLLM:
         answer_now = chat.bind_tools(schemas, tool_choice="none")
         messages: list[Any] = [SystemMessage(system), HumanMessage(user)]
         usage = Usage()
+        deadline = time.monotonic() + 2 * settings.llm_call_deadline_s  # the whole repair, tools included
         for _ in range(toolbox.max_calls + 2):  # a safety net in case a provider ignores tool_choice
             model = answer_now if len(toolbox.calls) >= toolbox.max_calls else with_tools
-            with self._slots:
-                msg = model.invoke(messages)
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("the tool-using repair took too long")
+
+            def call(model: Any = model) -> Any:
+                with self._slots:
+                    return model.invoke(messages)
+
+            msg = with_deadline(call, min(left, settings.llm_call_deadline_s), f"the {role} model ({name})")
             usage.add(_usage(name, msg))
             messages.append(msg)
             if not msg.tool_calls:
@@ -298,18 +340,23 @@ def set_llm(llm: LLM | None) -> None:
     _overridden = True
 
 
-def budget_left(state_usage: dict[str, Any] | None) -> str | None:
-    """Why the run's budget is used up (money first, then tokens), or None while there is budget left."""
+def budget_left(state_usage: dict[str, Any] | None, budget_usd: float | None = None) -> str | None:
+    """Why the run's budget is used up (money first, then tokens), or None while there is budget left.
+
+    budget_usd: this run's money budget (healing.scaled_limits gives bigger apps more); tokens scale with it.
+    """
     usage = state_usage or {}
+    budget = budget_usd or settings.max_cost_per_run_usd
+    max_tokens = int(settings.max_tokens_per_run * budget / settings.max_cost_per_run_usd)
     cost, tokens = float(usage.get("cost_usd", 0.0)), int(usage.get("total_tokens", 0))
-    if cost >= settings.max_cost_per_run_usd:
-        return f"cost budget used up (${cost:.2f} of ${settings.max_cost_per_run_usd:.2f})"
-    if tokens >= settings.max_tokens_per_run:
-        return f"token budget used up ({tokens} of {settings.max_tokens_per_run})"
+    if cost >= budget:
+        return f"cost budget used up (${cost:.2f} of ${budget:.2f})"
+    if tokens >= max_tokens:
+        return f"token budget used up ({tokens} of {max_tokens})"
     return None
 
 
-def check_budget(state_usage: dict[str, Any] | None) -> None:
-    reason = budget_left(state_usage)
+def check_budget(state_usage: dict[str, Any] | None, budget_usd: float | None = None) -> None:
+    reason = budget_left(state_usage, budget_usd)
     if reason:
         raise BudgetExceeded(reason)

@@ -164,7 +164,7 @@ def test_sandbox_limit_is_retried_not_repaired(monkeypatch):
     assert values["status"] == "succeeded"
     assert values["error_class"] == "sandbox"
     retry = next(e for e in values["ledger"] if e["agent"] == "reflector")
-    assert "sandbox limit" in retry["action"] and "diff" not in retry
+    assert "machine was busy" in retry["action"] and "diff" not in retry
     assert values["bugs"] == []
 
 
@@ -207,3 +207,26 @@ def test_rule_tests_and_business_logic_run_at_the_same_time(monkeypatch):
     values = _run(initial_state("blog", {"codegen_mode": "llm"}), FakeLLM())
     assert values["status"] == "succeeded"
     assert inside["most"] >= 2
+
+
+def test_a_repair_that_makes_things_worse_is_rolled_back_and_the_best_version_ships(offline):
+    from agent import nodes
+    from agent.healing import history_entry
+
+    good = {"app/services/post.py": "GOOD = 1\n", "app/main.py": "x"}
+    broken = {"app/services/post.py": "BROKEN = (\n", "app/main.py": "x"}
+    best_v = {"ok": False, "gate": "tests", "log": "FAILED tests/test_rules.py::test_a - assert 1\n== 1 failed, 9 passed ==",
+              "failing_file": "app/services/post.py"}
+    worse_v = {"ok": False, "gate": "import", "log": "SyntaxError: '(' was never closed", "failing_file": None}
+    state = {
+        "spec": {**BLOG_SPEC, "stack": "fastapi"}, "options": {}, "files": broken, "template_files": {},
+        "validation": worse_v, "best_files": good, "best_validation": best_v, "iteration": 2, "run_id": "rollback-test",
+        "heal_history": [history_entry(best_v, good), history_entry(worse_v, broken)], "ledger": [],
+    }
+    out = nodes.reflect(state)
+    assert out["files"]["app/services/post.py"] == "GOOD = 1\n"
+    assert "rolled back" in out["ledger"][0]["rationale"]
+
+    report = nodes.failure_report(state)
+    assert report["files"]["app/services/post.py"] == "GOOD = 1\n"
+    assert "best version" in report["ledger"][0]["rationale"]
