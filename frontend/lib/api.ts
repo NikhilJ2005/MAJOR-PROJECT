@@ -243,6 +243,7 @@ export const api = {
   project: (id: string) => request<ProjectDetail>(`/api/projects/${id}`),
   message: (id: string, prompt: string, mode: "edit" | "fix" = "edit") =>
     request<{ run_id: string; project_id: string }>(`/api/projects/${id}/messages`, post({ prompt, mode, review_design: mode === "edit" })),
+  cancel: (id: string) => request<{ status: string }>(`/api/runs/${id}/cancel`, { method: "POST" }),
   approve: (id: string, body: { spec?: Spec; instruction?: string }) => request<{ status: string }>(`/api/runs/${id}/approve`, post(body)),
   restore: (id: string, run_id: string) => request<{ current_run_id: string }>(`/api/projects/${id}/current`, post({ run_id })),
   file: async (id: string, path: string) => {

@@ -79,6 +79,12 @@ class RunQueue:
     def events(self, run_id: str, since: int = 0) -> list[dict[str, Any]]:
         return [json.loads(e) for e in self.r.lrange(f"{self.p}events:{run_id}", since, -1)]
 
+    def request_cancel(self, run_id: str) -> None:
+        self.r.set(f"{self.p}cancel:{run_id}", "1", ex=DAY)
+
+    def cancel_requested(self, run_id: str) -> bool:
+        return bool(self.r.exists(f"{self.p}cancel:{run_id}"))
+
     def known(self, run_id: str) -> bool:
         return bool(self.r.exists(f"{self.p}status:{run_id}"))
 

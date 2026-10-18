@@ -345,7 +345,10 @@ def generate(state: AgentState) -> dict[str, Any]:
                                 "unchanged by the edit, so their code (and its fixes) is reused"))
 
     jobs: dict[str, Any] = {}
-    with ThreadPoolExecutor(max_workers=max(2, settings.llm_max_parallel)) as pool:
+    # Not a `with` block: leaving it would wait for a job that is stuck. Every model call has its own
+    # deadline, and JOB_TIMEOUT is the backstop for a whole job (call, syntax fix, calibration run).
+    pool = ThreadPoolExecutor(max_workers=max(2, settings.llm_max_parallel))
+    try:
         if model is not None and state.get("rule_tests_wanted"):
             test_ledger: list[dict[str, Any]] = []
             test_usage = Usage()
@@ -367,7 +370,7 @@ def generate(state: AgentState) -> dict[str, Any]:
             ledger.append(entry("code_generator", "no business logic to write",
                                 "no custom actions: the verified templates are the whole backend"))
         for done, e in enumerate([e for e in todo if e.name in jobs], 1):
-            new_files, rationale, usage = jobs[e.name].result()
+            new_files, rationale, usage = _result(jobs[e.name], ({}, "took too long; stubs kept", Usage()))
             progress("generate", f"Wrote {e.name} ({done}/{len(todo)})")
             total.add(usage)
             files.update(new_files)
@@ -377,7 +380,7 @@ def generate(state: AgentState) -> dict[str, Any]:
                                 rationale, files=sorted(new_files), tokens=usage.total_tokens, model=model_names(usage)))
         if llm is not None:
             if "ui" in jobs:
-                ui, rationale, usage = jobs["ui"].result()
+                ui, rationale, usage = _result(jobs["ui"], (None, "took too long; kept the default look", Usage()))
             else:
                 ui, rationale, usage = base_files[UI], "same entities as before: the app keeps its look", Usage()
             total.add(usage)
@@ -388,9 +391,11 @@ def generate(state: AgentState) -> dict[str, Any]:
                                 tokens=usage.total_tokens, model=model_names(usage)))
         rule_tests = {}
         if "rules" in jobs:
-            rule_tests = jobs["rules"].result()
+            rule_tests = _result(jobs["rules"], {})
             ledger.extend(test_ledger)
             total.add(test_usage)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
     out: dict[str, Any] = {"status": "generated", "iteration": 0, "ledger": ledger}
     if rule_tests.get(RULE_TESTS) and llm is None and spec.actions:
@@ -410,6 +415,17 @@ def generate(state: AgentState) -> dict[str, Any]:
     if total.calls:
         out["usage"] = total.as_state()
     return out
+
+
+def _result(job: Any, default: Any) -> Any:
+    """A parallel job's result, or `default` when it is still not done after JOB_TIMEOUT (never wait forever)."""
+    from concurrent.futures import TimeoutError as Late
+
+    try:
+        return job.result(timeout=3 * settings.llm_call_deadline_s)
+    except Late:
+        log.warning("a code generation job missed its deadline; continuing without it")
+        return default
 
 
 def _design_ui(llm: Any, state: AgentState, spec: ProjectSpec) -> tuple[str | None, str, Usage]:
@@ -457,6 +473,15 @@ def _generate_service(
     body = parse_file_blocks(text).get(path, "")
     m = re.search(r"RATIONALE:\s*(.+)", text)
     rationale = m.group(1).strip() if m else "business logic written"
+    if not body.strip() and "### FILE:" in text:
+        # The reply was cut off before the file ended (an output limit): ask once more for a compact version.
+        try:
+            text, more = ask(llm, "strong", system, user + prompts.CUT_OFF_RETRY, effort="low")
+            usage.add(more)
+            body = parse_file_blocks(text).get(path, "")
+            rationale = "the first reply was cut off, so it was asked again; " + rationale
+        except LLMError:
+            pass
     if body.strip():
         body, note = _fix_syntax(llm, path, body, usage)
         rationale += note

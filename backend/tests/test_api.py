@@ -202,3 +202,26 @@ def test_design_review_pauses_before_code_and_continues_on_approval(fake_llm):
         assert any(f["name"] == "subtitle" for f in snap["spec"]["entities"][0]["fields"])
         assert any(e["action"] == "you edited and approved the design" for e in snap["ledger"])
         assert client.post(f"/api/runs/{run_id}/approve", json={}, headers=me).status_code == 409
+
+
+def test_runs_can_be_stopped_and_have_a_deadline(fake_llm, monkeypatch):
+    import dataclasses
+
+    from app import runs
+    from app.main import app
+
+    with TestClient(app) as client:
+        me = _login(client)
+        # A run waiting at the design review stops at once.
+        run_id = client.post("/api/runs", json={"prompt": "A blog with posts and comments", "review_design": True},
+                             headers=me).json()["run_id"]
+        _wait(client, run_id, {"awaiting_approval"}, me)
+        assert client.post(f"/api/runs/{run_id}/cancel", headers=me).status_code == 200
+        assert _wait(client, run_id, {"failed", "succeeded", "error"}, me)["status"] == "failed"
+        assert client.post(f"/api/runs/{run_id}/cancel", headers=me).status_code == 409
+
+        # A build past its deadline stops after the agent working now, and keeps what it has.
+        monkeypatch.setattr(runs, "settings", dataclasses.replace(runs.settings, run_deadline_s=0))
+        run_id = client.post("/api/runs", json={"prompt": "A blog with posts and comments"}, headers=me).json()["run_id"]
+        snap = _wait(client, run_id, {"failed", "succeeded", "error"}, me)
+        assert snap["status"] == "failed" and snap["spec"]  # the design made before the stop is kept

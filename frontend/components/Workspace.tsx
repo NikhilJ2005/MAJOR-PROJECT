@@ -93,6 +93,14 @@ export function Workspace({ projectId, onHome }: { projectId: string; onHome: ()
             </button>
           ))}
           <div className="ml-auto flex items-center gap-2">
+            {running && (
+              <button
+                onClick={() => confirm("Stop this build? The last finished step is kept.") && api.cancel(running.run_id).then(live.refresh, () => {})}
+                className="rounded-lg border border-ink-700 px-3 py-1.5 text-sm text-ink-300 hover:border-rose-400 hover:text-rose-200"
+              >
+                Stop
+              </button>
+            )}
             <DeployButton
               projectId={projectId}
               currentRunId={project.current_run_id}

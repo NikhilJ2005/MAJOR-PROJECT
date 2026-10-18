@@ -121,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     state = initial_state(args.prompt, options, spec)
     graph = build_graph()
-    config = {"configurable": {"thread_id": state["run_id"]}}
+    config = {"configurable": {"thread_id": state["run_id"]}, "recursion_limit": 130}
     final: dict[str, Any] = {}
     for update in graph.stream(state, config, stream_mode="updates"):
         for node, delta in update.items():

@@ -259,6 +259,17 @@ def _options(body: RunRequest) -> dict[str, Any]:
     return options
 
 
+@app.post("/api/runs/{run_id}/cancel")
+def cancel_run(run_id: str, user: CurrentUser) -> dict[str, str]:
+    """Stop a build: it ends after the agent working now and keeps the last finished step."""
+    own_run(run_id, user)
+    try:
+        manager.cancel(run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"status": "stopping"}
+
+
 @app.post("/api/runs/{run_id}/approve")
 def approve_design(run_id: str, body: Approval, user: CurrentUser) -> dict[str, str]:
     """Continue a run that waits at the design review."""

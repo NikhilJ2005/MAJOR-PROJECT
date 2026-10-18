@@ -96,6 +96,11 @@ Step 2, design:
   must be covered.
 - Leave "stack" empty: it is filled in for you. project_name is short snake_case."""
 
+CUT_OFF_RETRY = """
+
+Your previous reply was cut off before the end of the file. Reply again with the complete file in one
+### FILE block: keep comments and docstrings short, and do not repeat the stubs' explanations."""
+
 PLUGIN_CATALOG = """
 - "plugins": pick from this catalog only the ones this app clearly needs, each with a one-sentence reason
   (the Planner adds safety checks itself):

@@ -52,8 +52,11 @@ def configured_servers() -> list[dict[str, Any]]:
 
 def _run(coro_fn: Any, *args: Any) -> Any:
     """Run an async function to completion in a fresh thread and event loop."""
-    with ThreadPoolExecutor(max_workers=1) as pool:
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
         return pool.submit(asyncio.run, coro_fn(*args)).result(timeout=TIMEOUT_S)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)  # a stuck server must not hold up the repair
 
 
 def _client(server: dict[str, Any]) -> Any:

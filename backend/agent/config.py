@@ -73,6 +73,7 @@ class Settings:
     # A whole model call (all its retries and every streamed piece) may take this long, then the fallback
     # model is tried. Stops one slow or stuck call from freezing a build.
     llm_call_deadline_s: int = field(default_factory=lambda: _env_int("LLM_CALL_DEADLINE_S", 420))
+    run_deadline_s: int = field(default_factory=lambda: _env_int("RUN_DEADLINE_S", 3600))  # a whole build
     llm_read_timeout_s: int = field(default_factory=lambda: _env_int("LLM_READ_TIMEOUT_S", 240))
 
     # "llm" lets the model write entity files; "template" is fully deterministic.

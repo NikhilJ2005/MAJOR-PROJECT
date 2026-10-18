@@ -41,6 +41,7 @@ class Run:
     events: list[dict[str, Any]] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
     worker: threading.Thread | None = None
+    cancel: threading.Event = field(default_factory=threading.Event)
     queue: RunQueue | None = None  # set: events and status live in Redis, shared by every process
 
     @property
@@ -91,7 +92,33 @@ class RunManager:
             log.warning("RUN_QUEUE=redis without Postgres: web and workers only share runs on one machine")
 
     def _config(self, run_id: str) -> dict[str, Any]:
-        return {"configurable": {"thread_id": run_id}}
+        # 3 graph steps per repair; set explicitly so a long healing run never hits LangGraph's step limit.
+        return {"configurable": {"thread_id": run_id}, "recursion_limit": 40 + 3 * 30}
+
+    def cancel(self, run_id: str) -> None:
+        """Stop a run: it ends after the agent working now (a run waiting for approval ends at once)."""
+        record = self.store.run(run_id)
+        if record is None or record["status"] != "running":
+            raise ValueError("this run is not running")
+        run = self.get_run(run_id)
+        if self.waiting_for_approval(run_id) and not (run and run.worker and run.worker.is_alive()):
+            values = self.graph.get_state(self._config(run_id)).values
+            self.store.finish_run(run_id, "failed", values or {})
+            if run is not None:
+                run.status = "failed"
+                run.emit({"type": "status", "status": "failed"})
+            return
+        if run is not None:
+            run.cancel.set()
+        if self.queue is not None:
+            self.queue.request_cancel(run_id)
+
+    def _stop_reason(self, run: Run, started: float) -> str | None:
+        if run.cancel.is_set() or (self.queue is not None and self.queue.cancel_requested(run.id)):
+            return "stopped by you"
+        if time.monotonic() - started > settings.run_deadline_s:
+            return f"the build took longer than {settings.run_deadline_s // 60} minutes"
+        return None
 
     def active_count(self) -> int:
         if self.queue is not None and not self.executes:
@@ -244,8 +271,12 @@ class RunManager:
 
     def _execute(self, run: Run, graph_input: Any) -> None:
         config = self._config(run.id)
+        started, values, stopped = time.monotonic(), None, None
         try:
             for mode, update in self.graph.stream(graph_input, config, stream_mode=["updates", "custom"]):
+                stopped = self._stop_reason(run, started)
+                if stopped:
+                    break
                 if mode == "custom":
                     if update.get("kind") == "stream":  # text a model is writing right now (agent.ledger.LiveText)
                         run.emit({"type": "stream", "agent": update.get("agent"), "label": update.get("label"),
@@ -272,18 +303,25 @@ class RunManager:
                         }
                     )
             values = self.graph.get_state(config).values
-            if self.waiting_for_approval(run.id):
+            if stopped:
+                run.status = "failed"
+                run.emit({"type": "error", "message": f"Stopped: {stopped}. The last finished step is kept."})
+            elif self.waiting_for_approval(run.id):
                 run.status = WAITING
                 run.emit({"type": "status", "status": WAITING})
                 return  # not finished: the user approves the design, then approve() continues it
-            run.status = values.get("status", "succeeded")
-            if run.status not in TERMINAL:
-                run.status = "failed"
+            else:
+                run.status = values.get("status", "succeeded")
+                if run.status not in TERMINAL:
+                    run.status = "failed"
         except Exception as exc:  # any crash is reported to the UI instead of killing the worker
             log.exception("run %s crashed", run.id)
             run.status = "error"
             run.emit({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
-            values = self.graph.get_state(config).values
+            try:
+                values = self.graph.get_state(config).values
+            except Exception:  # noqa: BLE001 - the run is still recorded as finished below
+                values = None
         self.store.finish_run(run.id, run.status, values or {})
         run.emit({"type": "status", "status": run.status})
 
