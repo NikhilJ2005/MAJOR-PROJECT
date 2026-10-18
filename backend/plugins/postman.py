@@ -3,6 +3,14 @@
 import json
 
 DESCRIPTION = "Adds postman_collection.json so testers can try every endpoint in Postman"
+WHEN = "people will call the API by hand (testers, QA, partner developers)"
+KEYWORDS = ("postman", "qa team", "api testing", "manual testing")
+
+
+def wanted(spec):
+    if len(spec.actions) >= 3:
+        return f"{len(spec.actions)} custom endpoints are easiest to try by hand in Postman"
+    return None
 
 
 def extra_files(spec) -> dict[str, str]:

@@ -154,7 +154,9 @@ class RunRequest(BaseModel):
     prompt: str = Field(min_length=10, max_length=6000)
     stack: Literal["fastapi", "flask", "django"] = "fastapi"
     codegen_mode: str | None = Field(default=None, pattern="^(llm|template)$")
-    plugins: list[str] | None = None  # None: the server's default plugins
+    plugins: list[str] | None = None  # plugins forced on (the agents choose the rest)
+    plugins_off: list[str] | None = None  # plugins forced off
+    auto_plugins: bool = True  # let the Architect and Planner choose plugins
 
 
 class Message(BaseModel):
@@ -226,11 +228,16 @@ def start_run(
 
 def _options(body: RunRequest) -> dict[str, Any]:
     options: dict[str, Any] = {"stack": body.stack, "codegen_mode": body.codegen_mode or settings.codegen_mode}
-    if body.plugins is not None:
-        unknown = set(body.plugins) - {p["name"] for p in plugins.describe()}
+    known = {p["name"] for p in plugins.describe()}
+    for key in ("plugins", "plugins_off"):
+        names = getattr(body, key)
+        if names is None:
+            continue
+        unknown = set(names) - known
         if unknown:
             raise HTTPException(status_code=422, detail=f"unknown plugins: {', '.join(sorted(unknown))}")
-        options["plugins"] = body.plugins
+        options[key] = names
+    options["auto_plugins"] = body.auto_plugins
     return options
 
 

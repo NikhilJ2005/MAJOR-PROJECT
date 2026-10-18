@@ -104,7 +104,8 @@ export type Snapshot = {
   has_draft?: boolean;
 };
 
-export type PluginInfo = { name: string; description: string; hooks: string[]; default: boolean };
+export type PluginInfo = { name: string; description: string; hooks: string[]; default: boolean; when?: string; always?: boolean };
+export type PluginChoice = { name: string; by: "user" | "architect" | "planner" | "default"; reason: string };
 
 export type ServerConfig = {
   llm_enabled: boolean;
@@ -143,7 +144,7 @@ export type RunEvent = {
 export type RunSummary = { run_id: string; prompt: string; stack: string; status: string; created_at: number };
 export type Stats = { runs: number; succeeded: number; success_rate: number; avg_repairs: number; bugs_found: number; bugs_fixed: number; cost_usd: number };
 export type PreviewInfo = { running: boolean; base: string | null; docs: string | null };
-export type StartRun = { prompt: string; stack: string; codegen_mode?: string; plugins: string[] };
+export type StartRun = { prompt: string; stack: string; codegen_mode?: string; plugins: string[]; plugins_off: string[] };
 
 // --- login token (kept in this browser only) -------------------------------------------
 const TOKEN_KEY = "vibestack-token";

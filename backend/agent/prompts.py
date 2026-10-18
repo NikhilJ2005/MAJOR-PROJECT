@@ -96,6 +96,11 @@ Step 2, design:
   must be covered.
 - Leave "stack" empty: it is filled in for you. project_name is short snake_case."""
 
+PLUGIN_CATALOG = """
+- "plugins": pick from this catalog only the ones this app clearly needs, each with a one-sentence reason
+  (the Planner adds safety checks itself):
+{catalog}"""
+
 SPEC_USER = """Application description:
 {prompt}"""
 

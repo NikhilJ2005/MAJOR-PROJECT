@@ -106,3 +106,29 @@ def test_seed_script_fills_a_running_app_through_its_api():
             assert f"{e.name}: 5 rows" in out.stdout, out.stdout
     finally:
         previews.stop_all()
+
+
+def test_agents_choose_plugins_with_reasons():
+    from agent.state import ProjectSpec
+    from tests.specs import ESCROW
+
+    spec = ProjectSpec.model_validate(ESCROW)
+    choices = plugins.resolve({}, [{"name": "openapi_export", "reason": "partners integrate"}], spec,
+                              "An escrow marketplace we deploy on Kubernetes")
+    by_name = {c["name"]: c for c in choices}
+    assert by_name["kubernetes"]["by"] == "planner" and "kubernetes" in by_name["kubernetes"]["reason"]
+    assert by_name["openapi_export"] == {"name": "openapi_export", "by": "architect", "reason": "partners integrate"}
+    assert by_name["secrets_scan"]["reason"] == "on for every build"
+    assert "postman" in by_name  # wanted(spec): many custom actions
+
+
+def test_user_overrides_and_switching_auto_off():
+    from agent.state import ProjectSpec
+    from tests.specs import ESCROW
+
+    spec = ProjectSpec.model_validate(ESCROW)
+    choices = plugins.resolve({"plugins_off": ["kubernetes"], "plugins": ["postman"]}, [], spec, "use k8s")
+    names = [c["name"] for c in choices]
+    assert "kubernetes" not in names and names.count("postman") == 1
+    assert next(c for c in choices if c["name"] == "postman")["by"] == "user"
+    assert [c["name"] for c in plugins.resolve({"auto_plugins": False, "plugins": ["postman"]}, [], spec, "k8s")] == ["postman"]

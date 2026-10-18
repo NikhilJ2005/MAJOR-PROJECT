@@ -122,6 +122,7 @@ class RunManager:
                 if values.get("spec"):
                     base = {"run_id": base_run_id, "spec": values["spec"], "files": dict(values.get("files") or {}),
                             "template_files": dict(values.get("template_files") or {}),
+                            "plugin_choices": list(values.get("plugin_choices") or []),
                             "failed": values.get("status") != "succeeded"}
                 elif values.get("prompt"):  # it stopped before a design existed: start over with both requests
                     prompt = f"{values['prompt']}\n\nAlso: {prompt}"
@@ -277,6 +278,7 @@ class RunManager:
             "options": values.get("options"),
             "spec": values.get("spec"),
             "file_plan": values.get("file_plan"),
+            "plugin_choices": values.get("plugin_choices") or [],
             "files": sorted((values.get("files") or {}).keys()),
             "ledger": values.get("ledger", []),
             "validation": _trim_validation(values.get("validation")),

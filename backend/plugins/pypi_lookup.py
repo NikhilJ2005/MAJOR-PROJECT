@@ -9,6 +9,8 @@ import urllib.error
 import urllib.request
 
 DESCRIPTION = "Gives the Reflector a PyPI lookup tool (latest version and summary of a package)"
+WHEN = "always useful to the Reflector when a fix needs a library"
+ALWAYS = True
 
 
 def pypi_package(name: str) -> str:

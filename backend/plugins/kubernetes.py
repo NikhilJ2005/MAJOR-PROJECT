@@ -1,6 +1,8 @@
 """Example plugin (extra_files): Kubernetes manifests for the generated API."""
 
 DESCRIPTION = "Adds k8s/ manifests: a Deployment with health probes and a Service"
+WHEN = "the user mentions Kubernetes, k8s, Helm, containers at scale, clusters or autoscaling"
+KEYWORDS = ("kubernetes", "k8s", "helm", "cluster", "autoscal")
 
 
 def extra_files(spec) -> dict[str, str]:

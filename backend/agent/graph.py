@@ -99,7 +99,8 @@ def initial_state(
         state.update(base_run_id=base["run_id"], base_spec=base["spec"], base_files=base["files"],
                      base_failed=bool(base.get("failed")))
         if state["options"].get("resume"):  # keep fixing: the same design and code, a fresh healing history
-            state.update(spec=base["spec"], files=base["files"], template_files=base.get("template_files") or {})
+            state.update(spec=base["spec"], files=base["files"], template_files=base.get("template_files") or {},
+                         plugin_choices=base.get("plugin_choices") or [])
     return state
 
 

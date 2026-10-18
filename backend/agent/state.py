@@ -169,6 +169,16 @@ class Requirement(BaseModel):
     kind: Literal["data", "rule", "permission", "endpoint"] = "data"
 
 
+class PluginChoice(BaseModel):
+    name: str = Field(description="A plugin name from the catalog")
+    reason: str = Field(default="", description="Why this app needs it, in one short sentence")
+
+    @field_validator("name")
+    @classmethod
+    def _snake(cls, v: str) -> str:
+        return to_snake(v)
+
+
 class RoleSpec(BaseModel):
     """A kind of user, e.g. client or freelancer. Admins (ADMIN_EMAILS) are always there and may do everything."""
 
@@ -192,6 +202,7 @@ class ProjectSpec(BaseModel):
         default_factory=list, description="Production features: " + ", ".join(FEATURES) + " (others are kept as notes)"
     )
     roles: list[RoleSpec] = Field(default_factory=list, description="User roles; the first self-signup role is the default")
+    plugins: list[PluginChoice] = Field(default_factory=list, description="Plugins from the catalog this app needs")
     requirements: list[Requirement] = Field(default_factory=list)
     actions: list[ActionSpec] = Field(default_factory=list)
 
@@ -402,7 +413,9 @@ class Validation(TypedDict, total=False):
 class Options(TypedDict, total=False):
     stack: str  # "fastapi" | "flask" | "django"
     codegen_mode: str  # "llm" | "template"
-    plugins: list[str]  # plugin names from backend/plugins/ (default: the PLUGINS env var)
+    plugins: list[str]  # plugins the user forces on (the agents choose the rest, see plugins.resolve)
+    plugins_off: list[str]  # plugins the user forces off
+    auto_plugins: bool  # let the Architect and Planner choose plugins (default True)
     # Ablation study switches (evals/run.py --ablation); normal runs leave them unset.
     tools: bool  # the Reflector may call tools (default True)
     edge_tests: bool  # include the spec-derived edge-case tests (default True)
@@ -425,6 +438,7 @@ class AgentState(TypedDict, total=False):
     changes: dict[str, list[str]]  # follow-up edits: entities added / changed / removed by the Architect
     spec: dict[str, Any]
     file_plan: list[dict[str, str]]
+    plugin_choices: list[dict[str, str]]  # the plugins this build uses: {name, by, reason} (plugins.resolve)
     files: Annotated[dict[str, str], merge_files]
     template_files: dict[str, str]
     validation: Validation

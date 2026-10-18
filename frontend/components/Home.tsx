@@ -43,23 +43,32 @@ export function Home({
 }: {
   config: ServerConfig | null;
   projects: Project[];
-  onCreate: (prompt: string, stack: string, plugins: string[]) => Promise<void>;
+  onCreate: (prompt: string, stack: string, plugins: string[], pluginsOff: string[]) => Promise<void>;
   onOpen: (id: string) => void;
 }) {
   const [prompt, setPrompt] = useState("");
   const [stack, setStack] = useState("fastapi");
-  const [chosen, setChosen] = useState<string[] | null>(null);
+  // Plugins are chosen by the agents; the user may force one on or off.
+  const [force, setForce] = useState<Record<string, "on" | "off">>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const plugins = config?.plugins ?? [];
-  const active = chosen ?? plugins.filter((p) => p.default).map((p) => p.name);
+  const forced = (mode: "on" | "off") => Object.keys(force).filter((n) => force[n] === mode);
+  const cycle = (name: string) =>
+    setForce((f) => {
+      const next = { ...f };
+      if (!f[name]) next[name] = "on";
+      else if (f[name] === "on") next[name] = "off";
+      else delete next[name];
+      return next;
+    });
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      await onCreate(prompt.trim(), stack, active);
+      await onCreate(prompt.trim(), stack, forced("on"), forced("off"));
     } catch (err) {
       setError((err as Error).message.replace(/^\d+: /, ""));
       setBusy(false);
@@ -107,23 +116,23 @@ export function Home({
             {plugins.length > 0 && (
               <details className="relative">
                 <summary className="cursor-pointer list-none rounded-lg px-3 py-1.5 text-sm text-ink-300 hover:bg-ink-800 hover:text-ink-50">
-                  Plugins{active.length ? ` (${active.length})` : ""}
+                  Plugins: {Object.keys(force).length ? `agents + ${Object.keys(force).length} set by you` : "chosen by the agents"}
                 </summary>
-                <div className="absolute left-0 z-10 mt-2 w-72 space-y-1 rounded-xl border border-ink-700 bg-ink-900 p-2 shadow-xl">
-                  {plugins.map((p) => (
-                    <label key={p.name} className="flex cursor-pointer gap-2 rounded-lg p-2 hover:bg-ink-800">
-                      <input
-                        type="checkbox"
-                        className="mt-1 accent-[var(--color-signal-400)]"
-                        checked={active.includes(p.name)}
-                        onChange={() => setChosen(active.includes(p.name) ? active.filter((n) => n !== p.name) : [...active, p.name])}
-                      />
-                      <span>
-                        <span className="block text-sm text-ink-100">{p.name}</span>
-                        <span className="block text-xs text-ink-400">{p.description}</span>
-                      </span>
-                    </label>
-                  ))}
+                <div className="absolute left-0 z-10 mt-2 w-80 space-y-1 rounded-xl border border-ink-700 bg-ink-900 p-2 shadow-xl">
+                  <p className="px-2 pb-1 text-xs text-ink-400">The Architect picks the plugins your app needs and says why. Click one to force it on or off.</p>
+                  {plugins.map((p) => {
+                    const mode = force[p.name] ?? (p.always ? "always" : "auto");
+                    const chip = { on: "bg-signal-400 text-ink-950", off: "bg-rose-500/20 text-rose-200", always: "bg-ink-700 text-ink-200", auto: "bg-ink-800 text-ink-300" }[mode];
+                    return (
+                      <button type="button" key={p.name} onClick={() => cycle(p.name)} className="flex w-full items-start gap-2 rounded-lg p-2 text-left hover:bg-ink-800">
+                        <span className={`mt-0.5 w-14 shrink-0 rounded px-1.5 py-0.5 text-center text-[11px] font-medium ${chip}`}>{mode}</span>
+                        <span>
+                          <span className="block text-sm text-ink-100">{p.name}</span>
+                          <span className="block text-xs text-ink-400">{p.description}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               </details>
             )}

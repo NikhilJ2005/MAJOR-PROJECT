@@ -92,6 +92,9 @@ def _opts(state: AgentState) -> dict[str, Any]:
 
 
 def _plugins(state: AgentState) -> list[tuple[str, Any]]:
+    """The plugins the Planner chose for this build (or, before planning, the ones the user asked for)."""
+    if state.get("plugin_choices") is not None:
+        return plugins.chosen([c["name"] for c in state["plugin_choices"]])
     return plugins.chosen(_opts(state).get("plugins"))
 
 
@@ -131,7 +134,8 @@ def _design(llm: Any, state: AgentState) -> tuple[ProjectSpec, list[str], Usage]
     live = LiveText(live_writer(), "architect", "Design (JSON)")
 
     def design(text: str, usage: Usage | None = None) -> tuple[ProjectSpec, Usage]:
-        spec, used = structured(llm, "strong", prompts.SPEC_SYSTEM, text, ProjectSpec, effort="high", stream=live)
+        system = prompts.SPEC_SYSTEM + prompts.PLUGIN_CATALOG.format(catalog=plugins.catalog() or "(none)")
+        spec, used = structured(llm, "strong", system, text, ProjectSpec, effort="high", stream=live)
         live.done()
         if usage:
             used.add(usage)
@@ -233,6 +237,8 @@ def parse_spec(state: AgentState) -> dict[str, Any]:
 
 def plan(state: AgentState) -> dict[str, Any]:
     spec = _spec(state)
+    choices = plugins.resolve(_opts(state), [c.model_dump() for c in spec.plugins], spec, state.get("prompt", ""))
+    state = {**state, "plugin_choices": choices}
     file_plan = plan_files(spec)
     template_files = render_project(spec)
     if _opts(state).get("edge_tests") is False:  # ablation study: run without the spec-derived edge-case tests
@@ -245,6 +251,9 @@ def plan(state: AgentState) -> dict[str, Any]:
             "models -> schemas -> services -> routers -> app wiring -> tests -> packaging",
         )
     ]
+    who = {"user": "you", "architect": "the Architect", "planner": "the Planner", "default": "the server settings"}
+    for c in choices:
+        ledger.append(entry("planner", f"turned on the {c['name']} plugin (chosen by {who[c['by']]})", c["reason"]))
     for name, added in plugins.extra_files(_plugins(state), spec).items():
         added = {p: c for p, c in added.items() if p not in template_files}  # plugins add, never overwrite
         template_files.update(added)
@@ -254,6 +263,7 @@ def plan(state: AgentState) -> dict[str, Any]:
     return {
         "file_plan": file_plan,
         "template_files": template_files,
+        "plugin_choices": choices,
         "status": "planned",
         "ledger": ledger,
     }
