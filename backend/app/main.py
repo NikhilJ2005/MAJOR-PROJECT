@@ -33,7 +33,15 @@ from agent.state import ProjectSpec
 from . import deploy
 from .accounts import create_token, hash_password, user_id_from_token, verify_password
 from .mcp_server import build_mcp
-from .ops import RateLimiter, RequestContext, client_ip, metrics_text, setup_logging, setup_sentry
+from .ops import (
+    Idempotency,
+    RateLimiter,
+    RequestContext,
+    client_ip,
+    metrics_text,
+    setup_logging,
+    setup_sentry,
+)
 from .preview import PreviewError, PreviewManager
 from .queue import make_queue
 from .runs import TERMINAL, RunManager
@@ -60,8 +68,7 @@ async def lifespan(_: FastAPI):
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     )
     manager.recover()  # builds a restart or redeploy interrupted continue from their last checkpoint
-    if deploy.enabled():
-        _start_deploy_sweeper()
+    _start_maintenance()
     async with mcp.session_manager.run():
         yield
     await app.state.proxy.aclose()
@@ -118,7 +125,9 @@ def own_run(run_id: str, user: dict[str, Any]) -> None:
 
 
 # Per IP: slows down password guessing (AUTH_RATE_LIMIT attempts per minute).
-auth_limit = RateLimiter(limit=int(os.getenv("AUTH_RATE_LIMIT", "20")), seconds=60)
+_shared = manager.queue.r if manager.queue is not None else None  # Redis, when the build queue uses it
+auth_limit = RateLimiter(limit=int(os.getenv("AUTH_RATE_LIMIT", "20")), seconds=60, redis=_shared)
+idempotency = Idempotency(redis=_shared)
 
 
 def check_auth_rate(request: Request) -> None:
@@ -186,6 +195,32 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/ready")
+def ready() -> dict[str, Any]:
+    """Everything a build needs answers: the database, Redis (with workers) and the bucket (with S3)."""
+    checks: dict[str, str] = {}
+    try:
+        store.ping()
+        checks["database"] = "ok"
+    except Exception as exc:  # noqa: BLE001 - reported, not raised
+        checks["database"] = f"down: {type(exc).__name__}"
+    if manager.queue is not None:
+        try:
+            manager.queue.r.ping()
+            checks["redis"] = "ok"
+        except Exception as exc:  # noqa: BLE001
+            checks["redis"] = f"down: {type(exc).__name__}"
+    if storage.bucket():
+        try:
+            storage.check()
+            checks["storage"] = "ok"
+        except Exception as exc:  # noqa: BLE001
+            checks["storage"] = f"down: {type(exc).__name__}"
+    if any(v != "ok" for v in checks.values()):
+        raise HTTPException(status_code=503, detail=checks)
+    return {"status": "ready", **checks}
+
+
 @app.get("/api/metrics", response_class=PlainTextResponse)
 def metrics(authorization: str | None = Header(default=None)) -> str:
     """Prometheus metrics. Send `Authorization: Bearer <METRICS_TOKEN>`, or an admin's login token."""
@@ -195,7 +230,8 @@ def metrics(authorization: str | None = Header(default=None)) -> str:
     user = store.user_by_id(user_id) if user_id is not None else None
     if not ((expected and raw == expected) or (user and user["email"] in settings.admin_emails)):
         raise HTTPException(status_code=401, detail="metrics need METRICS_TOKEN or an admin login")
-    return metrics_text(store.run_metrics(), manager.active_count(), previews.count())
+    queued = manager.queue.waiting() if manager.queue is not None else None
+    return metrics_text(store.run_metrics(), manager.active_count(), previews.count(), queued)
 
 
 @app.get("/api/config")
@@ -233,6 +269,12 @@ def start_run(
     is_admin = user.get("is_admin") or user["email"] in settings.admin_emails
     if store.runs_since(user["id"], time.time() - 86400) >= settings.max_runs_per_day and not is_admin:
         raise HTTPException(status_code=429, detail=f"daily limit of {settings.max_runs_per_day} runs reached")
+    if store.running_for(user["id"]) >= settings.max_active_runs_per_user and not is_admin:
+        raise HTTPException(status_code=429, detail=f"you already have {settings.max_active_runs_per_user} builds running; "
+                                                     "wait for one to finish")
+    if manager.queue is not None and manager.queue.waiting() >= settings.queue_max:
+        raise HTTPException(status_code=503, detail="every builder is busy; try again in a minute",
+                            headers={"Retry-After": "60"})
     options = {"codegen_mode": settings.codegen_mode, **options}
     if project_id is None:
         project_id = store.add_project(user["id"], " ".join(prompt.split()[:6]), options.get("stack", "fastapi"))
@@ -297,9 +339,17 @@ def approve_design(run_id: str, body: Approval, user: CurrentUser) -> dict[str, 
 
 
 @app.post("/api/runs", status_code=201)
-def create_run(body: RunRequest, user: CurrentUser) -> dict[str, str]:
+def create_run(body: RunRequest, user: CurrentUser,
+               idempotency_key: str | None = Header(default=None, max_length=100)) -> dict[str, str]:
+    """Start a build. With an Idempotency-Key header, sending the same request again returns the same build."""
+    key = f"{user['id']}:{idempotency_key}" if idempotency_key else None
+    if key and (earlier := idempotency.get(key)):
+        return earlier
     run_id = start_run(user, body.prompt, _options(body))
-    return {"run_id": run_id, "project_id": store.run(run_id)["project_id"]}
+    result = {"run_id": run_id, "project_id": store.run(run_id)["project_id"]}
+    if key:
+        idempotency.put(key, result)
+    return result
 
 
 # --------------------------------------------------------------------------- projects (Lovable-style sessions)
@@ -325,9 +375,10 @@ def update_project(project_id: str, body: ProjectRules, user: CurrentUser) -> di
 
 
 @app.post("/api/projects", status_code=201)
-def create_project(body: RunRequest, user: CurrentUser) -> dict[str, str]:
+def create_project(body: RunRequest, user: CurrentUser,
+                   idempotency_key: str | None = Header(default=None, max_length=100)) -> dict[str, str]:
     """A new project: the first prompt builds version 1."""
-    return create_run(body, user)
+    return create_run(body, user, idempotency_key)
 
 
 @app.get("/api/projects")
@@ -338,16 +389,20 @@ def list_projects(user: CurrentUser) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------- one-click deploy (app/deploy.py)
 
 
-def _start_deploy_sweeper() -> None:
+def _start_maintenance() -> None:
+    """Every 10 minutes: tidy deployments (interrupted ones, expired demo apps) and apply RETENTION_DAYS."""
     def loop() -> None:
         while True:
             try:
-                deployer.sweep()
+                if deploy.enabled():
+                    deployer.sweep()
+                if settings.retention_days > 0:
+                    manager.prune(settings.retention_days)
             except Exception:
-                log.exception("deploy sweep failed")
+                log.exception("maintenance failed")
             time.sleep(600)
 
-    threading.Thread(target=loop, daemon=True, name="deploy-sweeper").start()
+    threading.Thread(target=loop, daemon=True, name="maintenance").start()
 
 
 def _deployment_view(row: dict[str, Any] | None) -> dict[str, Any] | None:

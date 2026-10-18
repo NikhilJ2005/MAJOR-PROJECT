@@ -19,8 +19,8 @@ spec:
           envFrom:
             - configMapRef: {name: vibestack-config}
             - secretRef: {name: vibestack-secrets}
-          readinessProbe:
-            httpGet: {path: /api/health, port: 8000}
+          readinessProbe:   # the database, Redis and the bucket answer
+            httpGet: {path: /api/ready, port: 8000}
             periodSeconds: 10
           livenessProbe:
             httpGet: {path: /api/health, port: 8000}

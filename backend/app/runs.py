@@ -251,6 +251,18 @@ class RunManager:
             if run is not None:
                 run.emit({"type": "progress", "node": "plan", "text": "Design approved; waiting for a free builder"})
 
+    def prune(self, days: int) -> int:
+        """Retention: drop the saved agent state (checkpoints, the biggest data) of finished builds older than
+        `days`. A project's current version is always kept; zips, the version list and the numbers stay."""
+        pruned = 0
+        for run_id in self.store.prunable_runs(time.time() - days * 86400):
+            self.graph.checkpointer.delete_thread(run_id)
+            self.store.mark_pruned(run_id)
+            pruned += 1
+        if pruned:
+            log.info("retention: removed the saved state of %d old build(s)", pruned)
+        return pruned
+
     def requeue_orphans(self) -> list[str]:
         """Runs still marked running that no worker holds (it crashed or was redeployed): queue them again."""
         orphans = []
@@ -329,6 +341,10 @@ class RunManager:
         values = self.graph.get_state(self._config(run_id)).values
         run = self.get_run(run_id)
         if not values:
+            record = self.store.run(run_id) if run is None else None
+            if record and record["status"] == "pruned":  # its details were removed by the retention policy
+                return {"run_id": run_id, "project_id": record.get("project_id"), "version": record.get("version"),
+                        "prompt": record["prompt"], "status": "pruned", "files": [], "ledger": [], "pruned": True}
             if run is None:
                 return None
             # Started, but the first checkpoint has not been written yet.

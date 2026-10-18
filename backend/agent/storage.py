@@ -38,6 +38,11 @@ def _client(public: bool = False):
     )
 
 
+def check() -> None:
+    """Raises when the bucket cannot be reached (for /api/ready)."""
+    _client().head_bucket(Bucket=bucket())
+
+
 def keep(run_id: str, local_zip: str) -> str:
     """Store a finished zip. Returns where it is: the local path, or s3://bucket/key."""
     if not bucket():

@@ -88,6 +88,10 @@ class Store:
         with self.engine.begin() as db:
             db.execute(text("CREATE INDEX IF NOT EXISTS runs_by_project ON runs(project_id, version)"))
 
+    def ping(self) -> None:
+        with self.engine.connect() as db:
+            db.execute(text("SELECT 1"))
+
     def _rows(self, sql: str, **args: Any) -> list[dict[str, Any]]:
         with self.engine.connect() as db:
             return [dict(r._mapping) for r in db.execute(text(sql), args)]
@@ -191,6 +195,20 @@ class Store:
     def run_metrics(self) -> list[dict[str, Any]]:
         """The numbers /api/metrics adds up, one row per run."""
         return self._rows("SELECT status, created_at, finished_at, repairs, bugs_found, bugs_fixed, tokens, cost_usd FROM runs")
+
+    def running_for(self, owner_id: int) -> int:
+        row = self._one("SELECT COUNT(*) AS n FROM runs WHERE owner_id = :o AND status = 'running'", o=owner_id)
+        return int(row["n"]) if row else 0
+
+    def prunable_runs(self, before: float) -> list[str]:
+        """Finished runs older than `before` that are no project's current version (their history can go)."""
+        rows = self._rows(
+            "SELECT r.id FROM runs r WHERE r.finished_at IS NOT NULL AND r.finished_at < :t AND r.status != 'pruned' "
+            "AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.current_run_id = r.id)", t=before)
+        return [r["id"] for r in rows]
+
+    def mark_pruned(self, run_id: str) -> None:
+        self._write("UPDATE runs SET status = 'pruned' WHERE id = :id", id=run_id)
 
     def project_running(self, project_id: str) -> bool:
         return self._one("SELECT id FROM runs WHERE project_id = :p AND status = 'running' LIMIT 1", p=project_id) is not None
