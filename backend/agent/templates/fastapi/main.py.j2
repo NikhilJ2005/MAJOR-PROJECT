@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
 
@@ -81,6 +81,10 @@ async def request_context(request: Request, call_next):
         logs.request_id.reset(token)
     ms = (time.perf_counter() - start) * 1000
     response.headers["X-Request-ID"] = rid
+    response.headers.update(logs.SECURITY_HEADERS)
+    if request.headers.get("x-forwarded-proto", request.url.scheme) == "https":
+        response.headers["Strict-Transport-Security"] = logs.HSTS
+    logs.record(request.method, request.url.path, response.status_code, ms / 1000)
     log.info("%s %s -> %s (%.0f ms) [%s]", request.method, request.url.path, response.status_code, ms, rid)
     return response
 
@@ -109,6 +113,12 @@ def frontend() -> FileResponse:
 @app.get("/health", tags=["meta"])
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/metrics", include_in_schema=False)
+def metrics() -> PlainTextResponse:
+    """Requests by route and status, for Prometheus."""
+    return PlainTextResponse(logs.metrics_text())
 
 
 @app.get("/ready", tags=["meta"])

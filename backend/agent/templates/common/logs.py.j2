@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+import threading
 import uuid
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -41,3 +42,40 @@ def setup() -> None:
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(config.LOG_LEVEL)
+
+
+# ---------------------------------------------------------------------------- metrics (GET /metrics)
+
+_ID = re.compile(r"/\d+(?=/|$)")
+_metrics_lock = threading.Lock()
+_requests: dict[tuple[str, str, int], list[float]] = {}  # (method, route, status) -> [count, total seconds]
+
+# Sent with every response. frame-ancestors 'self' keeps the app embeddable only by its own site.
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "SAMEORIGIN",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Content-Security-Policy": "frame-ancestors 'self'",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+}
+HSTS = "max-age=31536000; includeSubDomains"  # added when the request came over HTTPS
+
+
+def record(method: str, path: str, status: int, seconds: float) -> None:
+    """Count one request; ids in the path are folded ("/orders/7" -> "/orders/{id}") to keep the list short."""
+    key = (method, _ID.sub("/{id}", path), status)
+    with _metrics_lock:
+        entry = _requests.setdefault(key, [0, 0.0])
+        entry[0] += 1
+        entry[1] += seconds
+
+
+def metrics_text() -> str:
+    """Prometheus text format: requests and their total duration by method, route and status."""
+    lines = ["# TYPE http_requests_total counter", "# TYPE http_request_seconds_total counter"]
+    with _metrics_lock:
+        for (method, route, status), (count, seconds) in sorted(_requests.items()):
+            labels = "{" + f'method="{method}",route="{route}",status="{status}"' + "}"
+            lines.append(f"http_requests_total{labels} {count}")
+            lines.append(f"http_request_seconds_total{labels} {seconds:.6f}")
+    return "\n".join(lines) + "\n"

@@ -579,6 +579,9 @@ def preview_status(run_id: str, user: CurrentUser, draft: bool = False) -> dict[
 
 
 _HOP_HEADERS = {"connection", "keep-alive", "transfer-encoding", "content-encoding", "content-length", "upgrade"}
+# The generated app only allows framing by its own site; the workspace shows it in an iframe, so the
+# preview drops those two (the deployed app keeps them).
+_PREVIEW_DROPPED = _HOP_HEADERS | {"x-frame-options", "content-security-policy"}
 
 
 @app.api_route("/preview/{key}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
@@ -599,7 +602,7 @@ async def preview_proxy(key: str, path: str, request: Request) -> Response:
         upstream = await proxy.send(outgoing, stream=True)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"preview unreachable: {exc}") from exc
-    headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _HOP_HEADERS}
+    headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _PREVIEW_DROPPED}
     return StreamingResponse(upstream.aiter_bytes(), status_code=upstream.status_code, headers=headers,
                              background=BackgroundTask(upstream.aclose))
 
