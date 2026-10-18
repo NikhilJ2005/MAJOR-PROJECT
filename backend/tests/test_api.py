@@ -173,3 +173,69 @@ def test_ui_pages_are_revalidated_but_hashed_assets_are_cached(tmp_path):
     client = TestClient(ui)
     assert client.get("/").headers["cache-control"] == "no-cache"
     assert "immutable" in client.get("/_next/static/a1b2.js").headers["cache-control"]
+
+
+def test_design_review_pauses_before_code_and_continues_on_approval(fake_llm):
+    from app.main import app
+
+    with TestClient(app) as client:
+        me = _login(client)
+        r = client.post("/api/runs", json={"prompt": "A blog with posts and comments", "review_design": True}, headers=me)
+        run_id = r.json()["run_id"]
+        snap = _wait(client, run_id, {"awaiting_approval", "failed", "error"}, me)
+        assert snap["status"] == "awaiting_approval" and snap["spec"] and not snap["files"]  # no code yet
+
+        # A change in words goes back to the Architect, then waits for approval again.
+        assert client.post(f"/api/runs/{run_id}/approve", json={"instruction": "also tag posts"}, headers=me).status_code == 200
+        time.sleep(0.5)
+        snap = _wait(client, run_id, {"awaiting_approval", "failed", "error"}, me)
+        assert snap["status"] == "awaiting_approval"
+        assert any("design change" in e["action"] for e in snap["ledger"])
+
+        bad = {**snap["spec"], "entities": []}
+        assert client.post(f"/api/runs/{run_id}/approve", json={"spec": bad}, headers=me).status_code == 422
+        edited = snap["spec"]
+        edited["entities"][0]["fields"].append({"name": "subtitle", "required": False})
+        assert client.post(f"/api/runs/{run_id}/approve", json={"spec": edited}, headers=me).status_code == 200
+        snap = _wait(client, run_id, {"succeeded", "failed", "error"}, me)
+        assert snap["status"] == "succeeded", snap
+        assert any(f["name"] == "subtitle" for f in snap["spec"]["entities"][0]["fields"])
+        assert any(e["action"] == "you edited and approved the design" for e in snap["ledger"])
+        assert client.post(f"/api/runs/{run_id}/approve", json={}, headers=me).status_code == 409
+
+
+def test_runs_can_be_stopped_and_have_a_deadline(fake_llm, monkeypatch):
+    import dataclasses
+
+    from app import runs
+    from app.main import app
+
+    with TestClient(app) as client:
+        me = _login(client)
+        # A run waiting at the design review stops at once.
+        run_id = client.post("/api/runs", json={"prompt": "A blog with posts and comments", "review_design": True},
+                             headers=me).json()["run_id"]
+        _wait(client, run_id, {"awaiting_approval"}, me)
+        assert client.post(f"/api/runs/{run_id}/cancel", headers=me).status_code == 200
+        assert _wait(client, run_id, {"failed", "succeeded", "error"}, me)["status"] == "failed"
+        assert client.post(f"/api/runs/{run_id}/cancel", headers=me).status_code == 409
+
+        # A build past its deadline stops after the agent working now, and keeps what it has.
+        monkeypatch.setattr(runs, "settings", dataclasses.replace(runs.settings, run_deadline_s=0))
+        run_id = client.post("/api/runs", json={"prompt": "A blog with posts and comments"}, headers=me).json()["run_id"]
+        snap = _wait(client, run_id, {"failed", "succeeded", "error"}, me)
+        assert snap["status"] == "failed" and snap["spec"]  # the design made before the stop is kept
+
+
+def test_project_rules_reach_every_agent(fake_llm):
+    from app.main import app
+
+    with TestClient(app) as client:
+        me = _login(client)
+        r = client.post("/api/projects", json={"prompt": "A blog with posts and comments",
+                                               "instructions": "Money is always stored in cents."}, headers=me)
+        project_id, run_id = r.json()["project_id"], r.json()["run_id"]
+        _wait(client, run_id, {"succeeded", "failed", "error"}, me)
+        assert any("Money is always stored in cents." in system for _, system in fake_llm.systems)
+        r = client.patch(f"/api/projects/{project_id}", json={"instructions": "Use British English."}, headers=me)
+        assert r.status_code == 200 and r.json()["instructions"] == "Use British English."

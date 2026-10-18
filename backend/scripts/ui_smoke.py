@@ -26,8 +26,12 @@ with sync_playwright() as p:
     page.get_by_role("button", name="Create account").click()
     page.get_by_role("button", name="Agent orchestrator").click()
     page.screenshot(path=f"{SP}/v3-home.png")
-    page.get_by_role("button", name="Build it").click()
+    page.get_by_role("button", name="Build it", exact=True).click()
     page.get_by_text("Version 1").wait_for()
+    # Nothing is built before the user approves the Architect's design.
+    page.get_by_role("button", name="Approve and build").wait_for(timeout=60000)
+    page.screenshot(path=f"{SP}/v5-design-review.png", full_page=True)
+    page.get_by_role("button", name="Approve and build").click()
     page.wait_for_timeout(2500)
     page.screenshot(path=f"{SP}/v3-building.png")
     try:  # the Live tab shows what the agents write, while they write it
@@ -53,6 +57,7 @@ with sync_playwright() as p:
     page.get_by_label("Ask for a change").fill("add tags to posts")
     page.get_by_role("button", name="Send").click()
     page.get_by_text("Version 2").wait_for()
+    page.get_by_role("button", name="Approve and build").click(timeout=60000)
     page.get_by_text("Built and tested").nth(1).wait_for(timeout=180000)
     page.get_by_role("button", name="Quality").click()
     page.screenshot(path=f"{SP}/v3-v2.png")

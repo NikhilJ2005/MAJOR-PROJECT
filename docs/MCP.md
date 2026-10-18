@@ -58,21 +58,29 @@ async with httpx2.AsyncClient(headers={"Authorization": f"Bearer {token}"}, time
 
 `backend/tests/test_mcp.py` does exactly this against a real server.
 
-## VibeStack as an MCP client (tools for the Reflector)
+## VibeStack as an MCP client (tools the agents use by themselves)
 
 When a build fails validation, the Reflector repairs it with tools: `read_file`, `list_files`,
 `search_code`, `list_routes`, `write_file` (stage a fix), `run_tests` and `check_frontend`.
-Any MCP server can add more. Well-known ones are turned on by name with `MCP_PRESETS`; others are
-listed in `MCP_SERVERS`:
+Any MCP server can add more, and the agents call them on their own: no Claude Desktop or other AI client is
+involved. Bundled servers run inside VibeStack's own container (on Railway too) over stdio. Well-known ones
+are turned on by name with `MCP_PRESETS` (default: `builtin`, plus `kubernetes` when a deploy cluster is
+set); others are listed in `MCP_SERVERS`, by URL or by command:
 
 ```bash
-MCP_PRESETS=docs
-MCP_SERVERS='[{"name": "mine", "url": "https://example.com/mcp", "headers": {"Authorization": "Bearer ..."}}]'
+MCP_PRESETS=builtin,docs,kubernetes
+MCP_SERVERS='[{"name": "mine", "url": "https://example.com/mcp", "headers": {"Authorization": "Bearer ..."}},
+              {"name": "local", "command": "my-mcp-server", "args": ["--stdio"]}]'
 ```
 
-| Preset | Server | What the Reflector gets | Settings |
-|---|---|---|---|
-| `docs` | Context7 (`https://mcp.context7.com/mcp`) | current documentation of FastAPI, Django, SQLAlchemy, Pydantic … when a fix needs an API it is unsure about | `CONTEXT7_API_KEY` (optional), `MCP_DOCS_URL` |
+| Preset | Server | Used by | What it gets | Settings |
+|---|---|---|---|---|
+| `builtin` | VibeStack's own (`agent/mcp_builtin.py`, stdio, in the container) | Reflector | `python_docs` (the documentation of the exact library versions installed), `package_versions`, `check_manifests` (Kubernetes YAML), `pypi_package` | none |
+| `kubernetes` | the open-source [Kubernetes MCP server](https://github.com/containers/kubernetes-mcp-server), read-only, bundled in the Docker image | deploy diagnoser | pods, events, pod logs and resources in the deployed app's namespace, so a failed deploy is explained from the cluster itself | `DEPLOY_KUBECONFIG_B64` (or in-cluster) |
+| `docs` | Context7 (`https://mcp.context7.com/mcp`) | Reflector | current documentation of FastAPI, Django, SQLAlchemy, Pydantic … | `CONTEXT7_API_KEY` (optional), `MCP_DOCS_URL` |
+
+Stdio servers get a scrubbed environment (never VibeStack's API keys). Each server's tool list is cached for
+5 minutes, and every call has a 30 s timeout.
 
 At the start of each repair, VibeStack asks every server for its tools and offers them to the model as
 `<server>__<tool>` (for example `docs__search`). A server that cannot be reached is skipped and logged.

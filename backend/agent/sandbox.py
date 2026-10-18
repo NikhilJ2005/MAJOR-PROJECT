@@ -174,14 +174,15 @@ class LocalSandbox:
     def _clean(self, text: str, workdir: Path) -> str:
         return _tail(text.replace(str(workdir.resolve()) + "/", "").replace(str(workdir) + "/", ""))
 
-    def _run(self, args: list[str], workdir: Path) -> tuple[int, str]:
-        proc = self.spawn(args, workdir)
+    def _run(self, args: list[str], workdir: Path, timeout_s: int | None = None) -> tuple[int, str]:
+        timeout_s = timeout_s or self.timeout_s
+        proc = self.spawn(args, workdir, cpu_seconds=timeout_s * 2)
         try:
-            out, _ = proc.communicate(timeout=self.timeout_s)
+            out, _ = proc.communicate(timeout=timeout_s)
         except subprocess.TimeoutExpired:
             os.killpg(proc.pid, signal.SIGKILL)
-            out, _ = proc.communicate()
-            return 124, f"{out}\nTimeoutError: gate exceeded {self.timeout_s}s"
+            out = _drain(proc)
+            return 124, f"{out}\nTimeoutError: gate exceeded {timeout_s}s"
         return proc.returncode, out
 
     def _gate_import(self, workdir: Path, stack: Stack) -> tuple[bool, str]:
@@ -201,7 +202,9 @@ class LocalSandbox:
         if not ok:
             return False, out
         port = free_port()
-        proc = self.spawn([sys.executable, *stack.boot_args(port, threaded=False)], workdir)
+        # The server's output goes to a file, so a chatty start-up can never fill a pipe and stall it.
+        log_file = tempfile.TemporaryFile(mode="w+")  # noqa: SIM115 - closed in the finally block below
+        proc = self.spawn([sys.executable, *stack.boot_args(port, threaded=False)], workdir, stdout=log_file)
         deadline = time.monotonic() + min(self.timeout_s, 30)
         ok, detail = False, ""
         try:
@@ -225,14 +228,22 @@ class LocalSandbox:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     os.killpg(proc.pid, signal.SIGKILL)
-            out, _ = proc.communicate()
+                    proc.wait(timeout=5)
+            log_file.seek(0)
+            out = log_file.read()[-20000:]
+            log_file.close()
         return ok, f"{out}\n{detail}"
+
+    def tests_timeout(self, workdir: Path) -> int:
+        """The whole test-suite grows with the app: GATE_TIMEOUT_S plus 5 s per table."""
+        tables = [p for p in (workdir / "app" / "models").glob("*.py") if p.name != "__init__.py"]
+        return self.timeout_s + 5 * len(tables)
 
     def _gate_tests(self, workdir: Path, stack: Stack) -> tuple[bool, str]:
         code, out = self._run(
             # No -x: we want the full failing count, so healing can tell whether it made progress.
             [sys.executable, "-m", "pytest", "-q", "-rfE", "--tb=short", "--no-header", "-p", "no:cacheprovider", "tests"],
-            workdir,
+            workdir, timeout_s=self.tests_timeout(workdir),
         )
         return code == 0, out
 
@@ -314,6 +325,15 @@ class LocalSandbox:
             return new, f"created and applied {len(new)} migration file(s) in {chosen.migration_dir}/"
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _drain(proc: subprocess.Popen) -> str:
+    """What a killed process wrote, without waiting forever (a child that escaped could hold the pipe open)."""
+    try:
+        out, _ = proc.communicate(timeout=5)
+        return out or ""
+    except subprocess.TimeoutExpired:
+        return ""
 
 
 def get_sandbox() -> Sandbox:

@@ -45,8 +45,8 @@ export default function Page() {
   if (!checked) return null;
   if (!user) return <Login inviteRequired={!!config?.invite_required} onDone={setUser} />;
 
-  async function create(prompt: string, stack: string, plugins: string[]) {
-    const { project_id } = await api.start({ prompt, stack, plugins });
+  async function create(prompt: string, stack: string, plugins: string[], pluginsOff: string[]) {
+    const { project_id } = await api.start({ prompt, stack, plugins, plugins_off: pluginsOff, review_design: true });
     go(project_id);
   }
 

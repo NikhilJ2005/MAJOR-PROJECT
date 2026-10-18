@@ -1,4 +1,4 @@
-import type { Action, Entity, Field, Snapshot, Spec } from "@/lib/api";
+import type { Action, Entity, Field, PluginChoice, Snapshot, Spec } from "@/lib/api";
 
 export const table = (name: string) => {
   const snake = name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
@@ -26,7 +26,9 @@ const KIND: Record<string, string> = {
   endpoint: "text-emerald-300",
 };
 
-export function Architecture({ spec, plan }: { spec: Spec; plan: Snapshot["file_plan"] }) {
+const CHOSEN_BY: Record<string, string> = { user: "you", architect: "Architect", planner: "Planner", default: "default" };
+
+export function Architecture({ spec, plan, plugins }: { spec: Spec; plan: Snapshot["file_plan"]; plugins?: PluginChoice[] }) {
   const coveredBy = (id: string) => [
     ...spec.entities.filter((e) => e.requirement_ids?.includes(id)).map((e) => e.name),
     ...(spec.actions ?? []).filter((a) => a.requirement_ids?.includes(id)).map((a) => `${a.entity}.${a.name}`),
@@ -60,6 +62,20 @@ export function Architecture({ spec, plan }: { spec: Spec; plan: Snapshot["file_
                 </li>
               );
             })}
+          </ul>
+        </Section>
+      )}
+
+      {(plugins ?? []).length > 0 && (
+        <Section title={`Plugins (${plugins!.length}), chosen by the agents`}>
+          <ul className="space-y-1 text-sm">
+            {plugins!.map((p) => (
+              <li key={p.name} className="flex gap-2">
+                <span className="w-32 shrink-0 font-mono text-ink-100">{p.name}</span>
+                <span className="w-20 shrink-0 text-xs leading-5 text-ink-500">{CHOSEN_BY[p.by] ?? p.by}</span>
+                <span className="text-ink-300">{p.reason}</span>
+              </li>
+            ))}
           </ul>
         </Section>
       )}

@@ -157,3 +157,25 @@ def test_mcp_presets_are_turned_on_by_name(monkeypatch):
     servers = configured_servers()
     assert [s["name"] for s in servers] == ["docs", "mine"]
     assert servers[0]["headers"] == {"CONTEXT7_API_KEY": "c7"}
+
+
+def test_builtin_mcp_server_runs_in_the_container_over_stdio(monkeypatch):
+    """VibeStack's own tool server: started as a subprocess, no outside service or AI client."""
+    from agent import mcp_tools
+
+    monkeypatch.setenv("MCP_PRESETS", "builtin")
+    tools = {t.name: t for t in mcp_tools.load_tools()}
+    assert {"builtin__python_docs", "builtin__package_versions", "builtin__check_manifests"} <= set(tools)
+    assert "Session" in tools["builtin__python_docs"].fn(name="sqlalchemy.orm.Session")
+    assert "sqlalchemy==" in tools["builtin__package_versions"].fn()
+    assert "no containers" in tools["builtin__check_manifests"].fn(
+        yaml_text="apiVersion: apps/v1\nkind: Deployment\nmetadata: {name: x}\nspec: {template: {spec: {}}}")
+
+
+def test_cluster_tools_are_only_for_the_deploy_diagnoser(monkeypatch):
+    from agent import mcp_tools
+
+    monkeypatch.setenv("MCP_PRESETS", "builtin,kubernetes")
+    monkeypatch.setattr(mcp_tools, "_kubernetes_preset", lambda: {"name": "kubernetes", "command": "kubernetes-mcp-server"})
+    assert [s["name"] for s in mcp_tools.configured_servers("repair")] == ["builtin"]
+    assert [s["name"] for s in mcp_tools.configured_servers("deploy")] == ["kubernetes"]

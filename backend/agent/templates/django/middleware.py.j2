@@ -35,12 +35,17 @@ class ApiMiddleware:
         finally:
             logs.request_id.reset(token)
         response["X-Request-ID"] = rid
+        for key, value in logs.SECURITY_HEADERS.items():
+            response[key] = value
+        if request.headers.get("X-Forwarded-Proto", request.scheme) == "https":
+            response["Strict-Transport-Security"] = logs.HSTS
         origin = request.headers.get("Origin")
         if origin and origin in config.CORS_ORIGINS:
             response["Access-Control-Allow-Origin"] = origin
             response["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
             response["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
         ms = (time.perf_counter() - start) * 1000
+        logs.record(request.method, request.path, response.status_code, ms / 1000)
         log.info("%s %s -> %s (%.0f ms)", request.method, request.path, response.status_code, ms)
         return response
 

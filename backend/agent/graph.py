@@ -1,7 +1,8 @@
 """The VibeStack harness as a LangGraph state machine of 8 agents.
 
     Architect -> Planner -> Code Generator -> Validator --ok-----------------------> Packager -> END
-    ("keep fixing" starts at the Validator with the previous version's code)
+    ("keep fixing" starts at the Validator with the previous version's code; with review_design the
+    Planner first waits for the user to approve the design, and a change in words goes back to the Architect)
                                               Validator --fail, making progress--> Error Classifier -> Reflector -> Validator
                                               Validator --fail, no progress------> Circuit Breaker -> END
 
@@ -48,7 +49,8 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     g.add_conditional_edges(START, lambda s: "validate" if (s.get("options") or {}).get("resume") else "parse_spec",
                             ["parse_spec", "validate"])
     g.add_edge("parse_spec", "plan")
-    g.add_edge("plan", "generate")
+    g.add_conditional_edges("plan", lambda s: "parse_spec" if s.get("design_feedback") else "generate",
+                            ["parse_spec", "generate"])
     g.add_edge("generate", "validate")
     g.add_conditional_edges("validate", nodes.route_after_validate, ["package", "classify", "failure_report"])
     g.add_edge("classify", "reflect")
@@ -99,7 +101,8 @@ def initial_state(
         state.update(base_run_id=base["run_id"], base_spec=base["spec"], base_files=base["files"],
                      base_failed=bool(base.get("failed")))
         if state["options"].get("resume"):  # keep fixing: the same design and code, a fresh healing history
-            state.update(spec=base["spec"], files=base["files"], template_files=base.get("template_files") or {})
+            state.update(spec=base["spec"], files=base["files"], template_files=base.get("template_files") or {},
+                         plugin_choices=base.get("plugin_choices") or [])
     return state
 
 
@@ -118,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     state = initial_state(args.prompt, options, spec)
     graph = build_graph()
-    config = {"configurable": {"thread_id": state["run_id"]}}
+    config = {"configurable": {"thread_id": state["run_id"]}, "recursion_limit": 130}
     final: dict[str, Any] = {}
     for update in graph.stream(state, config, stream_mode="updates"):
         for node, delta in update.items():

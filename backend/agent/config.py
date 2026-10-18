@@ -67,7 +67,17 @@ class Settings:
     # Empty sends nothing (the model's default).
     strong_reasoning: str = field(default_factory=lambda: os.environ.get("STRONG_REASONING", "high"))
     cheap_reasoning: str = field(default_factory=lambda: os.environ.get("CHEAP_REASONING", "low"))
-    llm_max_retries: int = field(default_factory=lambda: _env_int("LLM_MAX_RETRIES", 6))
+    # Retries inside one call (429s, server errors). Kept low: the fallback model is the next try, and a
+    # call that waits on retries holds one of the LLM_MAX_PARALLEL slots.
+    llm_max_retries: int = field(default_factory=lambda: _env_int("LLM_MAX_RETRIES", 2))
+    # A whole model call (all its retries and every streamed piece) may take this long, then the fallback
+    # model is tried. Stops one slow or stuck call from freezing a build.
+    llm_call_deadline_s: int = field(default_factory=lambda: _env_int("LLM_CALL_DEADLINE_S", 420))
+    max_active_runs_per_user: int = field(default_factory=lambda: _env_int("MAX_ACTIVE_RUNS_PER_USER", 2))
+    queue_max: int = field(default_factory=lambda: _env_int("QUEUE_MAX", 100))  # waiting builds before 503
+    retention_days: int = field(default_factory=lambda: _env_int("RETENTION_DAYS", 0))  # 0 = keep everything
+    run_deadline_s: int = field(default_factory=lambda: _env_int("RUN_DEADLINE_S", 3600))  # a whole build
+    llm_read_timeout_s: int = field(default_factory=lambda: _env_int("LLM_READ_TIMEOUT_S", 240))
 
     # "llm" lets the model write entity files; "template" is fully deterministic.
     codegen_mode: str = field(default_factory=lambda: os.environ.get("CODEGEN_MODE", "llm"))
@@ -86,6 +96,16 @@ class Settings:
     # build them, WORKER_CONCURRENCY at a time each. Default "local": the web server builds them itself.
     run_queue: str = field(default_factory=lambda: os.environ.get("RUN_QUEUE", "local").lower())
     redis_url: str = field(default_factory=lambda: os.environ.get("REDIS_URL", ""))
+    # One-click deploy of generated apps to a Kubernetes cluster (app/deploy.py, docs/DEPLOY.md).
+    deploy_kubeconfig_b64: str = field(default_factory=lambda: os.environ.get("DEPLOY_KUBECONFIG_B64", ""))
+    deploy_domain: str = field(default_factory=lambda: os.environ.get("DEPLOY_DOMAIN", ""))  # apps get <name>.<domain>
+    deploy_runtime_image: str = field(default_factory=lambda: os.environ.get("DEPLOY_RUNTIME_IMAGE", ""))
+    deploy_ingress_class: str = field(default_factory=lambda: os.environ.get("DEPLOY_INGRESS_CLASS", "nginx"))
+    deploy_tls_issuer: str = field(default_factory=lambda: os.environ.get("DEPLOY_TLS_ISSUER", ""))  # cert-manager
+    deploy_storage_class: str = field(default_factory=lambda: os.environ.get("DEPLOY_STORAGE_CLASS", ""))
+    deploy_max_per_user: int = field(default_factory=lambda: _env_int("DEPLOY_MAX_PER_USER", 3))
+    deploy_ttl_hours: int = field(default_factory=lambda: _env_int("DEPLOY_TTL_HOURS", 0))  # 0 = keep
+    public_url: str = field(default_factory=lambda: os.environ.get("PUBLIC_URL", "").rstrip("/"))
     worker_concurrency: int = field(default_factory=lambda: _env_int("WORKER_CONCURRENCY", 2))
     gate_timeout_s: int = field(default_factory=lambda: _env_int("GATE_TIMEOUT_S", 60))
 

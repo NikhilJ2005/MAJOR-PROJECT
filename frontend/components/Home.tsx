@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { PromptBuilder } from "@/components/PromptBuilder";
 import type { Project, ServerConfig } from "@/lib/api";
 
 const EXAMPLES: [string, string][] = [
@@ -25,8 +26,9 @@ function ago(ts: number) {
 }
 
 export function StatusDot({ status }: { status?: string | null }) {
-  const cls = status === "succeeded" ? "bg-emerald-400" : status === "running" ? "animate-pulse bg-signal-400" : status ? "bg-rose-400" : "bg-ink-600";
-  const text = status === "succeeded" ? "Working" : status === "running" ? "Building" : status ? "Needs attention" : "Not built";
+  const waiting = status === "awaiting_approval";
+  const cls = status === "succeeded" ? "bg-emerald-400" : status === "running" || waiting ? "animate-pulse bg-signal-400" : status ? "bg-rose-400" : "bg-ink-600";
+  const text = status === "succeeded" ? "Working" : status === "running" ? "Building" : waiting ? "Waiting for your approval" : status ? "Needs attention" : "Not built";
   return (
     <span className="inline-flex items-center gap-1.5 text-xs text-ink-300">
       <span className={`h-2 w-2 rounded-full ${cls}`} />
@@ -43,23 +45,33 @@ export function Home({
 }: {
   config: ServerConfig | null;
   projects: Project[];
-  onCreate: (prompt: string, stack: string, plugins: string[]) => Promise<void>;
+  onCreate: (prompt: string, stack: string, plugins: string[], pluginsOff: string[]) => Promise<void>;
   onOpen: (id: string) => void;
 }) {
   const [prompt, setPrompt] = useState("");
   const [stack, setStack] = useState("fastapi");
-  const [chosen, setChosen] = useState<string[] | null>(null);
+  // Plugins are chosen by the agents; the user may force one on or off.
+  const [force, setForce] = useState<Record<string, "on" | "off">>({});
   const [busy, setBusy] = useState(false);
+  const [guided, setGuided] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const plugins = config?.plugins ?? [];
-  const active = chosen ?? plugins.filter((p) => p.default).map((p) => p.name);
+  const forced = (mode: "on" | "off") => Object.keys(force).filter((n) => force[n] === mode);
+  const cycle = (name: string) =>
+    setForce((f) => {
+      const next = { ...f };
+      if (!f[name]) next[name] = "on";
+      else if (f[name] === "on") next[name] = "off";
+      else delete next[name];
+      return next;
+    });
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      await onCreate(prompt.trim(), stack, active);
+      await onCreate(prompt.trim(), stack, forced("on"), forced("off"));
     } catch (err) {
       setError((err as Error).message.replace(/^\d+: /, ""));
       setBusy(false);
@@ -107,23 +119,23 @@ export function Home({
             {plugins.length > 0 && (
               <details className="relative">
                 <summary className="cursor-pointer list-none rounded-lg px-3 py-1.5 text-sm text-ink-300 hover:bg-ink-800 hover:text-ink-50">
-                  Plugins{active.length ? ` (${active.length})` : ""}
+                  Plugins: {Object.keys(force).length ? `agents + ${Object.keys(force).length} set by you` : "chosen by the agents"}
                 </summary>
-                <div className="absolute left-0 z-10 mt-2 w-72 space-y-1 rounded-xl border border-ink-700 bg-ink-900 p-2 shadow-xl">
-                  {plugins.map((p) => (
-                    <label key={p.name} className="flex cursor-pointer gap-2 rounded-lg p-2 hover:bg-ink-800">
-                      <input
-                        type="checkbox"
-                        className="mt-1 accent-[var(--color-signal-400)]"
-                        checked={active.includes(p.name)}
-                        onChange={() => setChosen(active.includes(p.name) ? active.filter((n) => n !== p.name) : [...active, p.name])}
-                      />
-                      <span>
-                        <span className="block text-sm text-ink-100">{p.name}</span>
-                        <span className="block text-xs text-ink-400">{p.description}</span>
-                      </span>
-                    </label>
-                  ))}
+                <div className="absolute left-0 z-10 mt-2 w-80 space-y-1 rounded-xl border border-ink-700 bg-ink-900 p-2 shadow-xl">
+                  <p className="px-2 pb-1 text-xs text-ink-400">The Architect picks the plugins your app needs and says why. Click one to force it on or off.</p>
+                  {plugins.map((p) => {
+                    const mode = force[p.name] ?? (p.always ? "always" : "auto");
+                    const chip = { on: "bg-signal-400 text-ink-950", off: "bg-rose-500/20 text-rose-200", always: "bg-ink-700 text-ink-200", auto: "bg-ink-800 text-ink-300" }[mode];
+                    return (
+                      <button type="button" key={p.name} onClick={() => cycle(p.name)} className="flex w-full items-start gap-2 rounded-lg p-2 text-left hover:bg-ink-800">
+                        <span className={`mt-0.5 w-14 shrink-0 rounded px-1.5 py-0.5 text-center text-[11px] font-medium ${chip}`}>{mode}</span>
+                        <span>
+                          <span className="block text-sm text-ink-100">{p.name}</span>
+                          <span className="block text-xs text-ink-400">{p.description}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               </details>
             )}
@@ -136,8 +148,12 @@ export function Home({
           </div>
         </form>
         {error && <p className="mt-3 text-sm text-rose-300">{error}</p>}
+        {guided && <PromptBuilder onClose={() => setGuided(false)} onUse={(text) => { setPrompt(text); setGuided(false); }} />}
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          <span className="text-sm text-ink-400">Try:</span>
+          <button onClick={() => setGuided(true)} className="rounded-full bg-signal-400/15 px-3 py-1 text-sm font-medium text-signal-200 hover:bg-signal-400/25">
+            Build it step by step
+          </button>
+          <span className="text-sm text-ink-400">or try:</span>
           {EXAMPLES.map(([name, text]) => (
             <button
               key={name}

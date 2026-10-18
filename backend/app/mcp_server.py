@@ -49,9 +49,11 @@ def summary(snap: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_mcp(manager: RunManager, store: Store, start_run: Callable[..., str],
-              preview: Callable[[str], str] | None = None) -> MCPServer:
-    """Create the MCP server. `start_run(user, prompt, options)` and `preview(run_id) -> path` are the
-    same functions the HTTP API uses."""
+              preview: Callable[[str], str] | None = None,
+              deploy: Callable[[str, dict[str, Any]], dict[str, Any] | None] | None = None,
+              deployment: Callable[[str, dict[str, Any]], dict[str, Any] | None] | None = None) -> MCPServer:
+    """Create the MCP server. `start_run(user, prompt, options)`, `preview(run_id) -> path`, `deploy(project_id,
+    user)` and `deployment(project_id, user)` are the same functions the HTTP API uses."""
     server = MCPServer(name="VibeStack", instructions=INSTRUCTIONS, version="2.0.0")
 
     def user_from(ctx: Context) -> dict[str, Any]:
@@ -171,5 +173,25 @@ def build_mcp(manager: RunManager, store: Store, start_run: Callable[..., str],
         if not snap.get("has_artifact"):
             raise ToolError("this run has no zip (it is still running, or it failed before packaging)")
         return f"{site(ctx)}/api/runs/{run_id}/download"
+
+    @server.tool()
+    async def deploy_project(project_id: str, ctx: Context) -> dict[str, Any]:
+        """Put the project's current (passing) version live on the Kubernetes cluster; returns the URL and progress."""
+        if deploy is None:
+            raise ToolError("deploying is not set up on this server")
+        try:
+            return await asyncio.to_thread(deploy, project_id, user_from(ctx)) or {}
+        except HTTPException as exc:
+            raise ToolError(str(exc.detail)) from None
+
+    @server.tool()
+    async def deployment_status(project_id: str, ctx: Context) -> dict[str, Any]:
+        """Whether the project is live: its URL, status (deploying, live, failed), each step, and the cause of a failure."""
+        if deployment is None:
+            raise ToolError("deploying is not set up on this server")
+        try:
+            return await asyncio.to_thread(deployment, project_id, user_from(ctx)) or {"status": "not deployed"}
+        except HTTPException as exc:
+            raise ToolError(str(exc.detail)) from None
 
     return server

@@ -103,9 +103,50 @@ def test_offline_has_only_the_template_rung():
     assert not keep
 
 
-def test_circles_stop():
-    keep, reason = _go([_h("tests", 2, "a"), _h("tests", 1, "b"), _h("tests", 2, "a")])
+def test_circles_stop_when_the_same_change_repeats():
+    # Going back to an earlier version once is allowed (a bad repair rolled back) ...
+    keep, _ = _go([_h("tests", 2, "a"), _h("tests", 1, "b", sig="x"), _h("tests", 2, "a")])
+    assert keep
+    # ... the same change happening again is going in circles.
+    keep, reason = _go([_h("tests", 2, "a"), _h("tests", 1, "b", sig="x"), _h("tests", 2, "a"), _h("tests", 1, "b", sig="x")])
     assert not keep and "circles" in reason
+
+
+def test_improving_on_the_previous_attempt_is_progress():
+    from agent.healing import made_progress, stalls
+
+    # best was 3 failing; a template restore made it 10; then 6, then 4: each repair improved -> no stalls
+    history = [_h("tests", 3, "a", sig="s"), _h("tests", 10, "b", sig="t"), _h("tests", 6, "c", sig="t"), _h("tests", 4, "d", sig="t")]
+    assert not made_progress(history[1], history[:1])  # worse than before
+    assert made_progress(history[2], history[:2]) and made_progress(history[3], history[:3])
+    assert stalls(history) == 0
+
+
+def test_fixing_some_tests_counts_even_when_others_break():
+    from agent.healing import made_progress
+
+    before = {**_h("tests", 2, "a", sig="s"), "failed_tests": ["t::a", "t::b"]}
+    after = {**_h("tests", 2, "b", sig="s"), "failed_tests": ["t::b", "t::c"]}
+    assert made_progress(after, [before])
+
+
+def test_busy_machine_is_retried_but_not_forever():
+    from agent.healing import best_index, regressed, stalls
+
+    busy = {**_h("tests", None, "a", sig="timeout"), "transient": True}
+    history = [_h("tests", 2, "a"), busy, busy]
+    assert stalls(history) == 0 and best_index(history) == 0 and not regressed(history)
+    keep, reason = _go(history)
+    assert keep and "busy" in reason
+    keep, reason = _go([_h("tests", 2, "a"), busy, busy, busy, busy])
+    assert not keep and "not a bug" in reason
+
+
+def test_a_worse_result_is_a_regression_to_roll_back():
+    from agent.healing import best_index, regressed
+
+    history = [_h("tests", 5, "a"), _h("tests", 1, "b"), _h("import", None, "c")]
+    assert best_index(history) == 1 and regressed(history)
 
 
 def test_budget_stops_but_never_before_the_first_repair():
@@ -150,3 +191,23 @@ def test_sandbox_limits_are_not_code_bugs():
     log = "Traceback ...\nRuntimeError: can't start new thread\nTimeoutError: /health did not respond"
     assert classify_error(log) == "sandbox"
     assert problems_in({"gate": "boot", "log": log}) == []
+
+
+def test_several_failing_services_are_targeted_in_one_attempt():
+    from agent.healing import failing_targets
+    from tests.specs import ESCROW
+
+    spec = ProjectSpec.model_validate(ESCROW)
+    rules = (
+        'def test_fund(client):\n    client.post("/milestones/1/fund")\n\n'
+        'def test_bid(client):\n    client.get("/bids/")\n\n'
+        'def test_submit(client):\n    client.post("/milestones/1/submit")\n'
+    )
+    files = {"tests/test_rules.py": rules, "app/services/milestone.py": "", "app/services/bid.py": "",
+             "app/routers/bid.py": ""}
+    log = ("FAILED tests/test_rules.py::test_fund - assert 500 == 200\n"
+           "FAILED tests/test_rules.py::test_bid - assert 500 == 200\n"
+           "FAILED tests/test_rules.py::test_submit - assert 500 == 200\n")
+    # Bid has no actions in this design, so its router failure points at app/services/bid.py (its business logic).
+    assert failing_targets(log, files, spec, "app/services/milestone.py") == ["app/services/milestone.py", "app/services/bid.py"]
+    assert failing_targets(log, files, spec, None, limit=1) == ["app/services/milestone.py"]

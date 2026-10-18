@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Architecture } from "@/components/Architecture";
-import { AgentSteps, deriveSteps } from "@/components/AgentSteps";
+import { AgentSteps, BuildMeter, deriveSteps, explainStop } from "@/components/AgentSteps";
+import { DeployButton } from "@/components/DeployPanel";
+import { DesignReview } from "@/components/DesignReview";
 import { Files } from "@/components/Files";
 import { LiveCode } from "@/components/LiveCode";
 import { StatusDot } from "@/components/Home";
@@ -17,7 +19,8 @@ type Tab = (typeof TABS)[number];
 export function Workspace({ projectId, onHome }: { projectId: string; onHome: () => void }) {
   const [project, setProject] = useState<ProjectDetail | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("Preview");
+  const [chosenTab, setChosenTab] = useState<Tab>("Preview");
+  const [leftReview, setLeftReview] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const p = await api.project(projectId);
@@ -30,7 +33,7 @@ export function Workspace({ projectId, onHome }: { projectId: string; onHome: ()
       const p = await load();
       const latest = p.versions[p.versions.length - 1];
       setSelected((s) => s ?? (latest?.status === "running" ? latest.run_id : p.current_run_id ?? latest?.run_id ?? null));
-      if (latest?.status === "running") setTab("Live");  // watch the agents write
+      if (latest?.status === "running") setChosenTab("Live");  // watch the agents write
     })();
   }, [load]);
 
@@ -38,10 +41,17 @@ export function Workspace({ projectId, onHome }: { projectId: string; onHome: ()
   const live = useRun(running?.run_id ?? null, async () => {
     const p = await load();
     setSelected(p.versions[p.versions.length - 1]?.run_id ?? null);
-    setTab("Preview");
+    setChosenTab("Preview");
   });
   const shown = useRun(selected === running?.run_id ? null : selected);
   const snap = selected === running?.run_id ? live.snap : shown.snap;
+  const reviewing = live.snap?.status === "awaiting_approval" && selected === running?.run_id;
+  // While the build waits for the user's approval, open the design, unless they picked another tab since.
+  const tab = reviewing && leftReview !== running?.run_id ? "Design" : chosenTab;
+  const setTab = (t: Tab) => {
+    setChosenTab(t);
+    if (reviewing) setLeftReview(running?.run_id ?? null);
+  };
 
   async function send(prompt: string, mode: "edit" | "fix" = "edit") {
     const { run_id } = await api.message(projectId, prompt, mode);
@@ -78,10 +88,24 @@ export function Workspace({ projectId, onHome }: { projectId: string; onHome: ()
               className={`-mb-px border-b-2 px-3 py-3 text-sm ${tab === t ? "border-signal-400 font-medium text-ink-50" : "border-transparent text-ink-400 hover:text-ink-100"}`}
             >
               {t}
+              {t === "Design" && reviewing && <span className="ml-1.5 inline-block h-2 w-2 animate-pulse rounded-full bg-signal-400" aria-label="waiting for your approval" />}
               {t === "Quality" && (snap?.bugs?.length ?? 0) > 0 && <span className="ml-1.5 rounded-full bg-signal-400/20 px-1.5 text-xs text-signal-300">{snap?.bugs?.length}</span>}
             </button>
           ))}
           <div className="ml-auto flex items-center gap-2">
+            {running && (
+              <button
+                onClick={() => confirm("Stop this build? The last finished step is kept.") && api.cancel(running.run_id).then(live.refresh, () => {})}
+                className="rounded-lg border border-ink-700 px-3 py-1.5 text-sm text-ink-300 hover:border-rose-400 hover:text-rose-200"
+              >
+                Stop
+              </button>
+            )}
+            <DeployButton
+              projectId={projectId}
+              currentRunId={project.current_run_id}
+              canDeploy={project.versions.some((v) => v.run_id === project.current_run_id && v.status === "succeeded")}
+            />
             {snap?.has_artifact && selected && (
               <a href={api.downloadUrl(selected)} className="rounded-lg border border-ink-700 px-3 py-1.5 text-sm text-ink-100 hover:border-ink-500">
                 Download code
@@ -100,7 +124,14 @@ export function Workspace({ projectId, onHome }: { projectId: string; onHome: ()
           )}
           <div className={tab === "Preview" || tab === "Live" ? "hidden" : "p-5"}>
             {tab === "Code" && selected && <Files runId={selected} files={snap?.files ?? []} version={snap?.ledger?.length ?? 0} />}
-            {tab === "Design" && (snap?.spec ? <Architecture spec={snap.spec} plan={snap.file_plan} /> : <Empty text="The Architect's design appears here." />)}
+            {tab === "Design" &&
+              (reviewing && snap?.spec && selected ? (
+                <DesignReview key={JSON.stringify(snap.spec)} runId={selected} spec={snap.spec} onSent={() => { live.refresh(); setTab("Live"); }} />
+              ) : snap?.spec ? (
+                <Architecture spec={snap.spec} plan={snap.file_plan} plugins={snap.plugin_choices} />
+              ) : (
+                <Empty text="The Architect's design appears here." />
+              ))}
             {tab === "Tests" && <Tests validation={snap?.validation} report={snap?.report} files={snap?.files ?? []} />}
             {tab === "Quality" && (
               <BugsAndHealing entries={snap?.ledger ?? []} bugs={snap?.bugs ?? []} notes={snap?.review ?? []} done={snap?.status !== "running"} stopReason={snap?.stop_reason} />
@@ -160,6 +191,7 @@ function ChatPanel({
         <button onClick={onHome} className="text-sm text-ink-400 hover:text-ink-50" aria-label="All projects">All projects</button>
         <span className="text-ink-600">/</span>
         <span className="truncate font-medium text-ink-50">{project.name}</span>
+        <ProjectRules project={project} />
       </div>
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5">
         {project.versions.map((v) => (
@@ -224,6 +256,47 @@ function ChatPanel({
   );
 }
 
+/** Rules every agent follows on every build of this project (like a knowledge file). */
+function ProjectRules({ project }: { project: ProjectDetail }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState(project.instructions ?? "");
+  const [saved, setSaved] = useState(project.instructions ?? "");
+  return (
+    <div className="relative ml-auto">
+      <button onClick={() => setOpen((o) => !o)} className="rounded-md px-2 py-1 text-xs text-ink-400 hover:bg-ink-800 hover:text-ink-50">
+        Rules{saved ? " ✓" : ""}
+      </button>
+      {open && (
+        <div className="absolute right-0 z-20 mt-2 w-80 rounded-xl border border-ink-700 bg-ink-900 p-3 shadow-2xl">
+          <p className="text-sm font-medium text-ink-100">Project rules</p>
+          <p className="mb-2 text-xs text-ink-400">Every agent follows these on every build of this project.</p>
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            rows={6}
+            placeholder={"Prices are in cents.\nUse British English in the app.\nOnly admins may delete invoices."}
+            className="w-full resize-none rounded-lg border border-ink-700 bg-ink-950 p-2 text-sm text-ink-100 outline-none focus:border-ink-500"
+          />
+          <div className="mt-2 flex justify-end gap-2">
+            <button onClick={() => setOpen(false)} className="px-2 text-sm text-ink-400 hover:text-ink-100">Close</button>
+            <button
+              disabled={text === saved}
+              onClick={async () => {
+                await api.setRules(project.id, text);
+                setSaved(text);
+                setOpen(false);
+              }}
+              className="rounded-lg bg-signal-400 px-3 py-1 text-sm font-semibold text-ink-950 disabled:opacity-40"
+            >
+              Save rules
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Message({
   version, isCurrent, isSelected, steps, snap, onSelect, onRestore,
 }: {
@@ -239,13 +312,13 @@ function Message({
   const changes = snap?.changes;
   return (
     <div className="space-y-2">
-      <div className="ml-8 rounded-2xl rounded-tr-sm bg-ink-800 px-4 py-2.5 text-sm leading-relaxed text-ink-50">{version.prompt}</div>
+      <div className="ml-8 max-h-64 overflow-y-auto whitespace-pre-line rounded-2xl rounded-tr-sm bg-ink-800 px-4 py-2.5 text-sm leading-relaxed text-ink-50">{version.prompt}</div>
       <div
         className={`rounded-2xl rounded-tl-sm border px-4 py-3 ${isSelected ? "border-ink-600 bg-ink-900" : "border-ink-800 bg-ink-900/50"}`}
       >
         <div className="flex items-center gap-2">
           <button onClick={onSelect} className="font-display font-bold text-ink-50 hover:text-signal-300">Version {version.version}</button>
-          <StatusDot status={version.status} />
+          <StatusDot status={isSelected && snap?.status === "awaiting_approval" ? snap.status : version.status} />
           {isCurrent && <span className="rounded-full bg-ink-700 px-2 py-0.5 text-xs text-ink-200">current</span>}
           {!isCurrent && version.status === "succeeded" && (
             <button onClick={onRestore} className="ml-auto text-xs text-ink-400 hover:text-signal-300">Make current</button>
@@ -269,6 +342,7 @@ function Message({
             {changes.removed.map((n) => <span key={n} className="rounded bg-rose-500/15 px-1.5 py-0.5 text-rose-300">− {n}</span>)}
           </div>
         )}
+        {snap && isSelected && <BuildMeter snap={snap} startedAt={version.created_at} finishedAt={version.finished_at} />}
         {steps && (
           <div className="mt-3">
             <AgentSteps steps={steps} compact={version.status !== "running"} />
@@ -288,6 +362,7 @@ function FailureSummary({ snap }: { snap: Snapshot }) {
   return (
     <div className="mt-2 rounded-lg border border-rose-400/30 bg-rose-500/5 px-3 py-2 text-sm">
       {snap.stop_reason && <p className="text-rose-200">Stopped: {snap.stop_reason}</p>}
+      {explainStop(snap.stop_reason, snap.error_class) && <p className="mt-1 text-ink-200">{explainStop(snap.stop_reason, snap.error_class)}</p>}
       {open.length > 0 && (
         <ul className="mt-1 space-y-1 text-ink-200">
           {open.map((b) => (

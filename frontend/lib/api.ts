@@ -10,6 +10,7 @@ export type LedgerEntry = {
   model?: string;
   diff?: Record<string, string>;
   tools?: ToolCall[];
+  ts?: number;
 };
 
 export type ToolCall = { tool: string; args: Record<string, unknown>; result: string };
@@ -37,7 +38,7 @@ export type Project = {
   versions?: number;
   latest_status?: string | null;
 };
-export type ProjectDetail = Omit<Project, "versions"> & { versions: Version[]; busy: boolean };
+export type ProjectDetail = Omit<Project, "versions"> & { versions: Version[]; busy: boolean; instructions?: string | null };
 
 export type Field = {
   name: string;
@@ -52,7 +53,15 @@ export type Field = {
   on_delete?: string | null;
   index?: boolean;
 };
-export type Entity = { name: string; fields: Field[]; write_access?: "any_user" | "owner" | "admin"; requirement_ids?: string[]; realtime?: boolean };
+export type Entity = {
+  name: string;
+  fields: Field[];
+  write_access?: "any_user" | "owner" | "admin";
+  write_roles?: string[];
+  requirement_ids?: string[];
+  realtime?: boolean;
+};
+export type Role = { name: string; self_signup?: boolean; description?: string };
 export type Action = {
   name: string;
   entity: string;
@@ -61,6 +70,8 @@ export type Action = {
   description?: string;
   rules?: string[];
   admin_only?: boolean;
+  roles?: string[];
+  locks?: boolean;
   requirement_ids?: string[];
 };
 export type Requirement = { id: string; text: string; kind: "data" | "rule" | "permission" | "endpoint" };
@@ -73,6 +84,16 @@ export type Spec = {
   entities: Entity[];
   actions?: Action[];
   requirements?: Requirement[];
+  roles?: Role[];
+  plugins?: { name: string; reason?: string }[];
+};
+
+/** Production features the verified templates provide (agent/state.FEATURES). */
+export const FEATURES: Record<string, string> = {
+  refresh_tokens: "Refresh tokens with rotation",
+  account_lockout: "Lock accounts after 5 failed logins",
+  audit_log: "Immutable audit log",
+  rate_limit: "Rate limits (Redis when available)",
 };
 
 export type Validation = { ok: boolean; gate: string; log: string; failing_file?: string | null; duration_s?: number };
@@ -87,7 +108,8 @@ export type Snapshot = {
   changes?: { added: string[]; changed: string[]; removed: string[] } | null;
   prompt?: string;
   status: string;
-  options?: { stack?: string; codegen_mode?: string; plugins?: string[] };
+  options?: { stack?: string; codegen_mode?: string; plugins?: string[]; review_design?: boolean };
+  plugin_choices?: PluginChoice[];
   spec?: Spec;
   file_plan?: { path: string; owner: string; purpose: string }[];
   files?: string[];
@@ -99,12 +121,15 @@ export type Snapshot = {
   bugs?: Bug[];
   review?: ReviewNote[];
   stop_reason?: string | null;
+  error_class?: string | null;
+  budget_usd?: number;
   report?: string | null;
   has_artifact?: boolean;
   has_draft?: boolean;
 };
 
-export type PluginInfo = { name: string; description: string; hooks: string[]; default: boolean };
+export type PluginInfo = { name: string; description: string; hooks: string[]; default: boolean; when?: string; always?: boolean };
+export type PluginChoice = { name: string; by: "user" | "architect" | "planner" | "default"; reason: string };
 
 export type ServerConfig = {
   llm_enabled: boolean;
@@ -118,6 +143,20 @@ export type ServerConfig = {
   stacks: { name: string; label: string }[];
   plugins: PluginInfo[];
   models: { strong: string; cheap: string; fallback: string };
+  deploy_enabled?: boolean;
+  deploy_domain?: string | null;
+};
+
+export type DeployStep = { id: string; label: string; state: "waiting" | "running" | "done" | "failed"; detail: string };
+export type Deployment = {
+  run_id: string;
+  namespace: string;
+  url: string;
+  status: "deploying" | "live" | "failed";
+  message?: string | null;
+  steps: DeployStep[];
+  created_at: number;
+  updated_at: number;
 };
 
 export type RunEvent = {
@@ -143,7 +182,7 @@ export type RunEvent = {
 export type RunSummary = { run_id: string; prompt: string; stack: string; status: string; created_at: number };
 export type Stats = { runs: number; succeeded: number; success_rate: number; avg_repairs: number; bugs_found: number; bugs_fixed: number; cost_usd: number };
 export type PreviewInfo = { running: boolean; base: string | null; docs: string | null };
-export type StartRun = { prompt: string; stack: string; codegen_mode?: string; plugins: string[] };
+export type StartRun = { prompt: string; stack: string; codegen_mode?: string; plugins: string[]; plugins_off: string[]; review_design?: boolean };
 
 // --- login token (kept in this browser only) -------------------------------------------
 const TOKEN_KEY = "vibestack-token";
@@ -206,7 +245,11 @@ export const api = {
   projects: () => request<Project[]>("/api/projects"),
   project: (id: string) => request<ProjectDetail>(`/api/projects/${id}`),
   message: (id: string, prompt: string, mode: "edit" | "fix" = "edit") =>
-    request<{ run_id: string; project_id: string }>(`/api/projects/${id}/messages`, post({ prompt, mode })),
+    request<{ run_id: string; project_id: string }>(`/api/projects/${id}/messages`, post({ prompt, mode, review_design: mode === "edit" })),
+  setRules: (projectId: string, instructions: string) =>
+    request<Project>(`/api/projects/${projectId}`, { method: "PATCH", body: JSON.stringify({ instructions }) }),
+  cancel: (id: string) => request<{ status: string }>(`/api/runs/${id}/cancel`, { method: "POST" }),
+  approve: (id: string, body: { spec?: Spec; instruction?: string }) => request<{ status: string }>(`/api/runs/${id}/approve`, post(body)),
   restore: (id: string, run_id: string) => request<{ current_run_id: string }>(`/api/projects/${id}/current`, post({ run_id })),
   file: async (id: string, path: string) => {
     const res = await fetch(`${API}/api/runs/${id}/files/${path}`, { headers: { Authorization: `Bearer ${getToken()}` } });
@@ -216,6 +259,9 @@ export const api = {
   previewStatus: (id: string, draft = false) => request<PreviewInfo>(`/api/runs/${id}/preview${draft ? "?draft=true" : ""}`),
   startPreview: (id: string, draft = false) =>
     request<PreviewInfo>(`/api/runs/${id}/preview${draft ? "?draft=true" : ""}`, { method: "POST" }),
+  deploy: (projectId: string) => request<Deployment>(`/api/projects/${projectId}/deploy`, { method: "POST" }),
+  deployment: (projectId: string) => request<Deployment | null>(`/api/projects/${projectId}/deployment`),
+  undeploy: (projectId: string) => request<null>(`/api/projects/${projectId}/deployment`, { method: "DELETE" }),
   eventsUrl: (id: string, after: number) => withToken(`${API}/api/runs/${id}/events?after=${after}`),
   downloadUrl: (id: string) => withToken(`${API}/api/runs/${id}/download`),
 };

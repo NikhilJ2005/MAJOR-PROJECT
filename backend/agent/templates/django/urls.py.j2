@@ -6,6 +6,7 @@ from django.db import connection
 from django.http import HttpResponse, JsonResponse
 from django.urls import path
 
+from app import logs
 from app.middleware import problem_response
 {% if spec.auth %}
 from app.routers import auth
@@ -30,6 +31,11 @@ def ready(request):
     except Exception:  # noqa: BLE001 - any failure means "not ready"
         return problem_response(503, "database unavailable")
     return JsonResponse({"status": "ready"})
+
+
+def metrics(request):
+    """Requests by route and status, for Prometheus."""
+    return HttpResponse(logs.metrics_text(), content_type="text/plain")
 
 
 def openapi(request):
@@ -66,6 +72,7 @@ urlpatterns = [
     path("static/<path:name>", static_file),
     path("health", health),
     path("ready", ready),
+    path("metrics", metrics),
     path("openapi.json", openapi),
     path("docs", docs),
 {% if spec.auth %}

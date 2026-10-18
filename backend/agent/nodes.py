@@ -24,6 +24,8 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from langgraph.types import interrupt
+
 from . import plugins, prompts
 from .analysis import check_coverage, requirements_text
 from .bughunt import failing_tests, static_check, update_bugs
@@ -31,13 +33,18 @@ from .codegen import plan_files, render_project
 from .config import settings
 from .frontend import UI, UIConfig, check_frontend, default_ui
 from .healing import (
+    best_index,
     classify_error,
     editable,
+    failing_targets,
+    guess_service,
     history_entry,
     locate_failing_file,
+    regressed,
     related_files,
     repair_rung,
     repair_target,
+    scaled_limits,
     should_continue,
 )
 from .ledger import (
@@ -92,7 +99,16 @@ def _opts(state: AgentState) -> dict[str, Any]:
 
 
 def _plugins(state: AgentState) -> list[tuple[str, Any]]:
+    """The plugins the Planner chose for this build (or, before planning, the ones the user asked for)."""
+    if state.get("plugin_choices") is not None:
+        return plugins.chosen([c["name"] for c in state["plugin_choices"]])
     return plugins.chosen(_opts(state).get("plugins"))
+
+
+def _rules(state: AgentState) -> str:
+    """The user's project rules, as a prompt section ("" when there are none)."""
+    rules = (_opts(state).get("instructions") or "").strip()
+    return prompts.PROJECT_RULES.format(rules=rules) if rules else ""
 
 
 def _count_tests(source: str) -> int:
@@ -131,7 +147,8 @@ def _design(llm: Any, state: AgentState) -> tuple[ProjectSpec, list[str], Usage]
     live = LiveText(live_writer(), "architect", "Design (JSON)")
 
     def design(text: str, usage: Usage | None = None) -> tuple[ProjectSpec, Usage]:
-        spec, used = structured(llm, "strong", prompts.SPEC_SYSTEM, text, ProjectSpec, effort="high", stream=live)
+        system = prompts.SPEC_SYSTEM + prompts.PLUGIN_CATALOG.format(catalog=plugins.catalog() or "(none)") + _rules(state)
+        spec, used = structured(llm, "strong", system, text, ProjectSpec, effort="high", stream=live)
         live.done()
         if usage:
             used.add(usage)
@@ -190,10 +207,26 @@ def _rule_tests(llm: Any, spec: ProjectSpec, ledger: list[dict[str, Any]], usage
     return {RULE_TESTS: source} if source else {}
 
 
+def _redesign(state: AgentState) -> dict[str, Any]:
+    llm = _require_llm()
+    progress("parse_spec", "Changing the design as you asked…")
+    spec, missing, usage = _design(llm, {**state, "base_spec": state["spec"], "prompt": state["design_feedback"]})
+    coverage = "all requirements covered" if not missing else f"not covered: {', '.join(missing)}"
+    ledger = [entry("architect", f"changed the design: {state['design_feedback'][:120]}", coverage,
+                    model=model_names(usage), tokens=usage.total_tokens)]
+    out = {"spec": spec.model_dump(), "design_feedback": None, "status": "spec_ready", "usage": usage.as_state(),
+           "ledger": ledger, "rule_tests_wanted": True}
+    if state.get("base_spec") and not state.get("base_failed"):  # an edit of an earlier version: what changed since it
+        out["changes"] = design_changes(ProjectSpec.model_validate(state["base_spec"]), spec)
+    return out
+
+
 def parse_spec(state: AgentState) -> dict[str, Any]:
     """Architect: prompt -> requirements + a validated design. (Its rule tests are written in parallel with
     the code, from the design alone: see generate.)"""
     stack = _opts(state).get("stack")
+    if state.get("design_feedback"):  # the user asked for a change on the design screen: edit the design
+        return _redesign(state)
     if state.get("spec"):
         spec = _with_stack(ProjectSpec.model_validate(state["spec"]), stack)
         return {
@@ -232,19 +265,36 @@ def parse_spec(state: AgentState) -> dict[str, Any]:
 
 
 def plan(state: AgentState) -> dict[str, Any]:
+    reviewed: list[dict[str, Any]] = []
+    if _opts(state).get("review_design"):
+        # Pause here until the user approves the design (POST /api/runs/{id}/approve). Nothing runs before
+        # this line, so the node can safely start over when the run continues.
+        decision = interrupt({"kind": "design_review"}) or {}
+        if decision.get("instruction"):
+            return {"design_feedback": decision["instruction"], "status": "spec_ready",
+                    "ledger": [entry("planner", "you asked for a design change", decision["instruction"])]}
+        if decision.get("spec"):
+            edited = _with_stack(ProjectSpec.model_validate(decision["spec"]), _spec(state).stack)
+            state = {**state, "spec": edited.model_dump()}
+            reviewed.append(entry("planner", "you edited and approved the design", "changes made on the design screen"))
+        else:
+            reviewed.append(entry("planner", "you approved the design", "no code is written before your approval"))
     spec = _spec(state)
+    choices = plugins.resolve(_opts(state), [c.model_dump() for c in spec.plugins], spec, state.get("prompt", ""))
+    state = {**state, "plugin_choices": choices}
     file_plan = plan_files(spec)
     template_files = render_project(spec)
     if _opts(state).get("edge_tests") is False:  # ablation study: run without the spec-derived edge-case tests
         template_files.pop(EDGE_TESTS, None)
         file_plan = [f for f in file_plan if f["path"] != EDGE_TESTS]
-    ledger = [
-        entry(
-            "planner",
-            f"planned {len(file_plan)} {get_stack(spec.stack).label} files in dependency order",
-            "models -> schemas -> services -> routers -> app wiring -> tests -> packaging",
-        )
-    ]
+    who = {"user": "you", "architect": "the Architect", "planner": "the Planner", "default": "the server settings"}
+    ledger = reviewed + [entry("planner", f"turned on the {c['name']} plugin (chosen by {who[c['by']]})", c["reason"])
+                         for c in choices]
+    ledger.append(entry(
+        "planner",
+        f"planned {len(file_plan)} {get_stack(spec.stack).label} files in dependency order",
+        "models -> schemas -> services -> routers -> app wiring -> tests -> packaging",
+    ))
     for name, added in plugins.extra_files(_plugins(state), spec).items():
         added = {p: c for p, c in added.items() if p not in template_files}  # plugins add, never overwrite
         template_files.update(added)
@@ -254,6 +304,9 @@ def plan(state: AgentState) -> dict[str, Any]:
     return {
         "file_plan": file_plan,
         "template_files": template_files,
+        "plugin_choices": choices,
+        "spec": spec.model_dump(),
+        "design_feedback": None,
         "status": "planned",
         "ledger": ledger,
     }
@@ -299,7 +352,10 @@ def generate(state: AgentState) -> dict[str, Any]:
                                 "unchanged by the edit, so their code (and its fixes) is reused"))
 
     jobs: dict[str, Any] = {}
-    with ThreadPoolExecutor(max_workers=max(2, settings.llm_max_parallel)) as pool:
+    # Not a `with` block: leaving it would wait for a job that is stuck. Every model call has its own
+    # deadline, and JOB_TIMEOUT is the backstop for a whole job (call, syntax fix, calibration run).
+    pool = ThreadPoolExecutor(max_workers=max(2, settings.llm_max_parallel))
+    try:
         if model is not None and state.get("rule_tests_wanted"):
             test_ledger: list[dict[str, Any]] = []
             test_usage = Usage()
@@ -321,7 +377,7 @@ def generate(state: AgentState) -> dict[str, Any]:
             ledger.append(entry("code_generator", "no business logic to write",
                                 "no custom actions: the verified templates are the whole backend"))
         for done, e in enumerate([e for e in todo if e.name in jobs], 1):
-            new_files, rationale, usage = jobs[e.name].result()
+            new_files, rationale, usage = _result(jobs[e.name], ({}, "took too long; stubs kept", Usage()))
             progress("generate", f"Wrote {e.name} ({done}/{len(todo)})")
             total.add(usage)
             files.update(new_files)
@@ -331,7 +387,7 @@ def generate(state: AgentState) -> dict[str, Any]:
                                 rationale, files=sorted(new_files), tokens=usage.total_tokens, model=model_names(usage)))
         if llm is not None:
             if "ui" in jobs:
-                ui, rationale, usage = jobs["ui"].result()
+                ui, rationale, usage = _result(jobs["ui"], (None, "took too long; kept the default look", Usage()))
             else:
                 ui, rationale, usage = base_files[UI], "same entities as before: the app keeps its look", Usage()
             total.add(usage)
@@ -342,9 +398,11 @@ def generate(state: AgentState) -> dict[str, Any]:
                                 tokens=usage.total_tokens, model=model_names(usage)))
         rule_tests = {}
         if "rules" in jobs:
-            rule_tests = jobs["rules"].result()
+            rule_tests = _result(jobs["rules"], {})
             ledger.extend(test_ledger)
             total.add(test_usage)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
     out: dict[str, Any] = {"status": "generated", "iteration": 0, "ledger": ledger}
     if rule_tests.get(RULE_TESTS) and llm is None and spec.actions:
@@ -364,6 +422,17 @@ def generate(state: AgentState) -> dict[str, Any]:
     if total.calls:
         out["usage"] = total.as_state()
     return out
+
+
+def _result(job: Any, default: Any) -> Any:
+    """A parallel job's result, or `default` when it is still not done after JOB_TIMEOUT (never wait forever)."""
+    from concurrent.futures import TimeoutError as Late
+
+    try:
+        return job.result(timeout=3 * settings.llm_call_deadline_s)
+    except Late:
+        log.warning("a code generation job missed its deadline; continuing without it")
+        return default
 
 
 def _design_ui(llm: Any, state: AgentState, spec: ProjectSpec) -> tuple[str | None, str, Usage]:
@@ -393,6 +462,7 @@ def _generate_service(
     notes = plugins.prompt_notes(_plugins(state), stack.name)
     if notes:
         system += f"\n\nAlso follow these project rules:\n{notes}"
+    system += _rules(state)
     user = prompts.SERVICE_USER.format(
         prompt=state["prompt"],
         requirements=requirements_text(spec.requirements),
@@ -411,6 +481,15 @@ def _generate_service(
     body = parse_file_blocks(text).get(path, "")
     m = re.search(r"RATIONALE:\s*(.+)", text)
     rationale = m.group(1).strip() if m else "business logic written"
+    if not body.strip() and "### FILE:" in text:
+        # The reply was cut off before the file ended (an output limit): ask once more for a compact version.
+        try:
+            text, more = ask(llm, "strong", system, user + prompts.CUT_OFF_RETRY, effort="low")
+            usage.add(more)
+            body = parse_file_blocks(text).get(path, "")
+            rationale = "the first reply was cut off, so it was asked again; " + rationale
+        except LLMError:
+            pass
     if body.strip():
         body, note = _fix_syntax(llm, path, body, usage)
         rationale += note
@@ -461,7 +540,11 @@ def validate(state: AgentState) -> dict[str, Any]:
     if _opts(state).get("resume") and not state.get("heal_history"):
         ledger.insert(0, entry("validator", "kept fixing the previous version's code",
                                "same design and code; healing starts again from where it stopped"))
+    out: dict[str, Any] = {}
+    if not result.ok and best_index(history) == len(history) - 1:  # the best version so far: remember it
+        out = {"best_files": dict(files), "best_validation": validation}
     return {
+        **out,
         "validation": validation,
         "heal_history": history,
         "bugs": bugs,
@@ -482,13 +565,14 @@ def _keep_healing(state: AgentState) -> tuple[bool, str]:
         attempts = max(len(state.get("heal_history", [])) - 1, 0)
         return (True, f"fixed policy: repair {attempts + 1} of {fixed}") if attempts < fixed else (
             False, f"fixed limit of {fixed} repair attempts reached")
+    safety, budget = scaled_limits(_spec(state), settings.max_heal_safety, settings.max_cost_per_run_usd)
     return should_continue(
         state.get("heal_history", []),
         tokens_used=int((state.get("usage") or {}).get("total_tokens", 0)),
-        token_budget=settings.max_tokens_per_run,
+        token_budget=int(settings.max_tokens_per_run * budget / settings.max_cost_per_run_usd),
         llm_available=get_llm() is not None,
-        safety_limit=settings.max_heal_safety,
-        budget_problem=budget_left(state.get("usage")),
+        safety_limit=safety,
+        budget_problem=budget_left(state.get("usage"), budget),
     )
 
 
@@ -507,6 +591,8 @@ def classify(state: AgentState) -> dict[str, Any]:
     v = state["validation"]
     error_class = classify_error(v["log"])
     path = repair_target(locate_failing_file(v["log"], state["files"], spec), state["files"])
+    if path is None or not editable(path):  # nothing in the log points at the business logic: best guess
+        path = guess_service(v["log"], state["files"], spec) or path
     return {
         "error_class": error_class,
         "validation": {**v, "failing_file": path},
@@ -534,12 +620,26 @@ def reflect(state: AgentState) -> dict[str, Any]:
     v = state["validation"]
     files = state["files"]
     attempt = state.get("iteration", 0) + 1
-    if state.get("error_class") == "sandbox":
-        # The server ran out of threads/processes, not the code: change nothing, wait, validate again.
-        time.sleep(SANDBOX_RETRY_WAIT_S)
-        note = entry("reflector", f"attempt {attempt}: sandbox limit hit; re-running validation",
+    history = state.get("heal_history", [])
+    if history and history[-1].get("transient"):
+        # The machine was busy (sandbox limits, a timeout with no test result): change nothing, wait, test again.
+        busy = sum(1 for h in reversed(history) if h.get("transient"))
+        time.sleep(SANDBOX_RETRY_WAIT_S * busy)
+        note = entry("reflector", f"attempt {attempt}: the machine was busy; testing again unchanged",
                      prompts.ERROR_HINTS["sandbox"], iteration=attempt)
         return {"files": {}, "iteration": attempt, "status": "repaired", "ledger": [note]}
+    rollback: dict[str, str] = {}
+    if regressed(history) and state.get("best_files"):
+        # The last repair made things worse: start again from the best version, with its failures.
+        rollback = {p: c for p, c in state["best_files"].items() if files.get(p) != c}
+        files = {**files, **state["best_files"]}
+        spec = _spec(state)
+        best_v = state.get("best_validation") or v
+        target = repair_target(locate_failing_file(best_v["log"], files, spec), files)
+        if target is None or not editable(target):
+            target = guess_service(best_v["log"], files, spec) or target
+        v = {**best_v, "failing_file": target}
+        state = {**state, "files": files, "validation": v}
     path = v.get("failing_file")
     usage = Usage()
     changed: dict[str, str] = {}
@@ -552,14 +652,13 @@ def reflect(state: AgentState) -> dict[str, Any]:
     if llm is not None and path and rung in ("cheap", "strong"):
         try:
             if attempt > 1:  # the first repair always happens
-                check_budget(state.get("usage"))
-            progress("reflect", f"Repairing {path} with the {rung} model…")
-            text, usage, box = _llm_repair(llm, rung, state, path, attempt)
+                check_budget(state.get("usage"),
+                             scaled_limits(_spec(state), settings.max_heal_safety, settings.max_cost_per_run_usd)[1])
+            targets = failing_targets(v["log"], files, _spec(state), path, limit=max(1, min(3, settings.llm_max_parallel)))
+            targets = targets or [path]
+            progress("reflect", f"Repairing {', '.join(targets)} with the {rung} model…")
             agent = f"reflector ({rung})"
-            changed, diagnosis = _parse_repair(text, files)
-            if box is not None:
-                changed = {**box.changes(), **changed}  # staged with write_file, unless the answer repeats it
-                tool_calls = box.calls
+            text, usage, changed, diagnosis, tool_calls = _repair_files(llm, rung, state, targets, attempt)
             dispute = parse_dispute(text)
             if not changed and dispute:
                 changed, diagnosis, agent, more = _settle_dispute(llm, state, *dispute)
@@ -574,11 +673,13 @@ def reflect(state: AgentState) -> dict[str, Any]:
             diagnosis = (diagnosis + "; " if diagnosis else "") + f"restored {', '.join(changed)} from verified templates"
     if not changed:
         diagnosis = diagnosis or "no repair candidate found"
+    if rollback:
+        diagnosis = f"rolled back the previous repair (it made things worse); {diagnosis}"
 
     out: dict[str, Any] = {
-        "files": changed,
+        "files": {**rollback, **changed},
         "iteration": attempt,
-        "status": "repaired" if changed else "repair_failed",
+        "status": "repaired" if changed or rollback else "repair_failed",
         "ledger": [
             entry(
                 agent,
@@ -631,6 +732,7 @@ def _llm_repair(llm: Any, role: str, state: AgentState, path: str, attempt: int)
     notes = plugins.prompt_notes(_plugins(state), spec.stack)
     if notes:
         system += f"\n- Also follow these project rules:\n{notes}"
+    system += _rules(state)
     if _opts(state).get("tools", True) and hasattr(llm, "complete_with_tools"):
         box = Toolbox(files, spec, extra=plugins.tools(_plugins(state)) + load_mcp_tools())
         try:
@@ -642,6 +744,47 @@ def _llm_repair(llm: Any, role: str, state: AgentState, path: str, attempt: int)
             log.warning("tool-using repair failed (%s); repairing without tools", exc)
     text, usage = ask(llm, role, system, user, effort="high" if role == "strong" else "low")
     return text, usage, None
+
+
+def _repair_files(llm: Any, rung: str, state: AgentState, targets: list[str], attempt: int
+                  ) -> tuple[str, Usage, dict[str, str], str, list[dict[str, Any]]]:
+    """Repair one file, or several independent ones at the same time (each with its own tools and tests).
+
+    Returns (the first reply, usage, changed files, diagnosis, tool calls)."""
+    files = state["files"]
+
+    def one(path: str) -> tuple[str, Usage, dict[str, str], str, list[dict[str, Any]]]:
+        text, usage, box = _llm_repair(llm, rung, state, path, attempt)
+        changed, diagnosis = _parse_repair(text, files)
+        if box is not None:
+            changed = {**box.changes(), **changed}  # staged with write_file, unless the answer repeats it
+        return text, usage, changed, diagnosis, (box.calls if box is not None else [])
+
+    if len(targets) == 1:
+        return one(targets[0])
+    pool = ThreadPoolExecutor(max_workers=len(targets))
+    try:
+        jobs = [_submit(pool, one, path) for path in targets]
+        results = []
+        for path, job in zip(targets, jobs, strict=True):
+            try:
+                results.append((path, job.result(timeout=3 * settings.llm_call_deadline_s)))
+            except LLMError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - one target failing must not lose the others' repairs
+                log.warning("repair of %s failed: %s", path, exc)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    if not results:
+        raise LLMError("every repair failed")
+    usage, changed, notes, calls = Usage(), {}, [], []
+    for path, (_, used, files_changed, diagnosis, tool_calls) in results:
+        usage.add(used)
+        changed.update(files_changed)
+        calls += tool_calls
+        if diagnosis:
+            notes.append(f"{path}: {diagnosis}")
+    return results[0][1][0], usage, changed, "; ".join(notes), calls
 
 
 def _parse_repair(text: str, files: dict[str, str]) -> tuple[dict[str, str], str]:
@@ -705,10 +848,16 @@ def failure_report(state: AgentState) -> dict[str, Any]:
         f"- Suspected file: `{v.get('failing_file')}`\n\n## Last log\n\n```\n{v['log'][-3000:]}\n```\n"
     )
     stop = entry("circuit_breaker", "stopped healing; produced diagnostic report", reason)
-    final = {**state, "ledger": [*state.get("ledger", []), stop]}
+    shipped: dict[str, str] = {}
+    if regressed(state.get("heal_history", [])) and state.get("best_files"):
+        # Ship the best version reached, not whatever the last repair left.
+        shipped = {p: c for p, c in state["best_files"].items() if state["files"].get(p) != c}
+        stop["rationale"] += "; the zip holds the best version reached, not the last attempt"
+    final = {**state, "files": {**state["files"], **shipped}, "ledger": [*state.get("ledger", []), stop]}
     path = write_artifact(final, _spec(state).project_name,
                           {"VIBESTACK_LEDGER.md": ledger_markdown(final), "VIBESTACK_FAILURE.md": report})
-    return {"artifact_path": path, "report": report, "stop_reason": reason, "status": "failed", "ledger": [stop]}
+    return {"artifact_path": path, "report": report, "stop_reason": reason, "status": "failed", "ledger": [stop],
+            **({"files": shipped} if shipped else {})}
 
 
 __all__ = [

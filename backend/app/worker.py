@@ -13,6 +13,7 @@ import logging
 import os
 import signal
 import socket
+import sys
 import threading
 import time
 
@@ -88,6 +89,10 @@ def main() -> None:
     if settings.run_queue != "redis" or not settings.redis_url:
         raise SystemExit("set RUN_QUEUE=redis and REDIS_URL to run a worker")
     queue = RunQueue(settings.redis_url)
+    if "--check" in sys.argv:  # liveness probe: can this worker reach Redis and the database?
+        queue.r.ping()
+        Store(settings.platform_database_url).ping()
+        raise SystemExit(0)
     worker = Worker(RunManager(Store(settings.platform_database_url), queue, executes=True), queue, settings.worker_concurrency)
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: worker.stopping.set())

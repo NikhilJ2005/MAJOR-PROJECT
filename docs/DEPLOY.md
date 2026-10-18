@@ -75,6 +75,38 @@ This starts VibeStack, Postgres and MinIO (S3-compatible) on one machine. Put a 
 in front (Caddy: `reverse_proxy localhost:8000`), and set `S3_PUBLIC_ENDPOINT_URL` to the address where
 browsers reach MinIO.
 
+## Deploying generated apps to Kubernetes (one click)
+VibeStack can stay on Railway and still put the apps it builds live on a Kubernetes cluster you connect
+(k3s on a small VM, DigitalOcean, GKE, EKS ...). The **Deploy** button on a passing version, or the MCP tool
+`deploy_project`, creates for each app:
+- its own namespace with a quota and a network rule
+- a Postgres StatefulSet
+- a migration Job
+- two replicas
+- an Ingress at `<app>-<id>.<DEPLOY_DOMAIN>`
+
+Before the app is marked live, VibeStack tests its public URL (health, sign-up, login, a list). When a step
+fails, it reads the cluster's events and pod logs and explains the cause in plain English.
+
+No image is built per app (Railway has no Docker daemon). A generic runtime image downloads each app's code
+from VibeStack when it starts, through a secret link.
+
+1. **Build and push the runtime image:**
+   `docker build -t ghcr.io/you/vibestack-runtime:1 deploy/runtime && docker push ghcr.io/you/vibestack-runtime:1`
+2. **On the cluster:** install an ingress controller (ingress-nginx) and, for HTTPS, cert-manager with a ClusterIssuer.
+3. **DNS:** point a wildcard record, `*.apps.example.com`, at the ingress controller's address.
+4. **Set these variables on the VibeStack service(s):**
+
+| Variable | Value |
+|---|---|
+| `DEPLOY_KUBECONFIG_B64` | `base64 -w0 kubeconfig.yaml` (a service account that may create namespaces); not needed when VibeStack itself runs in the cluster |
+| `DEPLOY_DOMAIN` | `apps.example.com` |
+| `DEPLOY_RUNTIME_IMAGE` | the image from step 1 |
+| `PUBLIC_URL` | VibeStack's public address; the app pods download their code from it |
+| `DEPLOY_TLS_ISSUER` | cert-manager ClusterIssuer name (optional; HTTPS) |
+| `DEPLOY_INGRESS_CLASS`, `DEPLOY_STORAGE_CLASS` | when the defaults (`nginx`, the default storage class) do not fit |
+| `DEPLOY_MAX_PER_USER`, `DEPLOY_TTL_HOURS` | how many apps each user may have live; remove demo apps after N hours |
+
 ## Kubernetes
 `deploy/k8s/` holds plain manifests with kustomize:
 - a namespace, a ConfigMap and an example Secret

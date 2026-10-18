@@ -75,7 +75,7 @@ def entry(
     tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """One ledger line. Every node returns at least one, which makes a run explainable afterwards."""
-    e: dict[str, Any] = {"agent": agent, "action": action, "rationale": rationale}
+    e: dict[str, Any] = {"agent": agent, "action": action, "rationale": rationale, "ts": round(time.time(), 2)}
     if files:
         e["files"] = files
     if tokens:

@@ -7,6 +7,8 @@ config just points the host at it. No host is special: pick any, or several.
 import json
 
 DESCRIPTION = "Adds render.yaml, fly.toml and railway.json so the app deploys to Render, Fly.io or Railway"
+WHEN = "the user wants to deploy, host or put the app in production on a platform"
+KEYWORDS = ("deploy", "railway", "render", "fly.io", "heroku", "hosting", "production-ready")
 
 
 def extra_files(spec) -> dict[str, str]:

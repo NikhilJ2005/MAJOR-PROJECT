@@ -93,15 +93,31 @@ class RequestContext(BaseHTTPMiddleware):
         return response
 
 
-class RateLimiter:
-    """At most `limit` calls per `seconds` for each key (e.g. a client IP), in memory."""
+log = logging.getLogger("vibestack")
 
-    def __init__(self, limit: int, seconds: float) -> None:
-        self.limit, self.seconds = limit, seconds
+
+class RateLimiter:
+    """At most `limit` calls per `seconds` for each key (e.g. a client IP).
+
+    With a Redis client every web server shares the counts (a fixed window per key); without one, or
+    when Redis is unreachable, they are kept in this process.
+    """
+
+    def __init__(self, limit: int, seconds: float, redis: Any = None, name: str = "auth") -> None:
+        self.limit, self.seconds, self.redis, self.name = limit, seconds, redis, name
         self.calls: dict[str, deque[float]] = defaultdict(deque)
         self.lock = threading.Lock()
 
     def allow(self, key: str) -> bool:
+        if self.redis is not None:
+            try:
+                window = f"vibestack:limit:{self.name}:{key}:{int(time.time() // self.seconds)}"
+                count = self.redis.incr(window)
+                if count == 1:
+                    self.redis.expire(window, int(self.seconds) + 1)
+                return count <= self.limit
+            except Exception as exc:  # noqa: BLE001 - Redis down: fall back to this process's own counts
+                log.warning("rate limit store unavailable: %s", exc)
         now = time.monotonic()
         with self.lock:
             window = self.calls[key]
@@ -113,6 +129,40 @@ class RateLimiter:
             return True
 
 
+class Idempotency:
+    """Idempotency-Key: the same request sent twice (a double click, a client retry) starts one build.
+
+    Answers are remembered for `seconds`, in Redis when there is one (shared by every web server)."""
+
+    def __init__(self, redis: Any = None, seconds: int = 600) -> None:
+        self.redis, self.seconds = redis, seconds
+        self.local: dict[str, tuple[float, Any]] = {}
+        self.lock = threading.Lock()
+
+    def get(self, key: str) -> Any:
+        if self.redis is not None:
+            try:
+                raw = self.redis.get(f"vibestack:idem:{key}")
+                return json.loads(raw) if raw else None
+            except Exception as exc:  # noqa: BLE001 - fall back to this process
+                log.warning("idempotency store unavailable: %s", exc)
+        with self.lock:
+            hit = self.local.get(key)
+            return hit[1] if hit and time.monotonic() - hit[0] < self.seconds else None
+
+    def put(self, key: str, value: Any) -> None:
+        if self.redis is not None:
+            try:
+                self.redis.set(f"vibestack:idem:{key}", json.dumps(value), ex=self.seconds)
+                return
+            except Exception as exc:  # noqa: BLE001 - fall back to this process
+                log.warning("idempotency store unavailable: %s", exc)
+        with self.lock:
+            now = time.monotonic()
+            self.local = {k: v for k, v in self.local.items() if now - v[0] < self.seconds}
+            self.local[key] = (now, value)
+
+
 def client_ip(request: Request) -> str:
     """The caller's address (the first X-Forwarded-For hop behind a proxy such as Railway's)."""
     forwarded = request.headers.get("x-forwarded-for", "")
@@ -122,7 +172,7 @@ def client_ip(request: Request) -> str:
 # --------------------------------------------------------------------------- metrics
 
 
-def metrics_text(rows: list[dict[str, Any]], active_runs: int, previews: int) -> str:
+def metrics_text(rows: list[dict[str, Any]], active_runs: int, previews: int, queued: int | None = None) -> str:
     """Prometheus text format from the runs table (one row per run)."""
     by_status: dict[str, int] = defaultdict(int)
     for r in rows:
@@ -143,4 +193,6 @@ def metrics_text(rows: list[dict[str, Any]], active_runs: int, previews: int) ->
     total("vibestack_llm_cost_usd_total", "Estimated model cost in USD", sum(r.get("cost_usd") or 0 for r in rows))
     total("vibestack_active_runs", "Builds running now", active_runs, "gauge")
     total("vibestack_live_previews", "Generated apps running as previews", previews, "gauge")
+    if queued is not None:
+        total("vibestack_queued_runs", "Builds waiting for a free worker", queued, "gauge")
     return "\n".join(lines) + "\n"

@@ -5,6 +5,8 @@ import re
 from agent.bughunt import Finding
 
 DESCRIPTION = "Review note for every TODO / FIXME left in the generated code"
+WHEN = "always: lists unfinished work left in the code"
+ALWAYS = True
 
 
 def extra_checks(files: dict[str, str]) -> list[Finding]:

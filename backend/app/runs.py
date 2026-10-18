@@ -18,6 +18,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from langgraph.types import Command
+
 from agent.config import settings
 from agent.graph import build_graph, checkpointer, initial_state
 
@@ -27,6 +29,7 @@ from .store import Store
 log = logging.getLogger(__name__)
 
 TERMINAL = {"succeeded", "failed", "error"}
+WAITING = "awaiting_approval"  # paused before any code is written, until the user approves the design
 
 
 @dataclass
@@ -38,6 +41,7 @@ class Run:
     events: list[dict[str, Any]] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
     worker: threading.Thread | None = None
+    cancel: threading.Event = field(default_factory=threading.Event)
     queue: RunQueue | None = None  # set: events and status live in Redis, shared by every process
 
     @property
@@ -88,7 +92,33 @@ class RunManager:
             log.warning("RUN_QUEUE=redis without Postgres: web and workers only share runs on one machine")
 
     def _config(self, run_id: str) -> dict[str, Any]:
-        return {"configurable": {"thread_id": run_id}}
+        # 3 graph steps per repair; set explicitly so a long healing run never hits LangGraph's step limit.
+        return {"configurable": {"thread_id": run_id}, "recursion_limit": 40 + 3 * 30}
+
+    def cancel(self, run_id: str) -> None:
+        """Stop a run: it ends after the agent working now (a run waiting for approval ends at once)."""
+        record = self.store.run(run_id)
+        if record is None or record["status"] != "running":
+            raise ValueError("this run is not running")
+        run = self.get_run(run_id)
+        if self.waiting_for_approval(run_id) and not (run and run.worker and run.worker.is_alive()):
+            values = self.graph.get_state(self._config(run_id)).values
+            self.store.finish_run(run_id, "failed", values or {})
+            if run is not None:
+                run.status = "failed"
+                run.emit({"type": "status", "status": "failed"})
+            return
+        if run is not None:
+            run.cancel.set()
+        if self.queue is not None:
+            self.queue.request_cancel(run_id)
+
+    def _stop_reason(self, run: Run, started: float) -> str | None:
+        if run.cancel.is_set() or (self.queue is not None and self.queue.cancel_requested(run.id)):
+            return "stopped by you"
+        if time.monotonic() - started > settings.run_deadline_s:
+            return f"the build took longer than {settings.run_deadline_s // 60} minutes"
+        return None
 
     def active_count(self) -> int:
         if self.queue is not None and not self.executes:
@@ -122,6 +152,7 @@ class RunManager:
                 if values.get("spec"):
                     base = {"run_id": base_run_id, "spec": values["spec"], "files": dict(values.get("files") or {}),
                             "template_files": dict(values.get("template_files") or {}),
+                            "plugin_choices": list(values.get("plugin_choices") or []),
                             "failed": values.get("status") != "succeeded"}
                 elif values.get("prompt"):  # it stopped before a design existed: start over with both requests
                     prompt = f"{values['prompt']}\n\nAlso: {prompt}"
@@ -191,17 +222,52 @@ class RunManager:
                 run.emit({"type": "progress", "node": snapshot.next[0], "text": "Continued by another builder"})
             run.status = "running"
             run.emit({"type": "status", "status": "running"})
+            if isinstance(graph_input, dict) and "resume" in graph_input and len(graph_input) == 1:
+                graph_input = Command(resume=graph_input["resume"])  # the user approved the design
             self._execute(run, graph_input)
             return True
         finally:
             self.queue.release(run_id)
             self.runs.pop(run_id, None)
 
+    def waiting_for_approval(self, run_id: str) -> bool:
+        snapshot = self.graph.get_state(self._config(run_id))
+        return bool(snapshot.next) and any(getattr(t, "interrupts", ()) for t in snapshot.tasks)
+
+    def approve(self, run_id: str, decision: dict[str, Any]) -> None:
+        """Continue a run paused at the design review: {} approves, {"spec": ...} approves an edited design,
+        {"instruction": "..."} sends the design back to the Architect with a change in words."""
+        if not self.waiting_for_approval(run_id):
+            raise ValueError("this run is not waiting for approval")
+        if self.executes:
+            record = self.store.run(run_id) or {}
+            run = self.runs.get(run_id) or self.runs.setdefault(run_id, Run(id=run_id, prompt=record.get("prompt", "")))
+            if run.active:
+                raise ValueError("this run is already continuing")
+            self._launch(run, Command(resume=decision))
+        else:
+            run = self.get_run(run_id)
+            self.queue.push(run_id, {"resume": decision})
+            if run is not None:
+                run.emit({"type": "progress", "node": "plan", "text": "Design approved; waiting for a free builder"})
+
+    def prune(self, days: int) -> int:
+        """Retention: drop the saved agent state (checkpoints, the biggest data) of finished builds older than
+        `days`. A project's current version is always kept; zips, the version list and the numbers stay."""
+        pruned = 0
+        for run_id in self.store.prunable_runs(time.time() - days * 86400):
+            self.graph.checkpointer.delete_thread(run_id)
+            self.store.mark_pruned(run_id)
+            pruned += 1
+        if pruned:
+            log.info("retention: removed the saved state of %d old build(s)", pruned)
+        return pruned
+
     def requeue_orphans(self) -> list[str]:
         """Runs still marked running that no worker holds (it crashed or was redeployed): queue them again."""
         orphans = []
         for row in self.store.unfinished_runs():
-            if self.queue.claimed(row["id"]) or self.queue.status(row["id"]) == "queued":
+            if self.queue.claimed(row["id"]) or self.queue.status(row["id"]) in ("queued", WAITING):
                 continue
             self.queue.push(row["id"], None)
             orphans.append(row["id"])
@@ -217,8 +283,12 @@ class RunManager:
 
     def _execute(self, run: Run, graph_input: Any) -> None:
         config = self._config(run.id)
+        started, values, stopped = time.monotonic(), None, None
         try:
             for mode, update in self.graph.stream(graph_input, config, stream_mode=["updates", "custom"]):
+                stopped = self._stop_reason(run, started)
+                if stopped:
+                    break
                 if mode == "custom":
                     if update.get("kind") == "stream":  # text a model is writing right now (agent.ledger.LiveText)
                         run.emit({"type": "stream", "agent": update.get("agent"), "label": update.get("label"),
@@ -227,6 +297,8 @@ class RunManager:
                         run.emit({"type": "progress", "node": update.get("node"), "text": update.get("text")})
                     continue
                 for node, delta in update.items():
+                    if node.startswith("__"):  # "__interrupt__": the run paused (see waiting_for_approval)
+                        continue
                     delta = delta or {}
                     run.emit(
                         {
@@ -243,14 +315,25 @@ class RunManager:
                         }
                     )
             values = self.graph.get_state(config).values
-            run.status = values.get("status", "succeeded")
-            if run.status not in TERMINAL:
+            if stopped:
                 run.status = "failed"
+                run.emit({"type": "error", "message": f"Stopped: {stopped}. The last finished step is kept."})
+            elif self.waiting_for_approval(run.id):
+                run.status = WAITING
+                run.emit({"type": "status", "status": WAITING})
+                return  # not finished: the user approves the design, then approve() continues it
+            else:
+                run.status = values.get("status", "succeeded")
+                if run.status not in TERMINAL:
+                    run.status = "failed"
         except Exception as exc:  # any crash is reported to the UI instead of killing the worker
             log.exception("run %s crashed", run.id)
             run.status = "error"
             run.emit({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
-            values = self.graph.get_state(config).values
+            try:
+                values = self.graph.get_state(config).values
+            except Exception:  # noqa: BLE001 - the run is still recorded as finished below
+                values = None
         self.store.finish_run(run.id, run.status, values or {})
         run.emit({"type": "status", "status": run.status})
 
@@ -258,11 +341,17 @@ class RunManager:
         values = self.graph.get_state(self._config(run_id)).values
         run = self.get_run(run_id)
         if not values:
+            record = self.store.run(run_id) if run is None else None
+            if record and record["status"] == "pruned":  # its details were removed by the retention policy
+                return {"run_id": run_id, "project_id": record.get("project_id"), "version": record.get("version"),
+                        "prompt": record["prompt"], "status": "pruned", "files": [], "ledger": [], "pruned": True}
             if run is None:
                 return None
             # Started, but the first checkpoint has not been written yet.
             values = {"prompt": run.prompt, "status": run.status}
         status = run.status if run else values.get("status")
+        if status not in TERMINAL and values.get("status") == "spec_ready" and self.waiting_for_approval(run_id):
+            status = WAITING
         queued = status == "queued"
         if queued:  # for the UI a queued run is already running: its first agent just has not started
             status = "running"
@@ -277,6 +366,7 @@ class RunManager:
             "options": values.get("options"),
             "spec": values.get("spec"),
             "file_plan": values.get("file_plan"),
+            "plugin_choices": values.get("plugin_choices") or [],
             "files": sorted((values.get("files") or {}).keys()),
             "ledger": values.get("ledger", []),
             "validation": _trim_validation(values.get("validation")),
@@ -289,6 +379,8 @@ class RunManager:
             "review": values.get("review", []),
             "heal_history": values.get("heal_history", []),
             "stop_reason": values.get("stop_reason"),
+            "error_class": values.get("error_class"),
+            "budget_usd": _budget(values.get("spec")),
             "report": values.get("report"),
             "has_artifact": bool(values.get("artifact_path")),
             # The verified template build (every screen, actions still stubbed) can be previewed as a draft.
@@ -308,6 +400,20 @@ class RunManager:
 
     def artifact(self, run_id: str) -> str | None:
         return self.graph.get_state(self._config(run_id)).values.get("artifact_path")
+
+
+def _budget(spec: dict | None) -> float:
+    """This build's money budget (bigger apps get more, see healing.scaled_limits)."""
+    from agent.healing import scaled_limits
+    from agent.state import ProjectSpec
+
+    if not spec:
+        return settings.max_cost_per_run_usd
+    try:
+        return round(scaled_limits(ProjectSpec.model_validate(spec), settings.max_heal_safety,
+                                   settings.max_cost_per_run_usd)[1], 2)
+    except ValueError:
+        return settings.max_cost_per_run_usd
 
 
 def _trim_validation(v: dict[str, Any] | None) -> dict[str, Any] | None:

@@ -9,6 +9,14 @@ rows in dependency order (a comment after its post) and links foreign keys to th
 import json
 
 DESCRIPTION = "Adds scripts/seed.py: fills a running app with sample rows (links, choices, value ranges)"
+WHEN = "the app will be demoed or tested with realistic sample data"
+KEYWORDS = ("demo", "sample data", "seed", "mock data", "test data")
+
+
+def wanted(spec):
+    if len(spec.entities) >= 4:
+        return f"{len(spec.entities)} linked tables are hard to fill by hand for a demo"
+    return None
 ROWS = 5
 
 

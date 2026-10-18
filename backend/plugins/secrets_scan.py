@@ -9,6 +9,8 @@ import re
 from agent.bughunt import Finding
 
 DESCRIPTION = "Fails validation when a real-looking key or token appears in any file (YAML, JSON, .env ...)"
+WHEN = "always: every build is checked for leaked keys"
+ALWAYS = True
 
 PATTERNS = {
     "aws-access-key": re.compile(r"\bAKIA[0-9A-Z]{16}\b"),

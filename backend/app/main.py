@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -27,10 +28,20 @@ from starlette.background import BackgroundTask
 from agent import plugins, storage
 from agent.config import settings
 from agent.stacks import STACKS
+from agent.state import ProjectSpec
 
+from . import deploy
 from .accounts import create_token, hash_password, user_id_from_token, verify_password
 from .mcp_server import build_mcp
-from .ops import RateLimiter, RequestContext, client_ip, metrics_text, setup_logging, setup_sentry
+from .ops import (
+    Idempotency,
+    RateLimiter,
+    RequestContext,
+    client_ip,
+    metrics_text,
+    setup_logging,
+    setup_sentry,
+)
 from .preview import PreviewError, PreviewManager
 from .queue import make_queue
 from .runs import TERMINAL, RunManager
@@ -47,7 +58,7 @@ previews = PreviewManager()
 async def lifespan(_: FastAPI):
     app.state.proxy = httpx.AsyncClient(timeout=30, trust_env=False)
     # A fresh MCP server per lifespan: its session manager can only run once.
-    mcp = build_mcp(manager, store, start_run, preview=_preview_path)
+    mcp = build_mcp(manager, store, start_run, preview=_preview_path, deploy=deploy_project, deployment=get_deployment)
     app.state.mcp_app = mcp.streamable_http_app(
         streamable_http_path="/",
         stateless_http=True,
@@ -57,6 +68,7 @@ async def lifespan(_: FastAPI):
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     )
     manager.recover()  # builds a restart or redeploy interrupted continue from their last checkpoint
+    _start_maintenance()
     async with mcp.session_manager.run():
         yield
     await app.state.proxy.aclose()
@@ -79,6 +91,7 @@ app.add_middleware(
 
 store = Store(settings.platform_database_url)
 manager = RunManager(store, queue=make_queue())
+deployer = deploy.Deployer(store, files=manager.files, spec=lambda run_id: (manager.snapshot(run_id) or {}).get("spec"))
 
 
 # --------------------------------------------------------------------------- accounts
@@ -112,7 +125,9 @@ def own_run(run_id: str, user: dict[str, Any]) -> None:
 
 
 # Per IP: slows down password guessing (AUTH_RATE_LIMIT attempts per minute).
-auth_limit = RateLimiter(limit=int(os.getenv("AUTH_RATE_LIMIT", "20")), seconds=60)
+_shared = manager.queue.r if manager.queue is not None else None  # Redis, when the build queue uses it
+auth_limit = RateLimiter(limit=int(os.getenv("AUTH_RATE_LIMIT", "20")), seconds=60, redis=_shared)
+idempotency = Idempotency(redis=_shared)
 
 
 def check_auth_rate(request: Request) -> None:
@@ -154,18 +169,56 @@ class RunRequest(BaseModel):
     prompt: str = Field(min_length=10, max_length=6000)
     stack: Literal["fastapi", "flask", "django"] = "fastapi"
     codegen_mode: str | None = Field(default=None, pattern="^(llm|template)$")
-    plugins: list[str] | None = None  # None: the server's default plugins
+    plugins: list[str] | None = None  # plugins forced on (the agents choose the rest)
+    plugins_off: list[str] | None = None  # plugins forced off
+    auto_plugins: bool = True  # let the Architect and Planner choose plugins
+    review_design: bool = False  # wait for the user to approve the design before any code is written
+    instructions: str | None = Field(default=None, max_length=4000)  # project rules every agent follows
 
 
 class Message(BaseModel):
     prompt: str = Field(min_length=3, max_length=6000)
     # "edit": change the app as the prompt says. "fix": keep healing the latest version's code as it is.
     mode: Literal["edit", "fix"] = "edit"
+    review_design: bool = False
+
+
+class Approval(BaseModel):
+    """The design review: approve as it is, approve an edited design, or ask for a change in words."""
+
+    spec: dict[str, Any] | None = None
+    instruction: str | None = Field(default=None, min_length=3, max_length=2000)
 
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/ready")
+def ready() -> dict[str, Any]:
+    """Everything a build needs answers: the database, Redis (with workers) and the bucket (with S3)."""
+    checks: dict[str, str] = {}
+    try:
+        store.ping()
+        checks["database"] = "ok"
+    except Exception as exc:  # noqa: BLE001 - reported, not raised
+        checks["database"] = f"down: {type(exc).__name__}"
+    if manager.queue is not None:
+        try:
+            manager.queue.r.ping()
+            checks["redis"] = "ok"
+        except Exception as exc:  # noqa: BLE001
+            checks["redis"] = f"down: {type(exc).__name__}"
+    if storage.bucket():
+        try:
+            storage.check()
+            checks["storage"] = "ok"
+        except Exception as exc:  # noqa: BLE001
+            checks["storage"] = f"down: {type(exc).__name__}"
+    if any(v != "ok" for v in checks.values()):
+        raise HTTPException(status_code=503, detail=checks)
+    return {"status": "ready", **checks}
 
 
 @app.get("/api/metrics", response_class=PlainTextResponse)
@@ -177,7 +230,8 @@ def metrics(authorization: str | None = Header(default=None)) -> str:
     user = store.user_by_id(user_id) if user_id is not None else None
     if not ((expected and raw == expected) or (user and user["email"] in settings.admin_emails)):
         raise HTTPException(status_code=401, detail="metrics need METRICS_TOKEN or an admin login")
-    return metrics_text(store.run_metrics(), manager.active_count(), previews.count())
+    queued = manager.queue.waiting() if manager.queue is not None else None
+    return metrics_text(store.run_metrics(), manager.active_count(), previews.count(), queued)
 
 
 @app.get("/api/config")
@@ -192,6 +246,8 @@ def config() -> dict[str, Any]:
         "max_runs_per_day": settings.max_runs_per_day,
         "stacks": [{"name": s.name, "label": s.label} for s in STACKS.values()],
         "plugins": plugins.describe(),
+        "deploy_enabled": deploy.enabled(),
+        "deploy_domain": settings.deploy_domain if deploy.enabled() else None,
         "provider": settings.llm_provider,
         "models": {"strong": settings.strong_model, "cheap": settings.cheap_model, "fallback": settings.fallback_model},
     }
@@ -213,11 +269,21 @@ def start_run(
     is_admin = user.get("is_admin") or user["email"] in settings.admin_emails
     if store.runs_since(user["id"], time.time() - 86400) >= settings.max_runs_per_day and not is_admin:
         raise HTTPException(status_code=429, detail=f"daily limit of {settings.max_runs_per_day} runs reached")
+    if store.running_for(user["id"]) >= settings.max_active_runs_per_user and not is_admin:
+        raise HTTPException(status_code=429, detail=f"you already have {settings.max_active_runs_per_user} builds running; "
+                                                     "wait for one to finish")
+    if manager.queue is not None and manager.queue.waiting() >= settings.queue_max:
+        raise HTTPException(status_code=503, detail="every builder is busy; try again in a minute",
+                            headers={"Retry-After": "60"})
     options = {"codegen_mode": settings.codegen_mode, **options}
     if project_id is None:
         project_id = store.add_project(user["id"], " ".join(prompt.split()[:6]), options.get("stack", "fastapi"))
+        if options.get("instructions"):
+            store.set_instructions(project_id, options["instructions"])
     elif manager.project_busy(project_id):
         raise HTTPException(status_code=409, detail="this project is already being built; wait for it to finish")
+    rules = (store.project(project_id, user["id"]) or {}).get("instructions")
+    options = {**options, "instructions": rules} if rules else {k: v for k, v in options.items() if k != "instructions"}
     try:
         return manager.start(prompt, options, owner_id=user["id"], project_id=project_id, base_run_id=base_run_id).id
     except RuntimeError as exc:
@@ -226,18 +292,64 @@ def start_run(
 
 def _options(body: RunRequest) -> dict[str, Any]:
     options: dict[str, Any] = {"stack": body.stack, "codegen_mode": body.codegen_mode or settings.codegen_mode}
-    if body.plugins is not None:
-        unknown = set(body.plugins) - {p["name"] for p in plugins.describe()}
+    known = {p["name"] for p in plugins.describe()}
+    for key in ("plugins", "plugins_off"):
+        names = getattr(body, key)
+        if names is None:
+            continue
+        unknown = set(names) - known
         if unknown:
             raise HTTPException(status_code=422, detail=f"unknown plugins: {', '.join(sorted(unknown))}")
-        options["plugins"] = body.plugins
+        options[key] = names
+    options["auto_plugins"] = body.auto_plugins
+    options["review_design"] = body.review_design
+    if body.instructions:
+        options["instructions"] = body.instructions
     return options
 
 
+@app.post("/api/runs/{run_id}/cancel")
+def cancel_run(run_id: str, user: CurrentUser) -> dict[str, str]:
+    """Stop a build: it ends after the agent working now and keeps the last finished step."""
+    own_run(run_id, user)
+    try:
+        manager.cancel(run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"status": "stopping"}
+
+
+@app.post("/api/runs/{run_id}/approve")
+def approve_design(run_id: str, body: Approval, user: CurrentUser) -> dict[str, str]:
+    """Continue a run that waits at the design review."""
+    own_run(run_id, user)
+    decision: dict[str, Any] = {"approved": True}  # never empty: LangGraph reads {} as "no resume values"
+    if body.instruction:
+        decision["instruction"] = body.instruction.strip()
+    elif body.spec is not None:
+        try:
+            decision["spec"] = ProjectSpec.model_validate(body.spec).model_dump()
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"the edited design is not valid: {exc}") from exc
+    try:
+        manager.approve(run_id, decision)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"status": "continuing"}
+
+
 @app.post("/api/runs", status_code=201)
-def create_run(body: RunRequest, user: CurrentUser) -> dict[str, str]:
+def create_run(body: RunRequest, user: CurrentUser,
+               idempotency_key: str | None = Header(default=None, max_length=100)) -> dict[str, str]:
+    """Start a build. With an Idempotency-Key header, sending the same request again returns the same build."""
+    key = f"{user['id']}:{idempotency_key}" if idempotency_key else None
+    if key and (earlier := idempotency.get(key)):
+        return earlier
     run_id = start_run(user, body.prompt, _options(body))
-    return {"run_id": run_id, "project_id": store.run(run_id)["project_id"]}
+    result = {"run_id": run_id, "project_id": store.run(run_id)["project_id"]}
+    if key:
+        idempotency.put(key, result)
+    return result
 
 
 # --------------------------------------------------------------------------- projects (Lovable-style sessions)
@@ -250,15 +362,95 @@ def own_project(project_id: str, user: dict[str, Any]) -> dict[str, Any]:
     return project
 
 
+class ProjectRules(BaseModel):
+    instructions: str = Field(default="", max_length=4000)
+
+
+@app.patch("/api/projects/{project_id}")
+def update_project(project_id: str, body: ProjectRules, user: CurrentUser) -> dict[str, Any]:
+    """Project rules (like a knowledge file): every agent follows them on every later build of this project."""
+    own_project(project_id, user)
+    store.set_instructions(project_id, body.instructions)
+    return own_project(project_id, user)
+
+
 @app.post("/api/projects", status_code=201)
-def create_project(body: RunRequest, user: CurrentUser) -> dict[str, str]:
+def create_project(body: RunRequest, user: CurrentUser,
+                   idempotency_key: str | None = Header(default=None, max_length=100)) -> dict[str, str]:
     """A new project: the first prompt builds version 1."""
-    return create_run(body, user)
+    return create_run(body, user, idempotency_key)
 
 
 @app.get("/api/projects")
 def list_projects(user: CurrentUser) -> list[dict[str, Any]]:
     return store.projects_for(user["id"])
+
+
+# --------------------------------------------------------------------------- one-click deploy (app/deploy.py)
+
+
+def _start_maintenance() -> None:
+    """Every 10 minutes: tidy deployments (interrupted ones, expired demo apps) and apply RETENTION_DAYS."""
+    def loop() -> None:
+        while True:
+            try:
+                if deploy.enabled():
+                    deployer.sweep()
+                if settings.retention_days > 0:
+                    manager.prune(settings.retention_days)
+            except Exception:
+                log.exception("maintenance failed")
+            time.sleep(600)
+
+    threading.Thread(target=loop, daemon=True, name="maintenance").start()
+
+
+def _deployment_view(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {k: row[k] for k in ("run_id", "namespace", "url", "status", "message", "created_at", "updated_at")} | {
+        "steps": json.loads(row["steps"] or "[]")}
+
+
+@app.post("/api/projects/{project_id}/deploy", status_code=202)
+def deploy_project(project_id: str, user: CurrentUser) -> dict[str, Any]:
+    """Put the project's current version live on the Kubernetes cluster (or update it)."""
+    if not deploy.enabled():
+        raise HTTPException(status_code=503, detail="deploying is not set up on this server (see docs/DEPLOY.md)")
+    project = own_project(project_id, user)
+    run_id = project["current_run_id"]
+    record = store.run(run_id) if run_id else None
+    if not record or record["status"] != "succeeded":
+        raise HTTPException(status_code=409, detail="only a version that passed all its tests can be deployed")
+    try:
+        return _deployment_view(deployer.start(project, run_id, user["id"]))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/projects/{project_id}/deployment")
+def get_deployment(project_id: str, user: CurrentUser) -> dict[str, Any] | None:
+    own_project(project_id, user)
+    return _deployment_view(store.deployment(project_id))
+
+
+@app.delete("/api/projects/{project_id}/deployment", status_code=204)
+def undeploy_project(project_id: str, user: CurrentUser) -> Response:
+    own_project(project_id, user)
+    try:
+        deployer.undeploy(project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return Response(status_code=204)
+
+
+@app.get("/api/deployments/{project_id}/code", include_in_schema=False)
+def deployment_code(project_id: str, token: str) -> Response:
+    """The deployed version's code, fetched by the app's pods (the secret token is the only key)."""
+    data = deployer.code_zip(project_id, token)
+    if data is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return Response(data, media_type="application/zip")
 
 
 @app.get("/api/projects/{project_id}")
@@ -280,7 +472,8 @@ def send_message(project_id: str, body: Message, user: CurrentUser) -> dict[str,
     base = latest if body.mode == "fix" else project["current_run_id"] or latest
     if base is None:
         raise HTTPException(status_code=409, detail="the project has no version yet")
-    options = {"stack": project["stack"], "codegen_mode": "llm", "resume": body.mode == "fix"}
+    options = {"stack": project["stack"], "codegen_mode": "llm", "resume": body.mode == "fix",
+               "review_design": body.review_design and body.mode == "edit"}
     run_id = start_run(user, body.prompt, options, project_id=project_id, base_run_id=base)
     return {"run_id": run_id, "project_id": project_id}
 
@@ -441,6 +634,9 @@ def preview_status(run_id: str, user: CurrentUser, draft: bool = False) -> dict[
 
 
 _HOP_HEADERS = {"connection", "keep-alive", "transfer-encoding", "content-encoding", "content-length", "upgrade"}
+# The generated app only allows framing by its own site; the workspace shows it in an iframe, so the
+# preview drops those two (the deployed app keeps them).
+_PREVIEW_DROPPED = _HOP_HEADERS | {"x-frame-options", "content-security-policy"}
 
 
 @app.api_route("/preview/{key}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
@@ -461,7 +657,7 @@ async def preview_proxy(key: str, path: str, request: Request) -> Response:
         upstream = await proxy.send(outgoing, stream=True)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"preview unreachable: {exc}") from exc
-    headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _HOP_HEADERS}
+    headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _PREVIEW_DROPPED}
     return StreamingResponse(upstream.aiter_bytes(), status_code=upstream.status_code, headers=headers,
                              background=BackgroundTask(upstream.aclose))
 

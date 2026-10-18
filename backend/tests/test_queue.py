@@ -102,3 +102,25 @@ def test_worker_drains_on_stop(queue):
     started = time.monotonic()
     worker.serve(drain_seconds=5)
     assert time.monotonic() - started < 2
+
+
+def test_design_review_with_workers(fake_llm, queue, queued_web):
+    from app.main import app, store
+
+    with TestClient(app) as client:
+        me = _login(client)
+        body = {"prompt": "A blog with posts and comments", "review_design": True}
+        run_id = client.post("/api/runs", json=body, headers=me).json()["run_id"]
+        worker = Worker(RunManager(store, queue, executes=True), queue, concurrency=1, name="w")
+        worker.tick(pop_timeout=1)
+        worker.building[run_id].join(timeout=60)
+        assert client.get(f"/api/runs/{run_id}", headers=me).json()["status"] == "awaiting_approval"
+        assert queue.status(run_id) == "awaiting_approval"
+        assert run_id not in worker.manager.requeue_orphans()  # waiting for a person is not an orphan
+
+        assert client.post(f"/api/runs/{run_id}/approve", json={}, headers=me).status_code == 200
+        assert worker.tick(pop_timeout=1) == run_id
+        worker.building[run_id].join(timeout=180)
+        snap = client.get(f"/api/runs/{run_id}", headers=me).json()
+        assert snap["status"] == "succeeded", snap
+        assert any(e["action"] == "you approved the design" for e in snap["ledger"])

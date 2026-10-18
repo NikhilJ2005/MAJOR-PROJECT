@@ -16,6 +16,17 @@ ENV PYTHONUNBUFFERED=1 \
     FRONTEND_DIR=/srv/frontend \
     SANDBOX=local \
     SANDBOX_USER=sandbox
+# kubectl, for one-click deploys of generated apps (app/deploy.py); the checksum is verified.
+ARG KUBECTL_VERSION=v1.31.4
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSLo /usr/local/bin/kubectl https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl \
+    && echo "$(curl -fsSL https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256)  /usr/local/bin/kubectl" | sha256sum -c - \
+    && chmod +x /usr/local/bin/kubectl
+# The Kubernetes MCP server (read-only), which the deploy diagnoser uses to look into the cluster itself.
+ARG KUBERNETES_MCP_VERSION=0.0.67
+RUN curl -fsSLo /usr/local/bin/kubernetes-mcp-server \
+      https://github.com/containers/kubernetes-mcp-server/releases/download/v${KUBERNETES_MCP_VERSION}/kubernetes-mcp-server-linux-amd64 \
+    && chmod +x /usr/local/bin/kubernetes-mcp-server && kubernetes-mcp-server --version
 WORKDIR /srv/backend
 COPY backend/pyproject.toml ./
 RUN pip install --no-cache-dir uv && uv pip install --system --no-cache -r pyproject.toml

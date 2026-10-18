@@ -9,6 +9,8 @@ import json
 from agent.tools import routes
 
 DESCRIPTION = "Adds openapi.json (OpenAPI 3.1) built from the design, for any framework"
+WHEN = "other systems integrate with the API (SDKs, partners, third parties, API docs)"
+KEYWORDS = ("openapi", "swagger", "sdk", "integration", "third-party", "third party")
 
 _TYPES = {"str": "string", "text": "string", "int": "integer", "float": "number", "decimal": "number",
           "bool": "boolean", "date": "string", "datetime": "string", "json": "object"}
