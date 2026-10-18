@@ -140,6 +140,20 @@ export type ServerConfig = {
   stacks: { name: string; label: string }[];
   plugins: PluginInfo[];
   models: { strong: string; cheap: string; fallback: string };
+  deploy_enabled?: boolean;
+  deploy_domain?: string | null;
+};
+
+export type DeployStep = { id: string; label: string; state: "waiting" | "running" | "done" | "failed"; detail: string };
+export type Deployment = {
+  run_id: string;
+  namespace: string;
+  url: string;
+  status: "deploying" | "live" | "failed";
+  message?: string | null;
+  steps: DeployStep[];
+  created_at: number;
+  updated_at: number;
 };
 
 export type RunEvent = {
@@ -239,6 +253,9 @@ export const api = {
   previewStatus: (id: string, draft = false) => request<PreviewInfo>(`/api/runs/${id}/preview${draft ? "?draft=true" : ""}`),
   startPreview: (id: string, draft = false) =>
     request<PreviewInfo>(`/api/runs/${id}/preview${draft ? "?draft=true" : ""}`, { method: "POST" }),
+  deploy: (projectId: string) => request<Deployment>(`/api/projects/${projectId}/deploy`, { method: "POST" }),
+  deployment: (projectId: string) => request<Deployment | null>(`/api/projects/${projectId}/deployment`),
+  undeploy: (projectId: string) => request<null>(`/api/projects/${projectId}/deployment`, { method: "DELETE" }),
   eventsUrl: (id: string, after: number) => withToken(`${API}/api/runs/${id}/events?after=${after}`),
   downloadUrl: (id: string) => withToken(`${API}/api/runs/${id}/download`),
 };

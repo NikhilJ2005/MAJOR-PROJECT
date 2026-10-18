@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -29,6 +30,7 @@ from agent.config import settings
 from agent.stacks import STACKS
 from agent.state import ProjectSpec
 
+from . import deploy
 from .accounts import create_token, hash_password, user_id_from_token, verify_password
 from .mcp_server import build_mcp
 from .ops import RateLimiter, RequestContext, client_ip, metrics_text, setup_logging, setup_sentry
@@ -48,7 +50,7 @@ previews = PreviewManager()
 async def lifespan(_: FastAPI):
     app.state.proxy = httpx.AsyncClient(timeout=30, trust_env=False)
     # A fresh MCP server per lifespan: its session manager can only run once.
-    mcp = build_mcp(manager, store, start_run, preview=_preview_path)
+    mcp = build_mcp(manager, store, start_run, preview=_preview_path, deploy=deploy_project, deployment=get_deployment)
     app.state.mcp_app = mcp.streamable_http_app(
         streamable_http_path="/",
         stateless_http=True,
@@ -58,6 +60,8 @@ async def lifespan(_: FastAPI):
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     )
     manager.recover()  # builds a restart or redeploy interrupted continue from their last checkpoint
+    if deploy.enabled():
+        _start_deploy_sweeper()
     async with mcp.session_manager.run():
         yield
     await app.state.proxy.aclose()
@@ -80,6 +84,7 @@ app.add_middleware(
 
 store = Store(settings.platform_database_url)
 manager = RunManager(store, queue=make_queue())
+deployer = deploy.Deployer(store, files=manager.files, spec=lambda run_id: (manager.snapshot(run_id) or {}).get("spec"))
 
 
 # --------------------------------------------------------------------------- accounts
@@ -204,6 +209,8 @@ def config() -> dict[str, Any]:
         "max_runs_per_day": settings.max_runs_per_day,
         "stacks": [{"name": s.name, "label": s.label} for s in STACKS.values()],
         "plugins": plugins.describe(),
+        "deploy_enabled": deploy.enabled(),
+        "deploy_domain": settings.deploy_domain if deploy.enabled() else None,
         "provider": settings.llm_provider,
         "models": {"strong": settings.strong_model, "cheap": settings.cheap_model, "fallback": settings.fallback_model},
     }
@@ -296,6 +303,69 @@ def create_project(body: RunRequest, user: CurrentUser) -> dict[str, str]:
 @app.get("/api/projects")
 def list_projects(user: CurrentUser) -> list[dict[str, Any]]:
     return store.projects_for(user["id"])
+
+
+# --------------------------------------------------------------------------- one-click deploy (app/deploy.py)
+
+
+def _start_deploy_sweeper() -> None:
+    def loop() -> None:
+        while True:
+            try:
+                deployer.sweep()
+            except Exception:
+                log.exception("deploy sweep failed")
+            time.sleep(600)
+
+    threading.Thread(target=loop, daemon=True, name="deploy-sweeper").start()
+
+
+def _deployment_view(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {k: row[k] for k in ("run_id", "namespace", "url", "status", "message", "created_at", "updated_at")} | {
+        "steps": json.loads(row["steps"] or "[]")}
+
+
+@app.post("/api/projects/{project_id}/deploy", status_code=202)
+def deploy_project(project_id: str, user: CurrentUser) -> dict[str, Any]:
+    """Put the project's current version live on the Kubernetes cluster (or update it)."""
+    if not deploy.enabled():
+        raise HTTPException(status_code=503, detail="deploying is not set up on this server (see docs/DEPLOY.md)")
+    project = own_project(project_id, user)
+    run_id = project["current_run_id"]
+    record = store.run(run_id) if run_id else None
+    if not record or record["status"] != "succeeded":
+        raise HTTPException(status_code=409, detail="only a version that passed all its tests can be deployed")
+    try:
+        return _deployment_view(deployer.start(project, run_id, user["id"]))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/projects/{project_id}/deployment")
+def get_deployment(project_id: str, user: CurrentUser) -> dict[str, Any] | None:
+    own_project(project_id, user)
+    return _deployment_view(store.deployment(project_id))
+
+
+@app.delete("/api/projects/{project_id}/deployment", status_code=204)
+def undeploy_project(project_id: str, user: CurrentUser) -> Response:
+    own_project(project_id, user)
+    try:
+        deployer.undeploy(project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return Response(status_code=204)
+
+
+@app.get("/api/deployments/{project_id}/code", include_in_schema=False)
+def deployment_code(project_id: str, token: str) -> Response:
+    """The deployed version's code, fetched by the app's pods (the secret token is the only key)."""
+    data = deployer.code_zip(project_id, token)
+    if data is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return Response(data, media_type="application/zip")
 
 
 @app.get("/api/projects/{project_id}")

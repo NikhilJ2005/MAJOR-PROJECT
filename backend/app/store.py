@@ -49,6 +49,20 @@ SCHEMA = [
         bugs_found INTEGER DEFAULT 0,
         bugs_fixed INTEGER DEFAULT 0
     )""",
+    # One live deployment per project (app/deploy.py). token: the secret part of the code download link.
+    """CREATE TABLE IF NOT EXISTS deployments (
+        project_id TEXT PRIMARY KEY,
+        owner_id INTEGER NOT NULL REFERENCES users(id),
+        run_id TEXT NOT NULL,
+        namespace TEXT NOT NULL,
+        url TEXT NOT NULL,
+        status TEXT NOT NULL,
+        message TEXT,
+        steps TEXT,
+        token TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL
+    )""",
     "CREATE INDEX IF NOT EXISTS runs_by_owner ON runs(owner_id, created_at)",
     "CREATE INDEX IF NOT EXISTS projects_by_owner ON projects(owner_id, updated_at)",
 ]
@@ -176,6 +190,29 @@ class Store:
 
     def project_running(self, project_id: str) -> bool:
         return self._one("SELECT id FROM runs WHERE project_id = :p AND status = 'running' LIMIT 1", p=project_id) is not None
+
+    # ------------------------------------------------------------------ deployments
+
+    def deployment(self, project_id: str) -> dict[str, Any] | None:
+        return self._one("SELECT * FROM deployments WHERE project_id = :p", p=project_id)
+
+    def deployments(self, owner_id: int | None = None) -> list[dict[str, Any]]:
+        if owner_id is None:
+            return self._rows("SELECT * FROM deployments")
+        return self._rows("SELECT * FROM deployments WHERE owner_id = :o", o=owner_id)
+
+    def save_deployment(self, row: dict[str, Any]) -> None:
+        now = time.time()
+        if self.deployment(row["project_id"]) is None:
+            self._write("INSERT INTO deployments (project_id, owner_id, run_id, namespace, url, status, message, steps, token, "
+                        "created_at, updated_at) VALUES (:project_id, :owner_id, :run_id, :namespace, :url, :status, :message, "
+                        ":steps, :token, :now, :now)", **{"message": None, "steps": "[]", **row}, now=now)
+        else:
+            sets = ", ".join(f"{k} = :{k}" for k in row if k != "project_id")
+            self._write(f"UPDATE deployments SET {sets}, updated_at = :now WHERE project_id = :project_id", **row, now=now)
+
+    def delete_deployment(self, project_id: str) -> None:
+        self._write("DELETE FROM deployments WHERE project_id = :p", p=project_id)
 
     def unfinished_runs(self) -> list[dict[str, Any]]:
         """Runs a server restart interrupted (still marked running)."""

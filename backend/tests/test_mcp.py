@@ -48,8 +48,8 @@ def test_generate_backend_through_mcp(fake_llm):
     server, thread, port = _serve(app)
     try:
         tools, result = asyncio.run(_call(port, token, "generate_backend", {"prompt": "A blog with posts and comments", "stack": "flask"}))
-        assert tools == ["download_url", "edit_project", "generate_backend", "keep_fixing", "list_files", "list_projects",
-                         "preview_url", "read_file", "run_status"]
+        assert tools == ["deploy_project", "deployment_status", "download_url", "edit_project", "generate_backend",
+                         "keep_fixing", "list_files", "list_projects", "preview_url", "read_file", "run_status"]
         assert not result.is_error, result
         data = result.structured_content
         assert data["status"] == "succeeded" and data["stack"] == "flask"

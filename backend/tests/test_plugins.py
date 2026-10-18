@@ -48,7 +48,7 @@ def test_plugin_files_ship_in_the_project():
     finally:
         llm_mod.set_llm(None)
     assert values["status"] == "succeeded"
-    assert {"k8s/deployment.yaml", "k8s/service.yaml", "postman_collection.json"} <= set(values["files"])
+    assert {"k8s/app.yaml", "postman_collection.json"} <= set(values["files"])
     assert any(row["owner"] == "plugin:kubernetes" for row in values["file_plan"])
 
 

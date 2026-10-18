@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Architecture } from "@/components/Architecture";
 import { AgentSteps, deriveSteps } from "@/components/AgentSteps";
+import { DeployButton } from "@/components/DeployPanel";
 import { DesignReview } from "@/components/DesignReview";
 import { Files } from "@/components/Files";
 import { LiveCode } from "@/components/LiveCode";
@@ -92,6 +93,11 @@ export function Workspace({ projectId, onHome }: { projectId: string; onHome: ()
             </button>
           ))}
           <div className="ml-auto flex items-center gap-2">
+            <DeployButton
+              projectId={projectId}
+              currentRunId={project.current_run_id}
+              canDeploy={project.versions.some((v) => v.run_id === project.current_run_id && v.status === "succeeded")}
+            />
             {snap?.has_artifact && selected && (
               <a href={api.downloadUrl(selected)} className="rounded-lg border border-ink-700 px-3 py-1.5 text-sm text-ink-100 hover:border-ink-500">
                 Download code
