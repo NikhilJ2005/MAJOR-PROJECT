@@ -65,6 +65,17 @@ Every generated project contains:
 ## The platform
 
 - **Projects and versions:** stored with SQLAlchemy Core. SQLite locally and Postgres in production (`PLATFORM_DATABASE_URL`); LangGraph checkpoints use the same database.
+- **Design review before code:** the build pauses after the Architect. You see an entity diagram, a role-by-table permission matrix, feature toggles and the actions. You approve it, edit it, or ask for a change in words, which goes back to the Architect.
+- **Agents pick their own tools:** the Architect chooses plugins for each app and says why. The Reflector and the deploy diagnoser use MCP tool servers bundled in the container, including VibeStack's own server and the read-only Kubernetes MCP server ([docs/MCP.md](docs/MCP.md)).
+- **One-click deploy to Kubernetes:** a passing version goes live on a cluster you connect. It gets its own namespace, Postgres, a migration Job, two replicas and an Ingress, and the public URL is smoke-tested before the app is marked live ([docs/DEPLOY.md](docs/DEPLOY.md)).
+- **Healing built for big apps:**
+  - Up to three broken files are repaired in each attempt.
+  - Progress counts per test, and a bad repair is rolled back.
+  - A stopped build ships its best version.
+  - Budgets and limits grow with the app.
+  - Every model call has a deadline.
+  - Builds can be stopped.
+- **Guided prompts and project rules:** six starter apps, a step-by-step prompt builder, and per-project rules that every agent follows.
 - **Live preview:** the generated app runs in a sandbox behind a private `/preview/<key>/` link and is shown in the workspace as a real app, with desktop and phone views. A **draft** opens within about a minute (the verified screens, while the business logic is still being written), and every agent reports what it is doing live.
 - **Sandbox:** generated code runs as an unprivileged user, with a scrubbed environment and OS limits on memory, CPU, processes and files.
 - **Any model provider:** `LLM_PROVIDER` can be Gemini (the default: Gemini 4 Argon builds, Gemini 3.8 Flash does the quick jobs), Groq, OpenRouter or any OpenAI-compatible API. Rate limits (429) are retried with backoff, and `LLM_MAX_PARALLEL` keeps free tiers happy.
