@@ -84,7 +84,7 @@ Every generated project contains:
   - **Client:** the Reflector can use other MCP servers' tools.
 - **Plugins:** one `.py` file adds files, static checks, prompt rules or tools ([docs/PLUGINS.md](docs/PLUGINS.md)). Ten are included, among them deploy configs, seed data, OpenAPI export and a secrets scan.
 - **Build workers:** with `RUN_QUEUE=redis`, web servers queue builds in Redis and any number of workers (`python -m app.worker`) build them. A worker that dies hands its runs to the others, which continue from the last checkpoint. Kubernetes manifests with a worker autoscaler are in `deploy/k8s/`.
-- **Runs anywhere:** the same Docker image runs on Railway, Render, Fly.io or any VM (`docker compose --profile full up` brings Postgres and S3-compatible MinIO). Generated zips can live in any S3-compatible bucket ([docs/DEPLOY.md](docs/DEPLOY.md)).
+- **Runs anywhere:** the same Docker image runs on Render, Fly.io, Railway or any VM (`docker compose --profile full up` brings Postgres and S3-compatible MinIO). Generated zips can live in any S3-compatible bucket ([docs/DEPLOY.md](docs/DEPLOY.md)).
 - **Operations:**
   - Builds interrupted by a redeploy resume from their last checkpoint.
   - JSON logs with request ids.
@@ -142,17 +142,17 @@ CLI only:
 python -m agent.graph "a library where members borrow books, max 3 open loans" --stack django
 ```
 
-### Docker / Railway
+### Docker / Render
 
 ```bash
 cp .env.example .env && docker compose up --build    # http://localhost:8000
 ```
 
-On Railway:
-1. Deploy from the `Dockerfile`.
-2. Add a **Postgres** service and set `PLATFORM_DATABASE_URL=${{Postgres.DATABASE_URL}}`.
-3. Set `LLM_PROVIDER` and its API key, `SECRET_KEY`, `ADMIN_EMAILS`, and optionally `ACCESS_CODE`.
-4. Keep a volume at `/data` for the generated zips.
+On Render (with the zips in a Cloudflare R2 bucket):
+1. Go to **New → Blueprint** and pick this repository. `render.yaml` creates the web service and a Postgres.
+2. Set the AI key, `ADMIN_EMAILS`, optionally `ACCESS_CODE`, and the `S3_*` bucket settings. `SECRET_KEY` is generated for you.
+
+Fly.io, Railway and a plain VM are covered in [docs/DEPLOY.md](docs/DEPLOY.md). Railway is not recommended since its 21 Oct 2026 security incident.
 
 The health check is `/api/health`.
 

@@ -1,7 +1,8 @@
 # VibeStack v3: status, demo and paper plan (seed-grant submission, 23 Oct)
 
 > **Progress snapshot, 22 Oct:** all code work is merged on `main` (up to PR #8). What is left is
-> team work: the provider key, the real-model eval numbers, the Railway setup and the demo video.
+> team work: rotating the secrets after the Railway incident, the provider key, the real-model eval
+> numbers, the move to Render and the demo video.
 > The code freeze is **today**.
 
 ## Done in code (this branch)
@@ -18,7 +19,7 @@
 - [x] **Complex architectures**: state machines, delete rules, indexes, JSON fields, live updates (SSE) and custom actions, in FastAPI, Flask and Django.
 - [x] **Full-stack apps**: the live link is a working React app connected to the generated backend, and a frontend contract check is part of validation.
 - [x] **Any model provider**: Gemini (default), Groq, OpenRouter or any OpenAI-compatible API, with rate-limit handling.
-- [x] **Projects and versions**: follow-up edits rebuild only what changed, and earlier versions can be restored. Storage is SQLite locally and Postgres on Railway.
+- [x] **Projects and versions**: follow-up edits rebuild only what changed, and earlier versions can be restored. Storage is SQLite locally and Postgres in production.
 - [x] **Lovable-style UI**: a prompt-first home page, and a workspace with the chat on the left and the live app on the right.
 - [x] **Tool-using Reflector**: it reads, searches, stages a fix and runs the failing tests itself. Tools can also come from MCP servers and plugins.
 - [x] **Ablation evals** with a held-out escaped-bug check, written as CSV and Markdown.
@@ -67,7 +68,11 @@
 ## Still to do (team)
 Status: ⬜ not started · ❓ unknown, the team should confirm · ✅ done
 
-1. ❓ **Provider:** create a Gemini key (aistudio.google.com/apikey) and **enable billing**: Gemini 4 Argon, the default builder, has no free tier. Run `python scripts/check_llm.py --list` to see the model ids, then `python scripts/check_llm.py` (it also checks function calling), then `--full`. Without billing, set `FREE_TIER=1`.
+0. ⬜ **Rotate every secret that was on Railway.** On 21 Oct 2026 Railway reported that environment variables may have been read and decrypted. Deleting them from Railway does not stop a copy from working, so revoke each one where it was issued:
+   - the Gemini key (and any OpenRouter or Groq key)
+   - `SECRET_KEY` and `ACCESS_CODE`
+   - the Railway Postgres: `pg_dump` it only if you need the old projects, then delete the Railway project
+1. ❓ **Provider:** create a new Gemini key (aistudio.google.com/apikey) and **enable billing**: Gemini 4 Argon, the default builder, has no free tier. Run `python scripts/check_llm.py --list` to see the model ids, then `python scripts/check_llm.py` (it also checks function calling), then `--full`. Without billing, set `FREE_TIER=1`.
 2. ⬜ **Real-model numbers for the slides and paper.** This is the biggest gap: `backend/evals/results/` is not in the repo yet, so no numbers have been committed. Commit the Markdown and CSV results when they are ready. Each command takes about 30–60 minutes on a free tier.
    ```bash
    cd backend
@@ -77,12 +82,12 @@ Status: ⬜ not started · ❓ unknown, the team should confirm · ✅ done
    python -m evals.run --hard --stack flask
    ```
    If a hard prompt keeps failing, read its ledger (`VIBESTACK_LEDGER.md` in the zip) and tune `prompts.py`.
-3. ❓ **Railway:**
-   - Add a Postgres service and set `PLATFORM_DATABASE_URL=${{Postgres.DATABASE_URL}}`.
-   - Set `LLM_PROVIDER=gemini`, `GEMINI_API_KEY`, `SECRET_KEY`, `ADMIN_EMAILS` and `ACCESS_CODE`.
-   - Delete `OPENROUTER_API_KEY`, `STRONG_MODEL`, `CHEAP_MODEL` and `FALLBACK_MODEL` if they are set.
-   - Keep the `/data` volume.
-   - Build one project per framework, including one follow-up edit.
+3. ⬜ **Render + Cloudflare R2** (replaces Railway, see [DEPLOY.md](DEPLOY.md#render-recommended)):
+   - In R2, create a bucket and an API token with Object Read & Write.
+   - In Render, go to **New → Blueprint** and pick this repo. `render.yaml` creates the web service (Standard, 2 GB, Singapore) and a Postgres.
+   - Fill in `GEMINI_API_KEY` (the new one), `ADMIN_EMAILS`, `ACCESS_CODE` and the `S3_*` values. `SECRET_KEY` is generated for you.
+   - Build one project per framework, including one follow-up edit, and download a zip to check R2.
+   - Cost: about $25/mo for the web service plus about $6/mo for Postgres. R2 is free at this size.
 4. ❓ **Budget:** about $0.30–0.80 per app with Gemini 4 Argon (launch price until 30 Nov). A $10–20 top-up covers development and the demo.
 5. ⬜ Record a **demo video** as the fallback, then freeze the code on 22 Oct.
 6. ⬜ *Optional:* connect a Kubernetes cluster ([DEPLOY.md](DEPLOY.md)) if the demo will show one-click deploy. Otherwise, skip that step in the demo.

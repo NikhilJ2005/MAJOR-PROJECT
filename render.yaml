@@ -1,9 +1,11 @@
-# Render Blueprint: New -> Blueprint -> pick this repo. One web service (the same Docker image as
-# Railway) plus a managed Postgres. Fill the secrets marked sync: false in the Render dashboard.
+# Render Blueprint: New -> Blueprint -> pick this repo. One web service (the Dockerfile) plus a
+# managed Postgres. Fill the secrets marked sync: false in the Render dashboard. See docs/DEPLOY.md.
 services:
   - type: web
     name: vibestack
     runtime: docker
+    plan: standard              # 2 GB: builds run generated apps and their tests inside this service
+    region: singapore
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
     envVars:
@@ -21,7 +23,8 @@ services:
         sync: false
       - key: ACCESS_CODE
         sync: false
-      # Zips in object storage, so the service needs no disk (Cloudflare R2, AWS S3, MinIO ...)
+      # Zips in object storage, so the service needs no disk. Cloudflare R2:
+      # S3_ENDPOINT_URL=https://<account_id>.r2.cloudflarestorage.com
       - key: S3_BUCKET
         sync: false
       - key: S3_ENDPOINT_URL
@@ -30,7 +33,10 @@ services:
         sync: false
       - key: S3_SECRET_ACCESS_KEY
         sync: false
+      - key: S3_REGION
+        value: auto
 
 databases:
   - name: vibestack-db
     plan: basic-256mb
+    region: singapore

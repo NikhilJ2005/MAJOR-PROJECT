@@ -42,7 +42,26 @@ Workers make the platform handle **many builds at once**. A **single** build get
 agents themselves (parallel model calls, a thinking level per job, the syntax self-check and parallel
 validation gates), not from more machines.
 
+## Render (recommended)
+1. **Bucket (Cloudflare R2):** create a bucket, then an R2 API token with *Object Read & Write* on it.
+   - `S3_BUCKET`: the bucket name
+   - `S3_ENDPOINT_URL`: `https://<account_id>.r2.cloudflarestorage.com`
+   - `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY`: from the token
+   - `S3_REGION`: `auto` (already set in `render.yaml`)
+2. **Render:** go to **New → Blueprint** and pick the repository. `render.yaml` creates:
+   - the web service: Standard, 2 GB, in Singapore. Builds run generated apps and their tests inside this service, so smaller plans run out of memory.
+   - a Postgres, wired to `PLATFORM_DATABASE_URL`
+3. **Secrets:** fill in the ones it asks for (`GEMINI_API_KEY`, `ADMIN_EMAILS`, `ACCESS_CODE`, `S3_*`). `SECRET_KEY` is generated for you.
+4. **Check:** open `https://<service>.onrender.com/api/health`, then build one app and download its zip.
+
+With the bucket, the service needs no disk, so a redeploy loses nothing.
+
 ## Railway
+> **Not recommended since the 21 Oct 2026 incident.** Railway reported that customers' environment
+> variables may have been read and decrypted. If VibeStack ran there, rotate every secret it held
+> where it was issued: the AI keys, `SECRET_KEY`, `ACCESS_CODE`, database and bucket credentials.
+> Deleting a variable from Railway does not stop a copied value from working.
+
 1. Deploy from the repository. `railway.json` uses the Dockerfile and `/api/health`.
 2. Add a **Postgres** service and set `PLATFORM_DATABASE_URL=${{Postgres.DATABASE_URL}}`.
 3. Either keep a volume at `/data`, or set the `S3_*` variables (Cloudflare R2 has free egress).
@@ -52,10 +71,6 @@ validation gates), not from more machines.
    3. Add a second service from the same repository, with the start command `python -m app.worker`
       and the same variables as the web service (shared variables make this easy).
    4. To build more at once, raise that service's replicas.
-
-## Render
-1. **New → Blueprint**, then pick the repository. `render.yaml` creates the web service and a Postgres.
-2. Fill in the secrets it asks for (`GEMINI_API_KEY`, `S3_*`). `SECRET_KEY` is generated for you.
 
 ## Fly.io
 ```bash
