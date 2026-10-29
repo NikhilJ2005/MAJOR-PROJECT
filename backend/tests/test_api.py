@@ -154,7 +154,7 @@ def test_django_preview_boots_after_migrate(fake_llm):
         try:
             assert client.get(f"{base}/health").json() == {"status": "ok"}
             assert "openapi" in client.get(f"{base}/docs").text
-            assert client.get(f"{base}/posts/").json() == []
+            assert len(client.get(f"{base}/posts/").json()) == 5  # the preview starts with the demo rows
         finally:
             previews.stop_all()
 

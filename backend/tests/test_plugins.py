@@ -99,7 +99,8 @@ def test_seed_script_fills_a_running_app_through_its_api():
     try:
         p = previews.start("seedtest", files, "flask")
         script = p.workdir / "scripts" / "seed.py"
-        out = subprocess.run([sys.executable, str(script), p.base_url, "--email", "admin@vibestack.dev"],
+        out = subprocess.run([sys.executable, str(script), p.base_url, "--email", "admin@vibestack.dev",
+                              "--password", "demo-pass-123"],  # the preview's demo account (app/seed.py)
                              check=False, capture_output=True, text=True, timeout=120)
         assert out.returncode == 0, out.stderr
         for e in spec.entities:

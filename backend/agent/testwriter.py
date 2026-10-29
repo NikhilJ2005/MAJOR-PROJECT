@@ -18,6 +18,7 @@ from typing import Any
 
 from . import prompts
 from .analysis import requirements_text
+from .config import settings
 from .llm import LLMError, Usage, ask, parse_file_blocks
 from .state import ProjectSpec
 
@@ -40,9 +41,9 @@ def write_rule_tests(llm: Any, spec: ProjectSpec, stream: Any = None) -> tuple[s
     system = prompts.RULE_TESTS_SYSTEM.format(helpers=prompts.TEST_HELPERS, contract=prompts.CONTRACT)
     user = prompts.RULE_TESTS_USER.format(
         requirements=requirements_text(spec.requirements),
-        spec=spec.model_dump_json(indent=1, exclude={"requirements"}),
+        spec=spec.model_dump_json(indent=1, exclude={"requirements": True, "entities": {"__all__": {"sample_rows"}}}),
     )
-    text, usage = ask(llm, "strong", system, user, effort="medium", stream=stream)
+    text, usage = ask(llm, settings.build_role, system, user, effort="low", stream=stream)
     source = parse_file_blocks(text).get(RULE_TESTS)
     return (source if source and valid_test_file(source) else None), usage
 

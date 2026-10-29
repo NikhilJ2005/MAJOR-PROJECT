@@ -63,6 +63,13 @@ class Settings:
     llm_max_parallel: int = field(
         default_factory=lambda: _env_int("LLM_MAX_PARALLEL", {"openrouter": 4, "gemini": 4}.get(_provider(), 1))
     )
+    # Who writes the code. "cheap" (default): the fast model (Gemini 3.8 Flash) writes the business logic
+    # and rule tests, while the strong model (Gemini 4 Argon) designs the app and takes over hard repairs.
+    # "strong" puts the strong model back on code generation (slower).
+    build_role: str = field(default_factory=lambda: os.environ.get("BUILD_ROLE", "cheap")
+                            if os.environ.get("BUILD_ROLE", "cheap") in ("cheap", "strong") else "cheap")
+    # The Architect's thinking level: medium designs well and is much faster than high.
+    architect_effort: str = field(default_factory=lambda: os.environ.get("ARCHITECT_EFFORT", "medium"))
     # How hard each tier thinks (Gemini thinking level / OpenAI reasoning effort): low, medium or high.
     # Empty sends nothing (the model's default).
     strong_reasoning: str = field(default_factory=lambda: os.environ.get("STRONG_REASONING", "high"))
@@ -87,7 +94,9 @@ class Settings:
 
     # Healing stops when it stops making progress (see healing.should_continue);
     # this is only a seatbelt against a pathological run.
-    max_heal_safety: int = field(default_factory=lambda: _env_int("MAX_HEAL_SAFETY", 12))
+    # MAX_HEAL_ITERATIONS is accepted as another name for it (older deployment settings use it).
+    max_heal_safety: int = field(
+        default_factory=lambda: _env_int("MAX_HEAL_SAFETY", _env_int("MAX_HEAL_ITERATIONS", 12)))
     # The budget per build is money: thinking models make token counts unpredictable.
     max_cost_per_run_usd: float = field(default_factory=lambda: float(os.environ.get("MAX_COST_PER_RUN_USD", "3.0")))
     max_tokens_per_run: int = field(default_factory=lambda: _env_int("MAX_TOKENS_PER_RUN", 2_000_000))
@@ -146,6 +155,9 @@ class Settings:
     def platform_database_url(self) -> str:
         """Accounts, projects and run state: SQLite in DATA_DIR, or Postgres (PLATFORM_DATABASE_URL)."""
         url = os.environ.get("PLATFORM_DATABASE_URL", "")
+        fallback = os.environ.get("DATABASE_URL", "")
+        if not url and fallback.startswith(("postgres://", "postgresql://")):
+            url = fallback  # Railway's Postgres plugin sets DATABASE_URL
         if not url:
             return f"sqlite:///{self.platform_db}"
         # Railway gives postgres:// or postgresql://; SQLAlchemy needs the psycopg (v3) driver named.

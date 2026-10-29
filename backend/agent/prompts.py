@@ -92,6 +92,13 @@ Step 2, design:
   (POST changes data, GET reads), path ("/{item_id}/<word>" for one row or "/<word>" for the collection),
   description, rules (plain English, each naming the HTTP error when it is broken, e.g.
   "409 if stock is lower than the quantity"), admin_only, roles, locks, requirement_ids.
+- Build a production-ready product, not an empty CRUD skeleton: model the real workflows of the domain as
+  actions (e.g. a library: borrow and return a book with copies available, due dates and overdue fines;
+  a shop: checkout that reduces stock; a clinic: book and cancel an appointment without double booking).
+- "sample_rows" on EVERY entity: 5-8 realistic demo rows the app starts with, so it is useful at once
+  (real-looking names, titles, prices, dates in 2026, varied states). A foreign key holds the 1-based
+  position of a row in the target entity's sample_rows (e.g. "author_id": 2 = the 2nd Author); a
+  reference to "User" may be 1. Respect choices, min/max and unique fields.
 - Put every requirement id on the entity or action that covers it (requirement_ids); every requirement
   must be covered.
 - Leave "stack" empty: it is filled in for you. project_name is short snake_case."""

@@ -98,11 +98,22 @@ class EntitySpec(BaseModel):
     write_roles: list[str] = Field(
         default_factory=list, description="Only users with one of these roles (or admins) may create, change or delete"
     )
+    sample_rows: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="5-8 realistic demo rows the app starts with (field name -> value). A foreign key holds the "
+        "1-based position of the row in the target entity's sample_rows; dates are ISO strings",
+    )
 
     @field_validator("name")
     @classmethod
     def _pascal(cls, v: str) -> str:
         return to_pascal(v)
+
+    @field_validator("sample_rows", mode="before")
+    @classmethod
+    def _rows_only(cls, v: Any) -> list[dict[str, Any]]:
+        """A malformed demo row from the model is dropped instead of failing the whole design."""
+        return [r for r in v if isinstance(r, dict)] if isinstance(v, list) else []
 
     @property
     def module(self) -> str:
@@ -241,6 +252,8 @@ class ProjectSpec(BaseModel):
         self.entities = topo_sort(self.entities)
         self.actions = _clean_actions(self.actions, seen)
         _clean_roles(self)
+        for ent in self.entities:
+            ent.sample_rows = clean_samples(ent, seen)
         return self
 
     def has(self, feature: str) -> bool:
@@ -306,6 +319,115 @@ def _clean_rules(f: FieldSpec) -> None:
         f.choices = [first] + [c for c in f.choices if c != first]
     if f.type == "json":
         f.unique, f.index, f.min, f.max, f.choices = False, False, None, None, []
+
+
+MAX_SAMPLE_ROWS = 10
+FALLBACK_SAMPLE_ROWS = 5
+
+
+def _sample_cell(f: FieldSpec, value: Any, row: int, targets: dict[str, int]) -> Any:
+    """One demo value made valid for its field, or None when it cannot be."""
+    if value is None:
+        return None
+    if f.references:
+        size = targets.get(f.references, 1 if f.references == "User" else 0)
+        try:
+            pos = int(value)
+        except (TypeError, ValueError):
+            return None
+        return pos if 1 <= pos <= size else (((row - 1) % size) + 1 if size else None)
+    if f.choices:
+        return value if value in f.choices else f.choices[0]
+    try:
+        if f.type == "bool":
+            return value if isinstance(value, bool) else str(value).lower() in ("1", "true", "yes")
+        if f.type == "int":
+            value = int(float(value))
+        elif f.type in ("float", "decimal"):
+            value = round(float(value), 2)
+        elif f.type in ("date", "datetime"):
+            import datetime as dt
+
+            text = str(value).replace("Z", "+00:00")
+            if f.type == "date":
+                return dt.date.fromisoformat(text[:10]).isoformat()
+            try:
+                return dt.datetime.fromisoformat(text).isoformat()
+            except ValueError:
+                return dt.datetime.fromisoformat(text[:10]).isoformat()
+        elif f.type == "json":
+            return value if isinstance(value, (dict, list)) else None
+        else:
+            value = str(value)
+            return value[:255] if f.type == "str" else value
+    except (TypeError, ValueError):
+        return None
+    if isinstance(value, (int, float)):
+        if f.min is not None and value < f.min:
+            value = type(value)(f.min)
+        if f.max is not None and value > f.max:
+            value = type(value)(f.max)
+    return value
+
+
+def _fallback_cell(ent: EntitySpec, f: FieldSpec, row: int, targets: dict[str, int]) -> Any:
+    """A deterministic demo value, so an entity is never empty even when the model gave no rows."""
+    import datetime as dt
+
+    if f.references:
+        size = targets.get(f.references, 1 if f.references == "User" else 0)
+        return ((row - 1) % size) + 1 if size else None
+    if f.choices:
+        return f.choices[(row - 1) % len(f.choices)] if not f.transitions else f.choices[0]
+    words = f.name.replace("_", " ")
+    if f.type == "str":
+        if "email" in f.name:
+            return f"{ent.module}{row}@example.com"
+        return f"{ent.name} {words.title()} {row}" if f.name in ("name", "title") else f"{words.capitalize()} {row}"
+    if f.type == "text":
+        return f"Demo {words} for {ent.name.lower()} #{row}."
+    if f.type == "bool":
+        return row % 2 == 1
+    if f.type in ("int", "float", "decimal"):
+        low = f.min if f.min is not None else 1
+        high = f.max if f.max is not None else low + 100
+        value = low + (high - low) * ((row * 37) % 100) / 100
+        return int(value) if f.type == "int" else round(value, 2)
+    if f.type == "date":
+        return (dt.date(2026, 1, 1) + dt.timedelta(days=7 * row)).isoformat()
+    if f.type == "datetime":
+        return (dt.datetime(2026, 1, 1, 9, 0, tzinfo=dt.UTC) + dt.timedelta(days=7 * row)).isoformat()
+    if f.type == "json":
+        return {}
+    return None
+
+
+def clean_samples(ent: EntitySpec, entities: dict[str, EntitySpec]) -> list[dict[str, Any]]:
+    """Make the Architect's demo rows safe to insert: known fields only, valid values, foreign keys that
+    point at a demo row of the target. Without usable rows, deterministic ones are made up instead."""
+    targets = {name: min(max(len(e.sample_rows), FALLBACK_SAMPLE_ROWS), MAX_SAMPLE_ROWS) for name, e in entities.items()}
+    rows: list[dict[str, Any]] = []
+    for i, raw in enumerate(ent.sample_rows[:MAX_SAMPLE_ROWS], 1):
+        if not isinstance(raw, dict):
+            continue
+        row = {}
+        for f in ent.fields:
+            value = _sample_cell(f, raw.get(f.name, raw.get(f.name[:-3]) if f.references else raw.get(f.name)), i, targets)
+            if value is None and f.required:
+                value = _fallback_cell(ent, f, i, targets)
+            row[f.name] = value
+        rows.append(row)
+    if not rows:
+        rows = [{f.name: _fallback_cell(ent, f, i, targets) for f in ent.fields}
+                for i in range(1, FALLBACK_SAMPLE_ROWS + 1)]
+    for f in ent.fields:  # unique values must differ from row to row
+        if f.unique and not f.references and f.type in ("str", "text", "int"):
+            seen: set[Any] = set()
+            for i, row in enumerate(rows, 1):
+                if row.get(f.name) in seen:
+                    row[f.name] = (f"{row[f.name]} {i}" if f.type != "int" else (row[f.name] or 0) + 1000 + i)
+                seen.add(row.get(f.name))
+    return rows
 
 
 def _clean_actions(actions: list[ActionSpec], entities: dict[str, EntitySpec]) -> list[ActionSpec]:

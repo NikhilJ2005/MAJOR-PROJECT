@@ -16,6 +16,10 @@ make test                   # pytest
 
 API docs: http://localhost:8000/docs
 
+The app starts with realistic demo data from the design ({{ spec.entities | length }} tables, `app/seed_data.json`),
+loaded once into an empty database. Turn it off with `SEED_DEMO_DATA=0`.
+{% if spec.auth %}In dev, log in as `admin@vibestack.dev` / `demo-pass-123`; that account owns the demo rows.
+{% endif %}
 ## Security and operations
 
 - Errors follow RFC 7807 (`application/problem+json` with `type`, `title`, `status`, `detail`).

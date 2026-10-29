@@ -11,6 +11,8 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./app.db")
 # dev/test: create tables on start. production: migrations create them.
 AUTO_CREATE_TABLES = os.getenv("AUTO_CREATE_TABLES", "1" if DEV else "0") == "1"
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+# Start with the demo rows from the design (app/seed.py). Off in tests, so they start from an empty database.
+SEED_DEMO_DATA = os.getenv("SEED_DEMO_DATA", "0" if ENV == "test" else "1") == "1"
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 LOG_FORMAT = os.getenv("LOG_FORMAT", "text" if DEV else "json")  # json: one object per line, with request ids
 {% if spec.auth or stack.name == "django" %}
