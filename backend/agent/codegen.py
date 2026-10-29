@@ -207,11 +207,24 @@ def render_project(spec: ProjectSpec, **extra: Any) -> dict[str, str]:
             from .frontend import frontend_files
 
             files.update(frontend_files(spec))
+        elif template == "@seed":
+            files[path] = json.dumps(seed_document(spec), indent=1) + "\n"
         elif template == "@openapi":
             files[path] = json.dumps(openapi_document(spec), indent=1) + "\n"
         else:
             files[path] = env.get_template(template).render(**ctx)
     return files
+
+
+def seed_document(spec: ProjectSpec) -> dict[str, Any]:
+    """The demo rows app/seed.py loads, in dependency order (parents before children)."""
+    return {"entities": [
+        {"name": e.name, "owned": e.owned and spec.auth,
+         "refs": {f.name: f.references for f in e.fields if f.references},
+         "types": {f.name: f.type for f in e.fields},
+         "rows": e.sample_rows}
+        for e in spec.entities
+    ]}
 
 
 # --------------------------------------------------------------------------- contract test data

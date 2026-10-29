@@ -2,6 +2,7 @@
 
 import json
 import logging
+import threading
 import time
 
 from django.db import IntegrityError
@@ -22,11 +23,27 @@ def problem_response(status: int, detail, headers: dict | None = None) -> JsonRe
     return response
 
 
+_seeded = threading.Event()
+_seed_lock = threading.Lock()
+
+
+def _seed_once() -> None:
+    """Load the demo data on the first request (the tables exist by then)."""
+    with _seed_lock:
+        if not _seeded.is_set():
+            from app import seed
+
+            seed.run()
+            _seeded.set()
+
+
 class ApiMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
+        if not _seeded.is_set():
+            _seed_once()
         start = time.perf_counter()
         rid = logs.new_request_id(request.headers.get("X-Request-ID"))
         token = logs.request_id.set(rid)

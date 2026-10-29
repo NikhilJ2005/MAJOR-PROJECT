@@ -1,0 +1,138 @@
+"""Demo data: the app starts with realistic rows instead of empty pages.
+
+Loaded once on start when SEED_DEMO_DATA is on (the default outside tests) and the database is empty.
+The rows come from the design (app/seed_data.json). A row that does not fit is skipped, so seeding can
+never stop the app from starting.
+{% if spec.auth %}
+Log in as admin@vibestack.dev / demo-pass-123 in dev and the live preview (DEMO_EMAIL, DEMO_PASSWORD):
+that account owns the demo rows.
+{% endif %}
+"""
+
+import datetime as dt
+import json
+import logging
+import os
+import secrets
+from decimal import Decimal
+from pathlib import Path
+
+from app import config
+
+log = logging.getLogger("app.seed")
+DATA = Path(__file__).with_name("seed_data.json")
+{% if spec.auth %}
+DEMO_EMAIL = os.getenv("DEMO_EMAIL", "admin@vibestack.dev")
+# The well-known demo password only in dev/test (the live preview). In production set DEMO_PASSWORD, or the
+# demo account gets a random password nobody can guess (set DEMO_PASSWORD to log in as it).
+DEMO_PASSWORD = os.getenv("DEMO_PASSWORD", "") or ("demo-pass-123" if config.DEV else secrets.token_urlsafe(12))
+{% endif %}
+
+
+def _value(kind: str, value):
+    if value is None:
+        return None
+    if kind == "date":
+        return dt.date.fromisoformat(str(value)[:10])
+    if kind == "datetime":
+        moment = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return moment if moment.tzinfo else moment.replace(tzinfo=dt.timezone.utc)
+    if kind == "decimal":
+        return Decimal(str(value))
+    return value
+
+
+def _rows(entity: dict, ids: dict, owner_id):
+    """Each demo row as model keyword arguments, with foreign-key positions turned into real ids."""
+    for row in entity["rows"]:
+        values = {}
+        for name, value in row.items():
+            target = entity["refs"].get(name)
+            if target == "User":
+                value = owner_id
+            elif target:
+                made = ids.get(target, [])
+                value = made[(int(value) - 1) % len(made)] if made and value is not None else None
+            else:
+                value = _value(entity["types"].get(name, "str"), value)
+            values[name] = value  # foreign keys by column (<name>_id) in every ORM
+        if entity["owned"]:
+            values["owner_id"] = owner_id
+        yield values
+
+
+def run() -> None:
+    """Load the demo data unless it is turned off or the database already has rows."""
+    if not config.SEED_DEMO_DATA or not DATA.exists():
+        return
+    try:
+        _load(json.loads(DATA.read_text()))
+    except Exception:  # never stop the app from starting
+        log.exception("demo data was not loaded")
+{% if stack.name == "django" %}
+
+
+def _load(data: dict) -> None:
+    from app import models
+
+    if not data["entities"] or getattr(models, data["entities"][0]["name"]).objects.exists():
+        return
+    owner_id = None
+{% if spec.auth %}
+    from app.security import hash_password
+
+    user = models.User.objects.filter(email=DEMO_EMAIL).first()
+    if user is None:
+        user = models.User.objects.create(email=DEMO_EMAIL, password_hash=hash_password(DEMO_PASSWORD))
+    owner_id = user.id
+{% endif %}
+    ids: dict = {}
+    for entity in data["entities"]:
+        model = getattr(models, entity["name"])
+        made = ids.setdefault(entity["name"], [])
+        for values in _rows(entity, ids, owner_id):
+            try:
+                made.append(model.objects.create(**values).id)
+            except Exception as exc:
+                log.warning("skipped a demo %s: %s", entity["name"], exc)
+    log.info("loaded demo data: %s", ", ".join(f"{len(v)} {k}" for k, v in ids.items()))
+{% else %}
+
+
+def _load(data: dict) -> None:
+    from app import models
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        if not data["entities"] or db.query(getattr(models, data["entities"][0]["name"])).first() is not None:
+            return
+        owner_id = None
+{% if spec.auth %}
+        from app.security import hash_password
+
+        user = db.query(models.User).filter(models.User.email == DEMO_EMAIL).first()
+        if user is None:
+            user = models.User(email=DEMO_EMAIL, password_hash=hash_password(DEMO_PASSWORD))
+            db.add(user)
+            db.commit()
+            log.info("demo account: %s", DEMO_EMAIL)
+        owner_id = user.id
+{% endif %}
+        ids: dict = {}
+        for entity in data["entities"]:
+            model = getattr(models, entity["name"])
+            made = ids.setdefault(entity["name"], [])
+            for values in _rows(entity, ids, owner_id):
+                try:
+                    row = model(**values)
+                    db.add(row)
+                    db.commit()
+                    made.append(row.id)
+                except Exception as exc:
+                    db.rollback()
+                    log.warning("skipped a demo %s: %s", entity["name"], exc)
+        log.info("loaded demo data: %s", ", ".join(f"{len(v)} {k}" for k, v in ids.items()))
+    finally:
+        db.close()
+{% endif %}

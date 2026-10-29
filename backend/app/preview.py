@@ -114,6 +114,7 @@ class PreviewManager:
                 workdir,
                 stdout=logfile,
                 cpu_seconds=PREVIEW_CPU_SECONDS,
+                extra_env={"SEED_DEMO_DATA": "1"},  # the live preview opens with the design's demo data
             )
             preview = Preview(run_id, key, port, proc, workdir, logfile)
             self._previews[run_id] = preview

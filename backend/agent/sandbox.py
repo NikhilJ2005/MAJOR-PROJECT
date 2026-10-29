@@ -132,7 +132,8 @@ class LocalSandbox:
                 os.chown(path, *self.identity)
 
     def spawn(
-        self, args: list[str], workdir: Path, stdout: Any = subprocess.PIPE, cpu_seconds: int | None = None
+        self, args: list[str], workdir: Path, stdout: Any = subprocess.PIPE, cpu_seconds: int | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> subprocess.Popen:
         """Start a process for generated code: scrubbed env, own process group, unprivileged user, limits."""
         kwargs: dict[str, Any] = {}
@@ -144,7 +145,7 @@ class LocalSandbox:
         return subprocess.Popen(
             args,
             cwd=workdir,
-            env=self._env(workdir),
+            env={**self._env(workdir), **(extra_env or {})},
             stdout=stdout,
             stderr=subprocess.STDOUT,
             text=True,

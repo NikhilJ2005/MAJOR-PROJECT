@@ -148,7 +148,7 @@ def _design(llm: Any, state: AgentState) -> tuple[ProjectSpec, list[str], Usage]
 
     def design(text: str, usage: Usage | None = None) -> tuple[ProjectSpec, Usage]:
         system = prompts.SPEC_SYSTEM + prompts.PLUGIN_CATALOG.format(catalog=plugins.catalog() or "(none)") + _rules(state)
-        spec, used = structured(llm, "strong", system, text, ProjectSpec, effort="high", stream=live)
+        spec, used = structured(llm, "strong", system, text, ProjectSpec, effort=settings.architect_effort, stream=live)
         live.done()
         if usage:
             used.add(usage)
@@ -159,7 +159,7 @@ def _design(llm: Any, state: AgentState) -> tuple[ProjectSpec, list[str], Usage]
 
     spec, usage = design(user)
     missing = check_coverage(spec)
-    if missing:
+    if len(missing) > 1:  # one uncovered requirement is logged, not worth a second full design call
         spec, usage = design(user + "\n\n" + prompts.SPEC_COVERAGE_RETRY.format(missing=", ".join(missing)), usage)
         missing = check_coverage(spec)
     return spec, missing, usage
@@ -437,8 +437,8 @@ def _result(job: Any, default: Any) -> Any:
 
 def _design_ui(llm: Any, state: AgentState, spec: ProjectSpec) -> tuple[str | None, str, Usage]:
     """The look of the generated web app, as validated JSON (the app code itself is fixed and tested)."""
-    user = prompts.UI_USER.format(prompt=state["prompt"], spec=spec.model_dump_json(include={"project_name", "entities"}),
-                                  default=json.dumps(default_ui(spec)))
+    shape = spec.model_dump_json(include={"project_name", "entities"}, exclude={"entities": {"__all__": {"sample_rows"}}})
+    user = prompts.UI_USER.format(prompt=state["prompt"], spec=shape, default=json.dumps(default_ui(spec)))
     try:
         ui, usage = structured(llm, "cheap", prompts.UI_SYSTEM, user, UIConfig, effort="low")
     except LLMError as exc:
@@ -450,6 +450,21 @@ def _service_context(spec: ProjectSpec, e: EntitySpec, files: dict[str, str]) ->
     """Read-only code the business logic may need: every model, this entity's schemas, the error type."""
     paths = [f"app/models/{x.module}.py" for x in spec.entities] + [f"app/schemas/{e.module}.py", "app/errors.py"]
     return "\n\n".join(f"# {p}\n```python\n{files[p]}```" for p in paths if p in files)
+
+
+def focused_spec(spec: ProjectSpec, e: EntitySpec) -> str:
+    """The part of the design one entity's business logic needs: the entity, its actions and the entities it
+    is linked to. Big apps get short prompts, so the Code Generator answers faster and is not cut off."""
+    linked = {e.name} | {f.references for f in e.fields if f.references}
+    linked |= {x.name for x in spec.entities if any(f.references == e.name for f in x.fields)}
+    linked |= {x.name for a in spec.actions_for(e) for x in spec.entities if x.name.lower() in a.description.lower()
+               or any(x.name.lower() in r.lower() for r in a.rules)}
+    part = {
+        **spec.model_dump(include={"project_name", "description", "stack", "auth", "features", "roles"}),
+        "entities": [x.model_dump(exclude={"sample_rows", "requirement_ids"}) for x in spec.entities if x.name in linked],
+        "actions": [a.model_dump() for a in spec.actions_for(e)],
+    }
+    return json.dumps(part, indent=1)
 
 
 def _generate_service(
@@ -466,14 +481,14 @@ def _generate_service(
     user = prompts.SERVICE_USER.format(
         prompt=state["prompt"],
         requirements=requirements_text(spec.requirements),
-        spec=spec.model_dump_json(indent=1, exclude={"requirements"}),
+        spec=focused_spec(spec, e),
         module=e.module,
         stub=files[path],
         context=_service_context(spec, e, files),
     )
     live = LiveText(writer, "code_generator", path)
     try:
-        text, usage = ask(llm, "strong", system, user, effort="medium", stream=live)
+        text, usage = ask(llm, settings.build_role, system, user, effort="medium", stream=live)
     except LLMError as exc:
         return {}, f"LLM unavailable ({exc}); stubs kept", Usage()
     finally:
@@ -484,7 +499,7 @@ def _generate_service(
     if not body.strip() and "### FILE:" in text:
         # The reply was cut off before the file ended (an output limit): ask once more for a compact version.
         try:
-            text, more = ask(llm, "strong", system, user + prompts.CUT_OFF_RETRY, effort="low")
+            text, more = ask(llm, settings.build_role, system, user + prompts.CUT_OFF_RETRY, effort="low")
             usage.add(more)
             body = parse_file_blocks(text).get(path, "")
             rationale = "the first reply was cut off, so it was asked again; " + rationale
@@ -742,7 +757,7 @@ def _llm_repair(llm: Any, role: str, state: AgentState, path: str, attempt: int)
             raise
         except Exception as exc:  # noqa: BLE001 - e.g. a model without function calling: repair without tools
             log.warning("tool-using repair failed (%s); repairing without tools", exc)
-    text, usage = ask(llm, role, system, user, effort="high" if role == "strong" else "low")
+    text, usage = ask(llm, role, system, user, effort="medium" if role == "strong" else "low")
     return text, usage, None
 
 

@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
 
-from app import config, logs, models  # noqa: F401  (registers tables on Base.metadata)
+from app import config, logs, models, seed  # noqa: F401  (registers tables on Base.metadata)
 from app.database import Base, database_ok, engine
 from app.errors import PROBLEM_JSON, ApiError, error_headers, problem
 {% if spec.auth %}
@@ -34,6 +34,7 @@ log = logging.getLogger("app")
 async def lifespan(_: FastAPI):
     if config.AUTO_CREATE_TABLES:
         Base.metadata.create_all(bind=engine)
+    seed.run()
     yield
 
 

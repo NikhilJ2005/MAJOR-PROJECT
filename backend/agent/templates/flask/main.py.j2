@@ -9,7 +9,7 @@ from flask import Flask, Response, g, request, send_from_directory
 from pydantic import ValidationError
 from werkzeug.exceptions import HTTPException
 
-from app import config, logs, models  # noqa: F401  (registers tables on Base.metadata)
+from app import config, logs, models, seed  # noqa: F401  (registers tables on Base.metadata)
 from app.database import Base, database_ok, engine
 from app.errors import PROBLEM_JSON, ApiError, error_headers, problem
 {% if spec.auth %}
@@ -29,6 +29,7 @@ HERE = Path(__file__).parent
 app = Flask(__name__)
 if config.AUTO_CREATE_TABLES:
     Base.metadata.create_all(bind=engine)
+seed.run()
 
 {% if spec.auth %}
 app.register_blueprint(auth.bp)

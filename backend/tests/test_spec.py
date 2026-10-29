@@ -85,3 +85,26 @@ def test_features_need_logins_and_own_their_tables():
         "project_name": "x", "auth": True, "features": ["audit_log"], "entities": [{"name": "AuditLog"}, {"name": "Item"}],
     })
     assert [e.name for e in spec.entities] == ["Item"]
+
+
+def test_sample_rows_are_cleaned_and_never_empty():
+    spec = ProjectSpec.model_validate({
+        "project_name": "library", "auth": True,
+        "entities": [
+            {"name": "Author", "fields": [{"name": "name"}], "sample_rows": [{"name": "Ursula K. Le Guin"}]},
+            {"name": "Book", "fields": [
+                {"name": "title"}, {"name": "copies", "type": "int", "min": 0},
+                {"name": "status", "choices": ["available", "borrowed"]},
+                {"name": "author_id", "references": "Author"}],
+             "sample_rows": [{"title": "A Wizard of Earthsea", "copies": -3, "status": "lost", "author_id": 9,
+                              "bogus": 1}, "not a row"]},
+            {"name": "Member", "fields": [{"name": "email", "unique": True}]},
+        ],
+    })
+    author, book, member = (spec.entity(n) for n in ("Author", "Book", "Member"))
+    assert author.sample_rows == [{"name": "Ursula K. Le Guin"}]
+    assert book.sample_rows == [{"title": "A Wizard of Earthsea", "copies": 0, "status": "available", "author_id": 1}]
+    assert len(member.sample_rows) == 5  # no rows from the model: deterministic ones, never an empty app
+    assert len({r["email"] for r in member.sample_rows}) == 5
+    again = ProjectSpec.model_validate(spec.model_dump())  # cleaning is stable
+    assert again.entity("Book").sample_rows == book.sample_rows

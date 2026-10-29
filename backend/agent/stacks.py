@@ -97,6 +97,8 @@ class Stack:
             ("app/schemas/__init__.py", None, "package marker"),
             ("app/services/__init__.py", "services_init.py.j2", "business logic package"),
             ("app/routers/__init__.py", None, "package marker"),
+            ("app/seed.py", "seed.py.j2", "demo data loaded on first start"),
+            ("app/seed_data.json", "@seed", "realistic demo rows from the design"),
         ]
         if self.name == "django":
             rows += [
