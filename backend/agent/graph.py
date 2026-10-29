@@ -63,13 +63,21 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
 def checkpointer():
     """Where every step of every run is saved: Postgres when configured, else SQLite in DATA_DIR."""
     if settings.uses_postgres:
-        import psycopg
         from langgraph.checkpoint.postgres import PostgresSaver
         from psycopg.rows import dict_row
+        from psycopg_pool import ConnectionPool
 
         url = settings.platform_database_url.replace("postgresql+psycopg://", "postgresql://", 1)
-        conn = psycopg.connect(url, autocommit=True, prepare_threshold=0, row_factory=dict_row)
-        saver = PostgresSaver(conn)
+        # A pool, not one connection: hosted Postgres (Railway) drops idle connections, and a checkpoint
+        # write on a dead connection hangs the run. Connections are checked before use, recycled, and kept
+        # alive with TCP keepalives; several runs can save their steps at the same time.
+        pool = ConnectionPool(
+            url, min_size=1, max_size=10, max_idle=300, max_lifetime=1800, timeout=30, open=True,
+            check=ConnectionPool.check_connection,
+            kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row, "connect_timeout": 10,
+                    "keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 3},
+        )
+        saver = PostgresSaver(pool)
         saver.setup()  # creates its tables the first time
         return saver
     from langgraph.checkpoint.sqlite import SqliteSaver

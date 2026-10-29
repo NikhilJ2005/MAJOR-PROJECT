@@ -1,0 +1,431 @@
+{
+ "id": "inventory",
+ "title": "Inventory and orders",
+ "keywords": [
+  "inventory",
+  "stock",
+  "warehouse",
+  "order",
+  "shop",
+  "store",
+  "product",
+  "ecommerce",
+  "supplier"
+ ],
+ "summary": "Products with stock and reservations, suppliers, customer orders with a fulfilment workflow.",
+ "prompt": "An inventory and order system: products with stock on hand and reserved stock, suppliers, customers, and orders that move from pending to paid, shipped and delivered.",
+ "spec": {
+  "project_name": "inventory_orders",
+  "description": "Inventory, suppliers, customers and order fulfilment.",
+  "auth": true,
+  "roles": [
+   {
+    "name": "staff",
+    "self_signup": false
+   },
+   {
+    "name": "customer"
+   }
+  ],
+  "entities": [
+   {
+    "name": "Supplier",
+    "write_roles": [
+     "staff"
+    ],
+    "fields": [
+     {
+      "name": "name"
+     },
+     {
+      "name": "email",
+      "unique": true
+     },
+     {
+      "name": "country"
+     }
+    ],
+    "sample_rows": [
+     {
+      "name": "Nordic Textiles",
+      "email": "sales@nordictex.example",
+      "country": "Sweden"
+     },
+     {
+      "name": "Shenzhen Circuits",
+      "email": "hi@szc.example",
+      "country": "China"
+     },
+     {
+      "name": "Andes Coffee Co.",
+      "email": "orders@andes.example",
+      "country": "Peru"
+     }
+    ]
+   },
+   {
+    "name": "Product",
+    "write_roles": [
+     "staff"
+    ],
+    "fields": [
+     {
+      "name": "sku",
+      "unique": true
+     },
+     {
+      "name": "name",
+      "index": true
+     },
+     {
+      "name": "supplier_id",
+      "references": "Supplier",
+      "on_delete": "restrict"
+     },
+     {
+      "name": "price",
+      "type": "decimal",
+      "min": 0
+     },
+     {
+      "name": "stock_on_hand",
+      "type": "int",
+      "min": 0
+     },
+     {
+      "name": "stock_reserved",
+      "type": "int",
+      "min": 0
+     }
+    ],
+    "sample_rows": [
+     {
+      "sku": "TSH-BLK-M",
+      "name": "Organic tee, black, M",
+      "supplier_id": 1,
+      "price": 24.0,
+      "stock_on_hand": 140,
+      "stock_reserved": 12
+     },
+     {
+      "sku": "USB-C-HUB7",
+      "name": "7-in-1 USB-C hub",
+      "supplier_id": 2,
+      "price": 39.9,
+      "stock_on_hand": 58,
+      "stock_reserved": 4
+     },
+     {
+      "sku": "CF-ARABICA-1K",
+      "name": "Arabica beans 1 kg",
+      "supplier_id": 3,
+      "price": 18.5,
+      "stock_on_hand": 320,
+      "stock_reserved": 30
+     },
+     {
+      "sku": "HOOD-GRY-L",
+      "name": "Hoodie, grey, L",
+      "supplier_id": 1,
+      "price": 49.0,
+      "stock_on_hand": 6,
+      "stock_reserved": 2
+     },
+     {
+      "sku": "CBL-USB-C-2M",
+      "name": "USB-C cable 2 m",
+      "supplier_id": 2,
+      "price": 9.99,
+      "stock_on_hand": 0,
+      "stock_reserved": 0
+     }
+    ]
+   },
+   {
+    "name": "Customer",
+    "write_roles": [
+     "staff"
+    ],
+    "fields": [
+     {
+      "name": "full_name"
+     },
+     {
+      "name": "email",
+      "unique": true
+     },
+     {
+      "name": "city"
+     }
+    ],
+    "sample_rows": [
+     {
+      "full_name": "Grace Hopper",
+      "email": "grace@example.com",
+      "city": "New York"
+     },
+     {
+      "full_name": "Arjun Rao",
+      "email": "arjun@example.com",
+      "city": "Bengaluru"
+     },
+     {
+      "full_name": "Lena Fischer",
+      "email": "lena@example.com",
+      "city": "Berlin"
+     },
+     {
+      "full_name": "Tom\u00e1s Silva",
+      "email": "tomas@example.com",
+      "city": "Lisbon"
+     }
+    ]
+   },
+   {
+    "name": "Order",
+    "realtime": true,
+    "fields": [
+     {
+      "name": "customer_id",
+      "references": "Customer",
+      "on_delete": "restrict"
+     },
+     {
+      "name": "total",
+      "type": "decimal",
+      "min": 0
+     },
+     {
+      "name": "status",
+      "choices": [
+       "pending",
+       "paid",
+       "shipped",
+       "delivered",
+       "cancelled"
+      ],
+      "transitions": {
+       "pending": [
+        "paid",
+        "cancelled"
+       ],
+       "paid": [
+        "shipped",
+        "cancelled"
+       ],
+       "shipped": [
+        "delivered"
+       ]
+      }
+     }
+    ],
+    "sample_rows": [
+     {
+      "customer_id": 1,
+      "total": 88.0,
+      "status": "paid"
+     },
+     {
+      "customer_id": 2,
+      "total": 39.9,
+      "status": "shipped"
+     },
+     {
+      "customer_id": 3,
+      "total": 55.5,
+      "status": "pending"
+     },
+     {
+      "customer_id": 4,
+      "total": 147.0,
+      "status": "delivered"
+     },
+     {
+      "customer_id": 2,
+      "total": 18.5,
+      "status": "cancelled"
+     }
+    ]
+   },
+   {
+    "name": "OrderItem",
+    "fields": [
+     {
+      "name": "order_id",
+      "references": "Order",
+      "on_delete": "cascade"
+     },
+     {
+      "name": "product_id",
+      "references": "Product",
+      "on_delete": "restrict"
+     },
+     {
+      "name": "quantity",
+      "type": "int",
+      "min": 1
+     },
+     {
+      "name": "unit_price",
+      "type": "decimal",
+      "min": 0
+     }
+    ],
+    "sample_rows": [
+     {
+      "order_id": 1,
+      "product_id": 1,
+      "quantity": 2,
+      "unit_price": 24.0
+     },
+     {
+      "order_id": 1,
+      "product_id": 2,
+      "quantity": 1,
+      "unit_price": 39.9
+     },
+     {
+      "order_id": 2,
+      "product_id": 2,
+      "quantity": 1,
+      "unit_price": 39.9
+     },
+     {
+      "order_id": 3,
+      "product_id": 3,
+      "quantity": 3,
+      "unit_price": 18.5
+     },
+     {
+      "order_id": 4,
+      "product_id": 4,
+      "quantity": 3,
+      "unit_price": 49.0
+     }
+    ]
+   }
+  ],
+  "actions": [
+   {
+    "name": "restock",
+    "entity": "Product",
+    "path": "/{item_id}/restock",
+    "kind": "adjust",
+    "description": "Goods arrive from the supplier.",
+    "rules": [],
+    "roles": [
+     "staff"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "stock_on_hand"
+   },
+   {
+    "name": "reserve",
+    "entity": "Product",
+    "path": "/{item_id}/reserve",
+    "kind": "move",
+    "description": "Hold stock for an order.",
+    "rules": [
+     "409 if not enough stock is on hand"
+    ],
+    "roles": [
+     "staff"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "stock_on_hand",
+    "target": "stock_reserved"
+   },
+   {
+    "name": "release_reservation",
+    "entity": "Product",
+    "path": "/{item_id}/release-reservation",
+    "kind": "move",
+    "description": "Put held stock back.",
+    "rules": [],
+    "roles": [
+     "staff"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "stock_reserved",
+    "target": "stock_on_hand"
+   },
+   {
+    "name": "write_off",
+    "entity": "Product",
+    "path": "/{item_id}/write-off",
+    "kind": "adjust",
+    "description": "Damaged or lost stock.",
+    "rules": [
+     "409 if more than the stock on hand"
+    ],
+    "roles": [
+     "staff"
+    ],
+    "inputs": [],
+    "direction": "subtract",
+    "field": "stock_on_hand"
+   },
+   {
+    "name": "mark_paid",
+    "entity": "Order",
+    "path": "/{item_id}/mark-paid",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "staff"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "paid"
+   },
+   {
+    "name": "ship",
+    "entity": "Order",
+    "path": "/{item_id}/ship",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "staff"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "shipped"
+   },
+   {
+    "name": "deliver",
+    "entity": "Order",
+    "path": "/{item_id}/deliver",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "staff"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "delivered"
+   },
+   {
+    "name": "cancel",
+    "entity": "Order",
+    "path": "/{item_id}/cancel",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "cancelled"
+   }
+  ]
+ }
+}

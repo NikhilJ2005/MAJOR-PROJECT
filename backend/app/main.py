@@ -25,7 +25,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from agent import plugins, storage
+from agent import blueprints, plugins, storage
 from agent.config import settings
 from agent.stacks import STACKS
 from agent.state import ProjectSpec
@@ -174,6 +174,7 @@ class RunRequest(BaseModel):
     auto_plugins: bool = True  # let the Architect and Planner choose plugins
     review_design: bool = False  # wait for the user to approve the design before any code is written
     instructions: str | None = Field(default=None, max_length=4000)  # project rules every agent follows
+    blueprint: str | None = Field(default=None, max_length=40)  # build a built-in blueprint (agent/blueprints)
 
 
 class Message(BaseModel):
@@ -234,6 +235,12 @@ def metrics(authorization: str | None = Header(default=None)) -> str:
     return metrics_text(store.run_metrics(), manager.active_count(), previews.count(), queued)
 
 
+@app.get("/api/blueprints")
+def list_blueprints() -> list[dict[str, Any]]:
+    """Built-in designs of complex apps that build with verified code only (no repairs needed)."""
+    return blueprints.summaries()
+
+
 @app.get("/api/config")
 def config() -> dict[str, Any]:
     return {
@@ -254,13 +261,14 @@ def config() -> dict[str, Any]:
 
 
 def start_run(
-    user: dict[str, Any], prompt: str, options: dict[str, Any], project_id: str | None = None, base_run_id: str | None = None
+    user: dict[str, Any], prompt: str, options: dict[str, Any], project_id: str | None = None, base_run_id: str | None = None,
+    spec: dict[str, Any] | None = None,
 ) -> str:
     """Checks and starts a run for a user. Shared by the HTTP API and the MCP server.
 
     Without a project_id a new project is created, so every run belongs to a project's history.
     """
-    if not settings.llm_enabled:
+    if not settings.llm_enabled and spec is None:  # a blueprint's design needs no model to build
         raise HTTPException(status_code=503, detail="no LLM API key is configured on the server")
     if not 10 <= len(prompt) <= 6000:
         raise HTTPException(status_code=422, detail="the description must be 10-6000 characters")
@@ -285,7 +293,8 @@ def start_run(
     rules = (store.project(project_id, user["id"]) or {}).get("instructions")
     options = {**options, "instructions": rules} if rules else {k: v for k, v in options.items() if k != "instructions"}
     try:
-        return manager.start(prompt, options, owner_id=user["id"], project_id=project_id, base_run_id=base_run_id).id
+        return manager.start(prompt, options, owner_id=user["id"], spec=spec, project_id=project_id,
+                             base_run_id=base_run_id).id
     except RuntimeError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
 
@@ -345,7 +354,13 @@ def create_run(body: RunRequest, user: CurrentUser,
     key = f"{user['id']}:{idempotency_key}" if idempotency_key else None
     if key and (earlier := idempotency.get(key)):
         return earlier
-    run_id = start_run(user, body.prompt, _options(body))
+    spec = None
+    if body.blueprint:
+        bp = blueprints.get(body.blueprint)
+        if bp is None:
+            raise HTTPException(status_code=404, detail="unknown blueprint")
+        spec = {**bp["spec"], "stack": body.stack}
+    run_id = start_run(user, body.prompt, _options(body), spec=spec)
     result = {"run_id": run_id, "project_id": store.run(run_id)["project_id"]}
     if key:
         idempotency.put(key, result)

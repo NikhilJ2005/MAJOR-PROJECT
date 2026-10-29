@@ -18,7 +18,6 @@ from typing import Any
 
 from . import prompts
 from .analysis import requirements_text
-from .config import settings
 from .llm import LLMError, Usage, ask, parse_file_blocks
 from .state import ProjectSpec
 
@@ -43,7 +42,8 @@ def write_rule_tests(llm: Any, spec: ProjectSpec, stream: Any = None) -> tuple[s
         requirements=requirements_text(spec.requirements),
         spec=spec.model_dump_json(indent=1, exclude={"requirements": True, "entities": {"__all__": {"sample_rows"}}}),
     )
-    text, usage = ask(llm, settings.build_role, system, user, effort="low", stream=stream)
+    # The tests decide what "correct" means for the whole build: worth the strong model.
+    text, usage = ask(llm, "strong", system, user, effort="medium", stream=stream)
     source = parse_file_blocks(text).get(RULE_TESTS)
     return (source if source and valid_test_file(source) else None), usage
 
@@ -54,8 +54,9 @@ def needs_rule_tests(spec: ProjectSpec) -> bool:
 
 
 def touches_action(test_code: str, spec: ProjectSpec) -> bool:
-    """Does the test call a custom action (the code the model still has to write)?"""
-    return any(f"/{a.segment}" in test_code for a in spec.actions)
+    """Does the test call a custom action (the code the model still has to write)? Pattern actions are verified
+    template code, so calibration checks tests about them like CRUD tests."""
+    return any(f"/{a.segment}" in test_code for a in spec.actions if a.kind == "custom")
 
 
 def calibrate(source: str, spec: ProjectSpec, baseline: dict[str, str]) -> tuple[str | None, list[str]]:

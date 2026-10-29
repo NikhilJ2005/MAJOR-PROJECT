@@ -82,7 +82,9 @@ def frontend_config(spec: ProjectSpec) -> dict[str, Any]:
             "search": search_field(e),
             "fields": [f.model_dump(include={"name", "type", "required", "unique", "references", "choices",
                                               "min", "max", "transitions"}) for f in e.fields],
-            "actions": [a.model_dump(include={"name", "method", "path", "description", "admin_only", "roles"})
+            "actions": [{**a.model_dump(include={"name", "method", "path", "description", "admin_only", "roles", "kind"}),
+                         "inputs": [f.model_dump(include={"name", "type", "required", "references", "choices", "min", "max"})
+                                    for f in a.inputs]}
                         for a in spec.actions_for(e)],
         })
     return {"project": spec.project_name, "description": spec.description, "auth": spec.auth, "entities": entities,

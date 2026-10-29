@@ -50,6 +50,11 @@ export default function Page() {
     go(project_id);
   }
 
+  async function buildBlueprint(id: string, prompt: string, stack: string) {
+    const { project_id } = await api.start({ prompt, stack, plugins: [], plugins_off: [], blueprint: id });
+    go(project_id);
+  }
+
   return (
     <div className="min-h-screen">
       <header className="flex h-14 items-center gap-4 border-b border-ink-800 bg-ink-950/90 px-5 backdrop-blur">
@@ -77,7 +82,7 @@ export default function Page() {
       {projectId ? (
         <Workspace key={projectId} projectId={projectId} onHome={() => go(null)} />
       ) : (
-        <Home config={config} projects={projects} onCreate={create} onOpen={go} />
+        <Home config={config} projects={projects} onCreate={create} onBlueprint={buildBlueprint} onOpen={go} />
       )}
     </div>
   );

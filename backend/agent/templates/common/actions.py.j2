@@ -1,0 +1,168 @@
+"""Verified action code: the input check of every custom action, and the pattern actions (no AI code).
+
+Pattern actions (transition, adjust, move) come from the design and are tested like the CRUD code. Actions
+of kind "custom" are written by the Code Generator in app/services/<entity>.py; their input is checked
+here first, so they always get exactly the declared keys with the right types.
+"""
+
+import datetime as dt
+from decimal import Decimal, InvalidOperation
+
+{% if stack.name != "django" %}
+from sqlalchemy.orm import Session  # noqa: F401
+
+{% endif %}
+from app import events  # noqa: F401
+from app.errors import ApiError, check_transition  # noqa: F401
+
+# action -> its inputs: (name, type, required, min, max, choices)
+INPUTS: dict[str, list[tuple]] = {
+{% for a in spec.actions %}
+    "{{ a.entity }}.{{ a.name }}": [{% for f in a.inputs %}({{ tojson(f.name) }}, {{ tojson(f.type) }}, {{ f.required }}, {{ f.min if f.min is not none else "None" }}, {{ f.max if f.max is not none else "None" }}, {{ tojson(f.choices) }}), {% endfor %}],
+{% endfor %}
+}
+
+
+def _convert(kind: str, value):
+    if kind == "int":
+        if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+            raise ValueError("must be a whole number")
+        return int(value)
+    if kind == "float":
+        return float(value)
+    if kind == "decimal":
+        try:
+            return Decimal(str(value))
+        except InvalidOperation as exc:
+            raise ValueError("must be a number") from exc
+    if kind == "bool":
+        if isinstance(value, bool):
+            return value
+        if str(value).lower() in ("true", "1", "yes"):
+            return True
+        if str(value).lower() in ("false", "0", "no"):
+            return False
+        raise ValueError("must be true or false")
+    if kind == "date":
+        return dt.date.fromisoformat(str(value)[:10])
+    if kind == "datetime":
+        return dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if kind == "json":
+        return value
+    return str(value)
+
+
+def _bound(value, limit):
+    return Decimal(str(limit)) if isinstance(value, Decimal) else limit
+
+
+def check(action: str, payload: dict) -> dict:
+    """The action's input with the right types, or 422 listing every problem. Extra keys are kept."""
+    payload = dict(payload or {})
+    problems = []
+    for name, kind, required, low, high, choices in INPUTS.get(action, []):
+        if payload.get(name) in (None, ""):
+            payload.pop(name, None)
+            if required:
+                problems.append({"loc": ["body", name], "msg": "Field required", "type": "missing"})
+            continue
+        try:
+            value = _convert(kind, payload[name])
+        except (TypeError, ValueError) as exc:
+            problems.append({"loc": ["body", name], "msg": str(exc) or f"must be {kind}", "type": "type_error"})
+            continue
+        if choices and value not in choices:
+            problems.append({"loc": ["body", name], "msg": f"must be one of {', '.join(choices)}", "type": "enum"})
+        elif low is not None and value < _bound(value, low):
+            problems.append({"loc": ["body", name], "msg": f"must be at least {low}", "type": "greater_than_equal"})
+        elif high is not None and value > _bound(value, high):
+            problems.append({"loc": ["body", name], "msg": f"must be at most {high}", "type": "less_than_equal"})
+        payload[name] = value
+    if problems:
+        raise ApiError(422, problems)
+    return payload
+
+
+def _plain(value):
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (dt.date, dt.datetime)):
+        return value.isoformat()
+    return value
+
+
+def row(obj) -> dict:
+    """A row as JSON-ready fields (the same shape the CRUD endpoints return)."""
+{% if stack.name == "django" %}
+    return {f.attname: _plain(getattr(obj, f.attname)) for f in obj._meta.concrete_fields}
+{% else %}
+    return {c.key: _plain(getattr(obj, c.key)) for c in obj.__mapper__.column_attrs}
+{% endif %}
+
+
+def _save(db, obj, table: str, live: bool) -> dict:
+{% if stack.name == "django" %}
+    obj.save()
+{% else %}
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+{% endif %}
+    data = row(obj)
+    if live:  # realtime entities tell the open screens about the change
+        events.publish(table, "updated", data)
+    return data
+{% for e in spec.entities %}
+{% for a in spec.actions_for(e) if a.kind != "custom" %}
+{% set f = e.fields | selectattr("name", "equalto", a.field) | first %}
+
+
+def {{ e.module }}_{{ a.name }}({% if stack.name != "django" %}db: "Session", {% endif %}obj, payload: dict, user) -> dict:
+    """{{ a.method }} /{{ e.table }}{{ a.path }}: {{ a.description }}"""
+{% if a.kind == "transition" %}
+{% if f.transitions %}
+    check_transition("{{ f.name }}", obj.{{ f.name }}, "{{ a.target }}", {{ tojson(f.transitions) }})
+{% endif %}
+    if obj.{{ f.name }} == "{{ a.target }}":
+        raise ApiError(409, "{{ e.name | lower }} is already {{ a.target }}")
+    obj.{{ f.name }} = "{{ a.target }}"
+{% elif a.kind == "adjust" %}
+    amount = payload["amount"]
+    current = obj.{{ f.name }} or 0
+{% if f.type == "decimal" %}
+    current = Decimal(str(current))
+{% endif %}
+{% if a.direction == "subtract" %}
+    new = current - amount
+    if new < {{ f.min if f.min is not none else 0 }}:
+        raise ApiError(409, "not enough {{ f.name | replace('_', ' ') }}: {} available".format(_plain(current)))
+{% else %}
+    new = current + amount
+{% if f.max is not none %}
+    if new > {{ f.max }}:
+        raise ApiError(409, "{{ f.name | replace('_', ' ') }} cannot go above {{ f.max }}")
+{% endif %}
+{% endif %}
+    obj.{{ f.name }} = new
+{% elif a.kind == "move" %}
+{% set t = e.fields | selectattr("name", "equalto", a.target) | first %}
+    amount = payload["amount"]
+    source, dest = obj.{{ f.name }} or 0, obj.{{ t.name }} or 0
+{% if f.type == "decimal" %}
+    source = Decimal(str(source))
+{% endif %}
+{% if t.type == "decimal" %}
+    dest = Decimal(str(dest))
+{% endif %}
+    if source - amount < {{ f.min if f.min is not none else 0 }}:
+        raise ApiError(409, "not enough {{ f.name | replace('_', ' ') }}: {} available".format(_plain(source)))
+{% if t.max is not none %}
+    if dest + amount > {{ t.max }}:
+        raise ApiError(409, "{{ t.name | replace('_', ' ') }} cannot go above {{ t.max }}")
+{% endif %}
+    obj.{{ f.name }} = source - amount
+    obj.{{ t.name }} = dest + amount
+{% endif %}
+    return _save({% if stack.name != "django" %}db{% else %}None{% endif %}, obj, "{{ e.table }}", {{ e.realtime }})
+{% endfor %}
+{% endfor %}

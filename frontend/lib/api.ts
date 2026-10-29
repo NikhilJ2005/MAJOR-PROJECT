@@ -182,7 +182,8 @@ export type RunEvent = {
 export type RunSummary = { run_id: string; prompt: string; stack: string; status: string; created_at: number };
 export type Stats = { runs: number; succeeded: number; success_rate: number; avg_repairs: number; bugs_found: number; bugs_fixed: number; cost_usd: number };
 export type PreviewInfo = { running: boolean; base: string | null; docs: string | null };
-export type StartRun = { prompt: string; stack: string; codegen_mode?: string; plugins: string[]; plugins_off: string[]; review_design?: boolean };
+export type StartRun = { prompt: string; stack: string; codegen_mode?: string; plugins: string[]; plugins_off: string[]; review_design?: boolean; blueprint?: string };
+export type Blueprint = { id: string; title: string; summary: string; prompt: string; entities: number; actions: number };
 
 // --- login token (kept in this browser only) -------------------------------------------
 const TOKEN_KEY = "vibestack-token";
@@ -243,6 +244,7 @@ export const api = {
   snapshot: (id: string) => request<Snapshot>(`/api/runs/${id}`),
   start: (body: StartRun) => request<{ run_id: string; project_id: string }>("/api/projects", post(body)),
   projects: () => request<Project[]>("/api/projects"),
+  blueprints: () => request<Blueprint[]>("/api/blueprints"),
   project: (id: string) => request<ProjectDetail>(`/api/projects/${id}`),
   message: (id: string, prompt: string, mode: "edit" | "fix" = "edit") =>
     request<{ run_id: string; project_id: string }>(`/api/projects/${id}/messages`, post({ prompt, mode, review_design: mode === "edit" })),

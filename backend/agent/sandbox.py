@@ -16,6 +16,7 @@ is the isolation boundary. A Docker backend can implement the same protocol.
 
 from __future__ import annotations
 
+import contextvars
 import os
 import pwd
 import resource
@@ -34,6 +35,9 @@ from typing import Any, Protocol
 import httpx
 
 from .config import settings
+
+# Which agent a sandbox run belongs to, for its "still running" messages (the Reflector's tool sets "reflect").
+progress_node: contextvars.ContextVar[str] = contextvars.ContextVar("progress_node", default="validate")
 from .stacks import Stack, get_stack
 
 MAX_LOG_CHARS = 6000
@@ -176,15 +180,35 @@ class LocalSandbox:
         return _tail(text.replace(str(workdir.resolve()) + "/", "").replace(str(workdir) + "/", ""))
 
     def _run(self, args: list[str], workdir: Path, timeout_s: int | None = None) -> tuple[int, str]:
+        """Run generated code to the end. Checks Stop every second (the process is killed) and tells the UI
+        it is still running every 10 s, so a long test run never looks like a frozen build."""
+        from .ledger import progress
+        from .llm import RunStopped, raise_if_stopped
+
         timeout_s = timeout_s or self.timeout_s
         proc = self.spawn(args, workdir, cpu_seconds=timeout_s * 2)
-        try:
-            out, _ = proc.communicate(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
-            out = _drain(proc)
-            return 124, f"{out}\nTimeoutError: gate exceeded {timeout_s}s"
-        return proc.returncode, out
+        started = time.monotonic()
+        said = 0
+        while True:
+            try:
+                out, _ = proc.communicate(timeout=1.0)
+                return proc.returncode, out
+            except subprocess.TimeoutExpired:
+                waited = time.monotonic() - started
+                try:
+                    raise_if_stopped()
+                except RunStopped:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    _drain(proc)
+                    raise
+                if waited >= timeout_s:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    out = _drain(proc)
+                    return 124, f"{out}\nTimeoutError: gate exceeded {timeout_s}s"
+                if int(waited) // 10 > said:
+                    said = int(waited) // 10
+                    what = "the tests" if "pytest" in args else "the app"
+                    progress(progress_node.get(), f"Still running {what} ({said * 10}s of {timeout_s}s)…")
 
     def _gate_import(self, workdir: Path, stack: Stack) -> tuple[bool, str]:
         code, out = self._run([sys.executable, "-c", stack.import_check], workdir)
@@ -265,8 +289,9 @@ class LocalSandbox:
             self.hand_over(test_dir)
             try:
                 with ThreadPoolExecutor(max_workers=2) as pool:
-                    boot = pool.submit(self._gate_boot, workdir, chosen)
-                    tests = pool.submit(self._prepared_tests, test_dir, chosen)
+                    # Copies of this thread's context: Stop, live progress and the run's agent reach them too.
+                    boot = pool.submit(contextvars.copy_context().run, self._gate_boot, workdir, chosen)
+                    tests = pool.submit(contextvars.copy_context().run, self._prepared_tests, test_dir, chosen)
                     (boot_ok, boot_out), (tests_ok, tests_out) = boot.result(), tests.result()
             finally:
                 shutil.rmtree(test_dir, ignore_errors=True)

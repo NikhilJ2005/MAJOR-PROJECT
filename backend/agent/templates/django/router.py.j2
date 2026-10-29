@@ -20,6 +20,7 @@ from app import ratelimit
 from app.errors import ApiError, check_transition  # noqa: F401
 from app.models.{{ e.module }} import {{ e.name }}
 from app.schemas.{{ e.module }} import {{ e.name }}Create, {{ e.name }}Read, {{ e.name }}Update
+from app import actions  # noqa: F401
 from app.services import {{ e.module }} as service  # noqa: F401
 {% if spec.auth %}
 from app.models.user import User
@@ -73,6 +74,7 @@ def _save(obj: {{ e.name }}) -> None:
     except IntegrityError as exc:
         raise ApiError(409, "conflicts with existing data (duplicate value or unknown reference)") from exc
 {% for a in actions %}
+{% set call = ("actions." ~ e.module ~ "_" ~ a.name) if a.kind != "custom" else ("service." ~ a.name) %}
 
 
 def {{ a.name }}_{{ e.module }}(request{% if a.on_item %}, item_id: int{% endif %}):
@@ -93,6 +95,7 @@ def {{ a.name }}_{{ e.module }}(request{% if a.on_item %}, item_id: int{% endif 
 {% endif %}
     payload = {% if a.method == "GET" %}request.GET.dict(){% else %}_body(request){% endif %}
 
+    payload = actions.check("{{ e.name }}.{{ a.name }}", payload)  # the declared inputs, typed (422 otherwise)
 {% set track = audit and a.method == "POST" %}
 {% if a.locks %}
     with transaction.atomic():  # the row stays locked until the action is done
@@ -101,14 +104,14 @@ def {{ a.name }}_{{ e.module }}(request{% if a.on_item %}, item_id: int{% endif 
 {% if track %}
         before = _json(obj) if obj is not None else None
 {% endif %}
-        result = service.{{ a.name }}(obj, payload, {% if spec.auth %}user{% else %}None{% endif %})
+        result = {{ call }}(obj, payload, {% if spec.auth %}user{% else %}None{% endif %})
 {% else %}
     obj = {% if a.on_item %}_get_or_404(item_id{% if e.owned %}, user{% endif %}){% else %}None{% endif %}
 
 {% if track %}
     before = _json(obj) if obj is not None else None
 {% endif %}
-    result = service.{{ a.name }}(obj, payload, {% if spec.auth %}user{% else %}None{% endif %})
+    result = {{ call }}(obj, payload, {% if spec.auth %}user{% else %}None{% endif %})
 {% endif %}
 {% if track %}
     audit.record({% if spec.auth %}user{% else %}None{% endif %}, "{{ a.name }}", "{{ e.name }}", {% if a.on_item %}item_id{% else %}None{% endif %}, before, result)

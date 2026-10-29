@@ -233,6 +233,52 @@ function toPayload(entity, form) {
   return out;
 }
 
+/** A short, readable summary of an action's answer for the toast. */
+function summary(data) {
+  if (data == null || typeof data !== "object") return String(data ?? "done");
+  const parts = Object.entries(data).filter(([k]) => !["id", "owner_id", "created_at"].includes(k)).slice(0, 4);
+  return parts.map(([k, v]) => `${pretty(k)} ${typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ") || "done";
+}
+
+/** The inputs of a custom action (e.g. the amount of a deposit), then the call itself. */
+function ActionForm({ entity, action, row, options, onClose, onDone, toast }) {
+  const [form, setForm] = useState({});
+  const [errors, setErrors] = useState({});
+  const [busy, setBusy] = useState(false);
+  async function submit(ev) {
+    ev.preventDefault();
+    setBusy(true);
+    setErrors({});
+    const path = `${entity.table}${action.path.replace("{item_id}", row ? row.id : "")}`;
+    try {
+      const body = toPayload({ fields: action.inputs }, form);
+      const query = new URLSearchParams(Object.entries(body).filter(([, v]) => v != null)).toString();
+      const { data } = action.method === "GET" ? await api("GET", `${path}?${query}`) : await api("POST", path, body);
+      toast(`${pretty(action.name)}: ${summary(data)}`);
+      onDone();
+    } catch (e) {
+      setErrors(e.fields || {});
+      toast(`${pretty(action.name)}: ${e.message}`, "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return html`<div className="fixed inset-0 z-40 grid place-items-center bg-slate-900/30 p-4 backdrop-blur-[1px]" onClick=${onClose}>
+    <form onSubmit=${submit} onClick=${(e) => e.stopPropagation()} className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
+      <h2 className="text-lg font-semibold capitalize">${pretty(action.name)}${row ? html` <span className="text-slate-400">· ${rowLabel(row) || `#${row.id}`}</span>` : ""}</h2>
+      ${action.description && html`<p className="mt-1 text-sm text-slate-500">${action.description}</p>`}
+      <div className="mt-4 space-y-4">
+        ${action.inputs.map((f) => html`<${FieldInput} key=${f.name} field=${f} value=${form[f.name]} error=${errors[f.name]}
+          options=${options[f.references]} onChange=${(v) => setForm((s) => ({ ...s, [f.name]: v }))} />`)}
+      </div>
+      <div className="mt-6 flex justify-end gap-2">
+        <${Button} kind="ghost" onClick=${onClose}>Cancel</${Button}>
+        <${Button} type="submit" disabled=${busy}>${busy ? "Working…" : pretty(action.name)}</${Button}>
+      </div>
+    </form>
+  </div>`;
+}
+
 function Drawer({ entity, row, options, onClose, onSaved, toast }) {
   const [form, setForm] = useState(row ? { ...row } : {});
   const [errors, setErrors] = useState({});
@@ -301,6 +347,7 @@ function EntityPage({ entity, me, toast }) {
   const [page, setPage] = useState(0);
   const [q, setQ] = useState("");
   const [editing, setEditing] = useState(null);
+  const [acting, setActing] = useState(null);  // an action waiting for its inputs
   const [live, setLive] = useState(false);
   const options = useOptions(entity, me);
   const size = 20;
@@ -354,13 +401,17 @@ function EntityPage({ entity, me, toast }) {
   }
 
   async function run(action, row) {
+    if ((action.inputs || []).length) {
+      setActing({ action, row });  // ask for its inputs first (ActionForm)
+      return;
+    }
     const path = `${entity.table}${action.path.replace("{item_id}", row ? row.id : "")}`;
     try {
       const { data } = await api(action.method, path, action.method === "POST" ? {} : undefined);
-      toast(`${action.name}: ${typeof data === "object" ? JSON.stringify(data).slice(0, 140) : data}`);
+      toast(`${pretty(action.name)}: ${summary(data)}`);
       load();
     } catch (e) {
-      toast(`${action.name}: ${e.message}`, "error");
+      toast(`${pretty(action.name)}: ${e.message}`, "error");
     }
   }
 
@@ -414,6 +465,8 @@ function EntityPage({ entity, me, toast }) {
       <span>${page * size + 1}–${Math.min(total, (page + 1) * size)} of ${total}</span>
       <${Button} small kind="outline" disabled=${(page + 1) * size >= total} onClick=${() => setPage(page + 1)}>Next</${Button}>
     </div>`}
+    ${acting && html`<${ActionForm} entity=${entity} action=${acting.action} row=${acting.row} options=${options} toast=${toast}
+      onClose=${() => setActing(null)} onDone=${() => { setActing(null); load(); }} />`}
     ${editing && html`<${Drawer} entity=${entity} row=${editing.id ? editing : null} options=${options} toast=${toast}
       onClose=${() => setEditing(null)} onSaved=${() => { setEditing(null); load(); }} />`}
   </div>`;
