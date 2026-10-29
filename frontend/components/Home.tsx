@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PromptBuilder } from "@/components/PromptBuilder";
-import type { Project, ServerConfig } from "@/lib/api";
+import { api, type Blueprint, type Project, type ServerConfig } from "@/lib/api";
 
 const EXAMPLES: [string, string][] = [
   ["Shop with checkout", "An online shop. Admins manage products with a price and stock. Customers sign up and place orders made of order items. Checking out an order reduces stock for every item, fails with 409 if any product has too little stock, and marks the order paid. Customers only ever see their own orders."],
@@ -41,13 +41,19 @@ export function Home({
   config,
   projects,
   onCreate,
+  onBlueprint,
   onOpen,
 }: {
   config: ServerConfig | null;
   projects: Project[];
   onCreate: (prompt: string, stack: string, plugins: string[], pluginsOff: string[]) => Promise<void>;
+  onBlueprint: (id: string, prompt: string, stack: string) => Promise<void>;
   onOpen: (id: string) => void;
 }) {
+  const [blueprints, setBlueprints] = useState<Blueprint[]>([]);
+  useEffect(() => {
+    api.blueprints().then(setBlueprints, () => setBlueprints([]));
+  }, []);
   const [prompt, setPrompt] = useState("");
   const [stack, setStack] = useState("fastapi");
   // Plugins are chosen by the agents; the user may force one on or off.
@@ -148,6 +154,37 @@ export function Home({
           </div>
         </form>
         {error && <p className="mt-3 text-sm text-rose-300">{error}</p>}
+        {blueprints.length > 0 && (
+          <div className="mt-8">
+            <div className="flex items-baseline gap-3">
+              <h2 className="font-display text-lg text-ink-50">Verified blueprints</h2>
+              <span className="text-sm text-ink-400">Complex apps with demo data that build in under a minute, every test passing first time.</span>
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {blueprints.map((b) => (
+                <button
+                  key={b.id}
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    setError(null);
+                    try {
+                      await onBlueprint(b.id, b.prompt, stack);
+                    } catch (err) {
+                      setError((err as Error).message.replace(/^\d+: /, ""));
+                      setBusy(false);
+                    }
+                  }}
+                  className="rounded-xl border border-ink-700 bg-ink-900/80 p-4 text-left hover:border-signal-400 disabled:opacity-50"
+                >
+                  <span className="block font-medium text-ink-50">{b.title}</span>
+                  <span className="mt-1 block text-sm text-ink-400">{b.summary}</span>
+                  <span className="mt-2 block text-xs text-signal-300">{b.entities} tables · {b.actions} actions · build with {stack}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {guided && <PromptBuilder onClose={() => setGuided(false)} onUse={(text) => { setPrompt(text); setGuided(false); }} />}
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <button onClick={() => setGuided(true)} className="rounded-full bg-signal-400/15 px-3 py-1 text-sm font-medium text-signal-200 hover:bg-signal-400/25">

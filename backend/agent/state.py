@@ -17,6 +17,7 @@ FieldType = Literal["str", "text", "int", "float", "decimal", "bool", "date", "d
 OnDelete = Literal["cascade", "restrict", "set_null"]
 StackName = Literal["fastapi", "flask", "django"]
 WriteAccess = Literal["any_user", "owner", "admin"]
+ActionKind = Literal["custom", "transition", "adjust", "move"]
 
 # Names that clash with columns we add ourselves or with ORM internals (SQLAlchemy, Django).
 RESERVED_FIELD_NAMES = {"id", "created_at", "metadata", "registry", "query", "objects", "pk", "save", "delete", "clean"}
@@ -145,6 +146,20 @@ class ActionSpec(BaseModel):
     roles: list[str] = Field(default_factory=list, description="Only users with one of these roles (or admins) may call it")
     locks: bool = Field(default=False, description="Moves money or stock: run it in a transaction with the row locked")
     requirement_ids: list[str] = Field(default_factory=list)
+    inputs: list[FieldSpec] = Field(
+        default_factory=list,
+        description="The JSON body (POST) or query (GET) the action takes, e.g. [{name: amount, type: decimal, min: 0.01}]; "
+        "checked before the action runs (422). Empty when it needs no input",
+    )
+    kind: ActionKind = Field(
+        default="custom",
+        description="transition: set `field` (a choices field) to `target`; adjust: add (direction add) or subtract "
+        "(direction subtract) the input amount on numeric `field`; move: move the input amount from numeric `field` to "
+        "numeric `target` of the same row; custom: anything else (written by the Code Generator)",
+    )
+    field: str | None = Field(default=None, description="transition/adjust/move: the field it changes")
+    target: str | None = Field(default=None, description="transition: the new state; move: the field that receives")
+    direction: Literal["add", "subtract"] = "add"
 
     @field_validator("name")
     @classmethod
@@ -272,6 +287,10 @@ class ProjectSpec(BaseModel):
 
     def actions_for(self, e: EntitySpec) -> list[ActionSpec]:
         return [a for a in self.actions if a.entity == e.name]
+
+    def custom_actions_for(self, e: EntitySpec) -> list[ActionSpec]:
+        """The actions the Code Generator writes (pattern actions are verified template code)."""
+        return [a for a in self.actions if a.entity == e.name and a.kind == "custom"]
 
 
 def _clean_fields(ent: EntitySpec, known: set[str]) -> list[FieldSpec]:
@@ -442,8 +461,57 @@ def _clean_actions(actions: list[ActionSpec], entities: dict[str, EntitySpec]) -
         if key in seen or route in seen:
             continue
         seen |= {key, route}
+        _clean_action_inputs(a, set(entities))
+        _clean_pattern(a, entities[a.entity])
         out.append(a)
     return out
+
+
+def _clean_action_inputs(a: ActionSpec, known: set[str]) -> None:
+    """Inputs are checked like fields; unknown references and duplicates are dropped."""
+    names: set[str] = set()
+    kept: list[FieldSpec] = []
+    for f in a.inputs:
+        if f.references:
+            target = to_pascal(f.references)
+            if target not in known and target != "User":
+                continue
+            f.references, f.type, f.choices = target, "int", []
+        if f.choices:
+            f.type = "str"
+        f.transitions, f.on_delete, f.unique, f.index = {}, None, False, False
+        if f.name in names or f.name in RESERVED_FIELD_NAMES:
+            continue
+        names.add(f.name)
+        kept.append(f)
+    a.inputs = kept
+
+
+def _clean_pattern(a: ActionSpec, ent: EntitySpec) -> None:
+    """A pattern action the verified templates can run, or "custom" (the Code Generator writes it)."""
+    fields = {f.name: f for f in ent.fields}
+    number = lambda name: name in fields and fields[name].is_number
+    ok = a.on_item and a.method == "POST"
+    if a.kind == "transition":
+        f = fields.get(a.field or "")
+        ok = ok and f is not None and bool(f.choices) and a.target in f.choices
+    elif a.kind == "adjust":
+        ok = ok and number(a.field)
+    elif a.kind == "move":
+        ok = ok and number(a.field) and number(a.target) and a.field != a.target
+    if not ok:
+        a.kind = "custom"
+    if a.kind in ("adjust", "move"):
+        source = fields[a.field]
+        amount = next((i for i in a.inputs if i.name == "amount"), None)
+        if amount is None:
+            amount = FieldSpec(name="amount", type="int" if source.type == "int" else source.type)
+            a.inputs.insert(0, amount)
+        amount.type = "int" if source.type == "int" else source.type
+        amount.required = True
+        if amount.min is None or amount.min <= 0:
+            amount.min = 1 if amount.type == "int" else 0.01
+        a.locks = True  # money and stock: the row stays locked while it changes
 
 
 def _clean_roles(spec: ProjectSpec) -> None:

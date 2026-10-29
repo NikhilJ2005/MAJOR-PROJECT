@@ -96,6 +96,7 @@ class Stack:
             ("app/models/__init__.py", "models_init.py.j2", "model registry"),
             ("app/schemas/__init__.py", None, "package marker"),
             ("app/services/__init__.py", "services_init.py.j2", "business logic package"),
+            ("app/actions.py", "actions.py.j2", "action input checks and verified pattern actions"),
             ("app/routers/__init__.py", None, "package marker"),
             ("app/seed.py", "seed.py.j2", "demo data loaded on first start"),
             ("app/seed_data.json", "@seed", "realistic demo rows from the design"),

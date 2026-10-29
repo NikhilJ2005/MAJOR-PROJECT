@@ -1,0 +1,386 @@
+{
+ "id": "tracker",
+ "title": "Project and issue tracker",
+ "keywords": [
+  "project",
+  "issue",
+  "task",
+  "bug",
+  "sprint",
+  "kanban",
+  "jira",
+  "tracker",
+  "ticket"
+ ],
+ "summary": "Projects, sprints, issues with a workflow and story points, comments; live board updates.",
+ "prompt": "A project tracker like Jira: projects, sprints, issues with priority, story points and a workflow from backlog to done, and comments on issues.",
+ "spec": {
+  "project_name": "issue_tracker",
+  "description": "Projects, sprints, issues with a workflow, and comments.",
+  "auth": true,
+  "roles": [
+   {
+    "name": "developer"
+   },
+   {
+    "name": "manager",
+    "self_signup": false
+   }
+  ],
+  "entities": [
+   {
+    "name": "Project",
+    "write_roles": [
+     "manager"
+    ],
+    "fields": [
+     {
+      "name": "key",
+      "unique": true
+     },
+     {
+      "name": "name"
+     },
+     {
+      "name": "description",
+      "type": "text",
+      "required": false
+     }
+    ],
+    "sample_rows": [
+     {
+      "key": "WEB",
+      "name": "Website relaunch",
+      "description": "New marketing site."
+     },
+     {
+      "key": "APP",
+      "name": "Mobile app",
+      "description": "iOS and Android."
+     },
+     {
+      "key": "OPS",
+      "name": "Platform ops",
+      "description": "Infra and on-call."
+     }
+    ]
+   },
+   {
+    "name": "Sprint",
+    "write_roles": [
+     "manager"
+    ],
+    "fields": [
+     {
+      "name": "project_id",
+      "references": "Project",
+      "on_delete": "cascade"
+     },
+     {
+      "name": "name"
+     },
+     {
+      "name": "starts_on",
+      "type": "date"
+     },
+     {
+      "name": "ends_on",
+      "type": "date"
+     },
+     {
+      "name": "status",
+      "choices": [
+       "planned",
+       "active",
+       "closed"
+      ],
+      "transitions": {
+       "planned": [
+        "active"
+       ],
+       "active": [
+        "closed"
+       ]
+      }
+     }
+    ],
+    "sample_rows": [
+     {
+      "project_id": 1,
+      "name": "WEB Sprint 14",
+      "starts_on": "2026-10-19",
+      "ends_on": "2026-11-01",
+      "status": "active"
+     },
+     {
+      "project_id": 2,
+      "name": "APP Sprint 7",
+      "starts_on": "2026-10-26",
+      "ends_on": "2026-11-08",
+      "status": "planned"
+     },
+     {
+      "project_id": 1,
+      "name": "WEB Sprint 13",
+      "starts_on": "2026-10-05",
+      "ends_on": "2026-10-18",
+      "status": "closed"
+     }
+    ]
+   },
+   {
+    "name": "Issue",
+    "realtime": true,
+    "fields": [
+     {
+      "name": "project_id",
+      "references": "Project",
+      "on_delete": "cascade"
+     },
+     {
+      "name": "sprint_id",
+      "references": "Sprint",
+      "on_delete": "set_null",
+      "required": false
+     },
+     {
+      "name": "title",
+      "index": true
+     },
+     {
+      "name": "kind",
+      "choices": [
+       "story",
+       "bug",
+       "task"
+      ]
+     },
+     {
+      "name": "priority",
+      "choices": [
+       "low",
+       "medium",
+       "high",
+       "critical"
+      ]
+     },
+     {
+      "name": "story_points",
+      "type": "int",
+      "min": 0,
+      "max": 40
+     },
+     {
+      "name": "status",
+      "choices": [
+       "backlog",
+       "todo",
+       "in_progress",
+       "in_review",
+       "done"
+      ],
+      "transitions": {
+       "backlog": [
+        "todo"
+       ],
+       "todo": [
+        "in_progress",
+        "backlog"
+       ],
+       "in_progress": [
+        "in_review",
+        "todo"
+       ],
+       "in_review": [
+        "done",
+        "in_progress"
+       ]
+      }
+     }
+    ],
+    "sample_rows": [
+     {
+      "project_id": 1,
+      "sprint_id": 1,
+      "title": "Hero section with video",
+      "kind": "story",
+      "priority": "high",
+      "story_points": 5,
+      "status": "in_progress"
+     },
+     {
+      "project_id": 1,
+      "sprint_id": 1,
+      "title": "Contact form spam",
+      "kind": "bug",
+      "priority": "critical",
+      "story_points": 3,
+      "status": "in_review"
+     },
+     {
+      "project_id": 1,
+      "sprint_id": 1,
+      "title": "Set up analytics",
+      "kind": "task",
+      "priority": "medium",
+      "story_points": 2,
+      "status": "todo"
+     },
+     {
+      "project_id": 2,
+      "sprint_id": 2,
+      "title": "Push notification opt-in",
+      "kind": "story",
+      "priority": "medium",
+      "story_points": 8,
+      "status": "backlog"
+     },
+     {
+      "project_id": 3,
+      "title": "Rotate database credentials",
+      "kind": "task",
+      "priority": "high",
+      "story_points": 1,
+      "status": "done"
+     },
+     {
+      "project_id": 2,
+      "sprint_id": 2,
+      "title": "Crash on Android 15 login",
+      "kind": "bug",
+      "priority": "critical",
+      "story_points": 5,
+      "status": "todo"
+     }
+    ]
+   },
+   {
+    "name": "Comment",
+    "write_access": "owner",
+    "fields": [
+     {
+      "name": "issue_id",
+      "references": "Issue",
+      "on_delete": "cascade"
+     },
+     {
+      "name": "body",
+      "type": "text"
+     }
+    ],
+    "sample_rows": [
+     {
+      "issue_id": 1,
+      "body": "Video is 14 MB, can we compress it?"
+     },
+     {
+      "issue_id": 2,
+      "body": "Added a honeypot field, please review."
+     },
+     {
+      "issue_id": 6,
+      "body": "Reproduced on Pixel 9, stack trace attached."
+     }
+    ]
+   }
+  ],
+  "actions": [
+   {
+    "name": "start_work",
+    "entity": "Issue",
+    "path": "/{item_id}/start-work",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "in_progress"
+   },
+   {
+    "name": "send_to_review",
+    "entity": "Issue",
+    "path": "/{item_id}/send-to-review",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "in_review"
+   },
+   {
+    "name": "close",
+    "entity": "Issue",
+    "path": "/{item_id}/close",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "done"
+   },
+   {
+    "name": "plan",
+    "entity": "Issue",
+    "path": "/{item_id}/plan",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "todo"
+   },
+   {
+    "name": "add_points",
+    "entity": "Issue",
+    "path": "/{item_id}/add-points",
+    "kind": "adjust",
+    "description": "Re-estimate upwards.",
+    "rules": [
+     "409 above 40 points"
+    ],
+    "roles": [],
+    "inputs": [],
+    "direction": "add",
+    "field": "story_points"
+   },
+   {
+    "name": "start_sprint",
+    "entity": "Sprint",
+    "path": "/{item_id}/start-sprint",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "manager"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "active"
+   },
+   {
+    "name": "close_sprint",
+    "entity": "Sprint",
+    "path": "/{item_id}/close-sprint",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "manager"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "closed"
+   }
+  ]
+ }
+}

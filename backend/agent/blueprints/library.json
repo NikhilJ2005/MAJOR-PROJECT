@@ -1,0 +1,459 @@
+{
+ "id": "library",
+ "title": "Library management",
+ "keywords": [
+  "library",
+  "book",
+  "loan",
+  "borrow",
+  "member",
+  "librarian"
+ ],
+ "summary": "Books with copies, members, loans with due dates, borrow and return, fines.",
+ "prompt": "A library management system: books with copies available, authors, members with membership tiers, loans that are borrowed and returned with due dates, and fines that members pay.",
+ "spec": {
+  "project_name": "library_management",
+  "description": "Library management: catalogue, members, loans and fines.",
+  "auth": true,
+  "roles": [
+   {
+    "name": "member",
+    "description": "borrows books"
+   },
+   {
+    "name": "librarian",
+    "self_signup": false,
+    "description": "runs the desk"
+   }
+  ],
+  "entities": [
+   {
+    "name": "Author",
+    "write_roles": [
+     "librarian"
+    ],
+    "fields": [
+     {
+      "name": "name"
+     },
+     {
+      "name": "country",
+      "required": false
+     }
+    ],
+    "sample_rows": [
+     {
+      "name": "Ursula K. Le Guin",
+      "country": "USA"
+     },
+     {
+      "name": "Chinua Achebe",
+      "country": "Nigeria"
+     },
+     {
+      "name": "Haruki Murakami",
+      "country": "Japan"
+     },
+     {
+      "name": "Isabel Allende",
+      "country": "Chile"
+     },
+     {
+      "name": "R. K. Narayan",
+      "country": "India"
+     }
+    ]
+   },
+   {
+    "name": "Book",
+    "write_roles": [
+     "librarian"
+    ],
+    "fields": [
+     {
+      "name": "title",
+      "index": true
+     },
+     {
+      "name": "isbn",
+      "unique": true
+     },
+     {
+      "name": "author_id",
+      "references": "Author",
+      "on_delete": "restrict"
+     },
+     {
+      "name": "genre",
+      "choices": [
+       "fiction",
+       "science",
+       "history",
+       "children",
+       "biography"
+      ]
+     },
+     {
+      "name": "copies_available",
+      "type": "int",
+      "min": 0
+     },
+     {
+      "name": "copies_on_loan",
+      "type": "int",
+      "min": 0
+     }
+    ],
+    "sample_rows": [
+     {
+      "title": "A Wizard of Earthsea",
+      "isbn": "978-0547773742",
+      "author_id": 1,
+      "genre": "fiction",
+      "copies_available": 4,
+      "copies_on_loan": 1
+     },
+     {
+      "title": "Things Fall Apart",
+      "isbn": "978-0385474542",
+      "author_id": 2,
+      "genre": "fiction",
+      "copies_available": 3,
+      "copies_on_loan": 2
+     },
+     {
+      "title": "Kafka on the Shore",
+      "isbn": "978-1400079278",
+      "author_id": 3,
+      "genre": "fiction",
+      "copies_available": 2,
+      "copies_on_loan": 0
+     },
+     {
+      "title": "The House of the Spirits",
+      "isbn": "978-1501117015",
+      "author_id": 4,
+      "genre": "fiction",
+      "copies_available": 5,
+      "copies_on_loan": 1
+     },
+     {
+      "title": "Malgudi Days",
+      "isbn": "978-0143039655",
+      "author_id": 5,
+      "genre": "children",
+      "copies_available": 6,
+      "copies_on_loan": 2
+     },
+     {
+      "title": "The Left Hand of Darkness",
+      "isbn": "978-0441478125",
+      "author_id": 1,
+      "genre": "science",
+      "copies_available": 1,
+      "copies_on_loan": 3
+     }
+    ]
+   },
+   {
+    "name": "Member",
+    "write_roles": [
+     "librarian"
+    ],
+    "fields": [
+     {
+      "name": "full_name"
+     },
+     {
+      "name": "email",
+      "unique": true
+     },
+     {
+      "name": "tier",
+      "choices": [
+       "standard",
+       "student",
+       "premium"
+      ]
+     },
+     {
+      "name": "status",
+      "choices": [
+       "active",
+       "suspended"
+      ],
+      "transitions": {
+       "active": [
+        "suspended"
+       ],
+       "suspended": [
+        "active"
+       ]
+      }
+     },
+     {
+      "name": "fines_due",
+      "type": "decimal",
+      "min": 0
+     }
+    ],
+    "sample_rows": [
+     {
+      "full_name": "Asha Verma",
+      "email": "asha@example.com",
+      "tier": "student",
+      "status": "active",
+      "fines_due": 0
+     },
+     {
+      "full_name": "Daniel Okafor",
+      "email": "daniel@example.com",
+      "tier": "standard",
+      "status": "active",
+      "fines_due": 2.5
+     },
+     {
+      "full_name": "Mei Tanaka",
+      "email": "mei@example.com",
+      "tier": "premium",
+      "status": "active",
+      "fines_due": 0
+     },
+     {
+      "full_name": "Lucas Romero",
+      "email": "lucas@example.com",
+      "tier": "standard",
+      "status": "suspended",
+      "fines_due": 12
+     },
+     {
+      "full_name": "Priya Nair",
+      "email": "priya@example.com",
+      "tier": "student",
+      "status": "active",
+      "fines_due": 0.75
+     }
+    ]
+   },
+   {
+    "name": "Loan",
+    "write_roles": [
+     "librarian"
+    ],
+    "fields": [
+     {
+      "name": "book_id",
+      "references": "Book",
+      "on_delete": "restrict"
+     },
+     {
+      "name": "member_id",
+      "references": "Member",
+      "on_delete": "cascade"
+     },
+     {
+      "name": "borrowed_on",
+      "type": "date"
+     },
+     {
+      "name": "due_on",
+      "type": "date"
+     },
+     {
+      "name": "status",
+      "choices": [
+       "borrowed",
+       "returned",
+       "lost"
+      ],
+      "transitions": {
+       "borrowed": [
+        "returned",
+        "lost"
+       ]
+      }
+     }
+    ],
+    "sample_rows": [
+     {
+      "book_id": 1,
+      "member_id": 1,
+      "borrowed_on": "2026-10-01",
+      "due_on": "2026-10-22",
+      "status": "borrowed"
+     },
+     {
+      "book_id": 2,
+      "member_id": 2,
+      "borrowed_on": "2026-09-20",
+      "due_on": "2026-10-11",
+      "status": "returned"
+     },
+     {
+      "book_id": 2,
+      "member_id": 3,
+      "borrowed_on": "2026-10-10",
+      "due_on": "2026-10-31",
+      "status": "borrowed"
+     },
+     {
+      "book_id": 5,
+      "member_id": 5,
+      "borrowed_on": "2026-10-15",
+      "due_on": "2026-11-05",
+      "status": "borrowed"
+     },
+     {
+      "book_id": 6,
+      "member_id": 4,
+      "borrowed_on": "2026-08-01",
+      "due_on": "2026-08-22",
+      "status": "lost"
+     }
+    ]
+   }
+  ],
+  "actions": [
+   {
+    "name": "lend_copy",
+    "entity": "Book",
+    "path": "/{item_id}/lend-copy",
+    "kind": "move",
+    "description": "Lend copies of the book (they go from the shelf to on loan).",
+    "rules": [
+     "409 if not enough copies are available"
+    ],
+    "roles": [
+     "librarian"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "copies_available",
+    "target": "copies_on_loan"
+   },
+   {
+    "name": "return_copy",
+    "entity": "Book",
+    "path": "/{item_id}/return-copy",
+    "kind": "move",
+    "description": "Copies come back to the shelf.",
+    "rules": [
+     "409 if more copies are returned than are on loan"
+    ],
+    "roles": [
+     "librarian"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "copies_on_loan",
+    "target": "copies_available"
+   },
+   {
+    "name": "add_copies",
+    "entity": "Book",
+    "path": "/{item_id}/add-copies",
+    "kind": "adjust",
+    "description": "New copies arrive.",
+    "rules": [],
+    "roles": [
+     "librarian"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "copies_available"
+   },
+   {
+    "name": "mark_returned",
+    "entity": "Loan",
+    "path": "/{item_id}/mark-returned",
+    "kind": "transition",
+    "description": "The book came back.",
+    "rules": [
+     "409 unless the loan is borrowed"
+    ],
+    "roles": [
+     "librarian"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "returned"
+   },
+   {
+    "name": "mark_lost",
+    "entity": "Loan",
+    "path": "/{item_id}/mark-lost",
+    "kind": "transition",
+    "description": "The book is lost.",
+    "rules": [
+     "409 unless the loan is borrowed"
+    ],
+    "roles": [
+     "librarian"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "lost"
+   },
+   {
+    "name": "charge_fine",
+    "entity": "Member",
+    "path": "/{item_id}/charge-fine",
+    "kind": "adjust",
+    "description": "Add a fine.",
+    "rules": [],
+    "roles": [
+     "librarian"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "fines_due"
+   },
+   {
+    "name": "pay_fine",
+    "entity": "Member",
+    "path": "/{item_id}/pay-fine",
+    "kind": "adjust",
+    "description": "The member pays (part of) their fines.",
+    "rules": [
+     "409 if the payment is larger than the fines due"
+    ],
+    "roles": [],
+    "inputs": [],
+    "direction": "subtract",
+    "field": "fines_due"
+   },
+   {
+    "name": "suspend",
+    "entity": "Member",
+    "path": "/{item_id}/suspend",
+    "kind": "transition",
+    "description": "Suspend borrowing.",
+    "rules": [],
+    "roles": [
+     "librarian"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "suspended"
+   },
+   {
+    "name": "reinstate",
+    "entity": "Member",
+    "path": "/{item_id}/reinstate",
+    "kind": "transition",
+    "description": "Allow borrowing again.",
+    "rules": [],
+    "roles": [
+     "librarian"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "active"
+   }
+  ]
+ }
+}

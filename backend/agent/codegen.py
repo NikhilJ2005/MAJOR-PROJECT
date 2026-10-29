@@ -329,12 +329,20 @@ def delete_rules(spec: ProjectSpec) -> list[dict[str, Any]]:
         for f in e.foreign_keys:
             if f.references != "User":
                 children.setdefault(f.references, []).append((e, f))
+
+    def blocked(name: str, seen: frozenset[str] = frozenset()) -> bool:
+        """Deleting a row of `name` fails (409) when a child restricts it, also further down a cascade chain."""
+        if name in seen:
+            return False
+        kids = children.get(name, [])
+        return any(f.on_delete == "restrict" or (f.on_delete == "cascade" and blocked(c.name, seen | {name}))
+                   for c, f in kids)
+
     rules = []
     for parent, kids in children.items():
-        restricts = [k for k in kids if k[1].on_delete == "restrict"]
         for child, f in kids:
             # A cascade/set_null check deletes the parent, so only when nothing else blocks it.
-            if f.on_delete != "restrict" and (restricts or len(kids) > 1):
+            if f.on_delete != "restrict" and (blocked(parent) or len(kids) > 1):
                 continue
             rules.append({"parent": parent, "parent_table": table_of(parent), "child": child.name,
                           "child_table": child.table, "field": f.name, "on_delete": f.on_delete})

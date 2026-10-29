@@ -21,6 +21,7 @@ from app import ratelimit
 from app.errors import ApiError, check_transition  # noqa: F401
 from app.models.{{ e.module }} import {{ e.name }}
 from app.schemas.{{ e.module }} import {{ e.name }}Create, {{ e.name }}Read, {{ e.name }}Update
+from app import actions  # noqa: F401
 from app.services import {{ e.module }} as service  # noqa: F401
 {% if spec.auth %}
 from app.models.user import User
@@ -53,6 +54,7 @@ def _commit(db: Session) -> None:
         db.rollback()
         raise ApiError(409, "conflicts with existing data (duplicate value or unknown reference)") from exc
 {% for a in actions %}
+{% set call = ("actions." ~ e.module ~ "_" ~ a.name) if a.kind != "custom" else ("service." ~ a.name) %}
 
 
 @router.{{ a.method | lower }}("{{ a.path }}")
@@ -82,15 +84,16 @@ def {{ a.name }}_{{ e.module }}(
 {% if a.method == "GET" %}
     payload = dict(request.query_params)
 {% endif %}
+    payload = actions.check("{{ e.name }}.{{ a.name }}", payload)  # the declared inputs, typed (422 otherwise)
     obj = {% if a.on_item %}_get_or_404(db, item_id{% if e.owned %}, user{% endif %}{% if a.locks %}, lock=True{% endif %}){% else %}None{% endif %}
 
 {% if audit and a.method == "POST" %}
     before = _row(obj) if obj is not None else None
-    result = service.{{ a.name }}(db, obj, payload, {% if spec.auth %}user{% else %}None{% endif %})
+    result = {{ call }}(db, obj, payload, {% if spec.auth %}user{% else %}None{% endif %})
     audit.record(db, {% if spec.auth %}user{% else %}None{% endif %}, "{{ a.name }}", "{{ e.name }}", {% if a.on_item %}item_id{% else %}None{% endif %}, before, result)
     return result
 {% else %}
-    return service.{{ a.name }}(db, obj, payload, {% if spec.auth %}user{% else %}None{% endif %})
+    return {{ call }}(db, obj, payload, {% if spec.auth %}user{% else %}None{% endif %})
 {% endif %}
 {% endfor %}
 

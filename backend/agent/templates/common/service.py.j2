@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session  # noqa: F401
 from app.errors import ApiError  # noqa: F401
 from app.models.{{ e.module }} import {{ e.name }}  # noqa: F401
 {% endif %}
-{% for a in actions %}
+{% set custom = actions | selectattr("kind", "equalto", "custom") | list %}
+{% for a in custom %}
 
 
 {% if stack.name == "django" %}
@@ -22,6 +23,10 @@ def {{ a.name }}(db: Session, obj: "{{ e.name }} | None", payload: dict, user) -
 {% for rule in a.rules %}
     - {{ rule }}
 {% endfor %}
+{% if a.inputs %}
+    payload (already checked and typed): {% for f in a.inputs %}{{ f.name }}: {{ f.type }}{% if f.choices %} one of {{ f.choices | join("/") }}{% endif %}{% if f.min is not none %} >= {{ f.min }}{% endif %}{% if f.max is not none %} <= {{ f.max }}{% endif %}{% if not f.required %} (optional){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+
+{% endif %}
 {% if a.locks %}
 {% if stack.name == "django" %}
     obj is locked (select_for_update) and this runs in one transaction; lock other rows the same way.
@@ -32,6 +37,6 @@ def {{ a.name }}(db: Session, obj: "{{ e.name }} | None", payload: dict, user) -
     """
     raise ApiError(501, "{{ a.name }} is not implemented yet")
 {% endfor %}
-{% if not actions %}
-# No custom actions for this entity: CRUD is handled by the router.
+{% if not custom %}
+# No custom actions to write for this entity: CRUD and pattern actions are verified code (app/actions.py).
 {% endif %}

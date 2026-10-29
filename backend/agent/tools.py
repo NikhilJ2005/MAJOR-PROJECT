@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import inspect
 import re
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -31,6 +32,8 @@ from .ledger import progress
 from .state import ProjectSpec
 
 MAX_TOOL_CALLS = 6
+MAX_TEST_RUNS = 2  # run_tests calls per repair: each runs part of the suite in the sandbox
+_TEST_RUN = threading.Lock()
 MAX_RESULT_CHARS = 4000
 _JSON_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean"}
 _SELECTION = re.compile(r"^tests/[\w/.\-]+\.py(::[\w\[\]\-.]+)?$")
@@ -106,6 +109,7 @@ class Toolbox:
         self.spec = spec
         self.max_calls = max_calls
         self.calls: list[dict[str, Any]] = []
+        self.test_runs = 0
         own = [self.list_files, self.read_file, self.search_code, self.list_routes,
                self.write_file, self.run_tests, self.check_frontend]
         self.tools = [tool_from_function(f) for f in own] + list(extra or [])
@@ -157,7 +161,21 @@ class Toolbox:
         chosen = selection.split()
         if any(not _SELECTION.match(s) for s in chosen):
             return "selection must look like tests/<file>.py or tests/<file>.py::<test_name>"
-        ok, log = get_sandbox().run_tests(self.files, self.spec.stack, chosen)
+        if self.test_runs >= MAX_TEST_RUNS:
+            return "test budget for this repair used up: give your final answer now"
+        self.test_runs += 1
+        from .llm import raise_if_stopped
+        from .sandbox import progress_node
+
+        # Repairs running side by side take turns: parallel test suites only slow each other down.
+        while not _TEST_RUN.acquire(timeout=1.0):
+            raise_if_stopped()
+        token = progress_node.set("reflect")
+        try:
+            ok, log = get_sandbox().run_tests(self.files, self.spec.stack, chosen)
+        finally:
+            progress_node.reset(token)
+            _TEST_RUN.release()
         counts = re.findall(r"\d+ (?:passed|failed|errors?)", log)
         return f"{'PASSED' if ok else 'FAILED'} ({', '.join(counts) or 'no tests ran'})\n{log[-3000:]}"
 

@@ -6,7 +6,11 @@ CONTRACT = """HTTP contract (the tests check exactly this, whatever the framewor
 - POST /<table>/ -> 201 with the created row as JSON (id, created_at, every field; owner_id for private data)
 - GET /<table>/ -> 200 JSON list; query params skip, limit, q (text search) and one filter per foreign key
 - GET /<table>/<id> -> 200 or 404;  PATCH /<table>/<id> -> 200 updated row;  DELETE /<table>/<id> -> 204
-- Custom actions: <METHOD> /<table>/<id>/<word> or /<table>/<word> -> 200 with a JSON object
+- Custom actions: <METHOD> /<table>/<id>/<word> or /<table>/<word> -> 200 with a JSON object. Each action's
+  declared "inputs" are its JSON body (GET: query params) with exactly those names; a missing required input
+  or a wrong type/choice/min/max is 422 before the action runs. Pattern actions (kind transition/adjust/move)
+  return the updated row (every field, like GET /<table>/<id>); a transition to the state the row is already
+  in, or one "transitions" does not allow, is 409; adjust/move below min (or 0) or above max is 409
 - Errors are RFC 7807 JSON {"type", "title", "status", "detail"}: 401 missing/invalid token on protected
   endpoints, 403 logged in but not allowed (admin-only data, or a role the entity/action does not allow), 404 missing or another user's private row, 409 duplicate value or unknown
   foreign key or a broken business rule, 422 invalid input (wrong type, not in choices, below min/above max)
@@ -99,6 +103,16 @@ Step 2, design:
   (real-looking names, titles, prices, dates in 2026, varied states). A foreign key holds the 1-based
   position of a row in the target entity's sample_rows (e.g. "author_id": 2 = the 2nd Author); a
   reference to "User" may be 1. Respect choices, min/max and unique fields.
+- Every action declares its "inputs" (the JSON body it takes, as fields: name, type, required, min, max,
+  choices, references), e.g. a deposit takes [{"name": "amount", "type": "decimal", "min": 0.01}]. The input is
+  checked before the action runs (422), and the code and the tests both rely on exactly these names.
+- Prefer verified pattern actions ("kind"); they need no hand-written code and never fail:
+  "transition" (field: a choices field, target: the new state; follows "transitions"; e.g. approve, ship,
+  cancel), "adjust" (field: a number; direction "add" or "subtract"; input "amount"; never below min / 0,
+  never above max: 409; e.g. deposit, withdraw, restock, pay a fine), "move" (field -> target: move input
+  "amount" between two number fields of the same row; e.g. lock funds in escrow, reserve stock). Pattern
+  actions are POST on "/{item_id}/<word>". Use "custom" only for logic no pattern covers (e.g. checkout that
+  creates rows in several tables); then write precise rules with their error codes.
 - Put every requirement id on the entity or action that covers it (requirement_ids); every requirement
   must be covered.
 - Leave "stack" empty: it is filled in for you. project_name is short snake_case."""
@@ -120,6 +134,12 @@ PLUGIN_CATALOG = """
 
 SPEC_USER = """Application description:
 {prompt}"""
+
+BLUEPRINT_EXAMPLE = """
+
+A verified design of a similar app, as an example of the depth and style expected (adapt it to the
+description; do not copy what the description does not ask for):
+{example}"""
 
 SPEC_COVERAGE_RETRY = """Your design does not cover these requirements: {missing}.
 Add the entities, fields, rules or actions they need and list their ids in requirement_ids.

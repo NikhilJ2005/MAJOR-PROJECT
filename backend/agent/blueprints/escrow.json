@@ -1,0 +1,674 @@
+{
+ "id": "escrow",
+ "title": "Freelance escrow marketplace",
+ "keywords": [
+  "freelance",
+  "escrow",
+  "wallet",
+  "milestone",
+  "bid",
+  "marketplace",
+  "gig",
+  "payout"
+ ],
+ "summary": "Clients post jobs, freelancers bid, milestones are funded into escrow and released; wallets and disputes.",
+ "prompt": "A freelance marketplace with escrow: clients post jobs, freelancers bid, accepted work is split into milestones funded into escrow, released on approval, with wallets, deposits, withdrawals and disputes.",
+ "spec": {
+  "project_name": "freelance_escrow",
+  "description": "Freelance marketplace with wallets, escrow milestones and disputes.",
+  "auth": true,
+  "features": [
+   "audit_log",
+   "rate_limit"
+  ],
+  "roles": [
+   {
+    "name": "client"
+   },
+   {
+    "name": "freelancer"
+   },
+   {
+    "name": "dispute_admin",
+    "self_signup": false
+   }
+  ],
+  "entities": [
+   {
+    "name": "Wallet",
+    "write_access": "owner",
+    "fields": [
+     {
+      "name": "label"
+     },
+     {
+      "name": "currency",
+      "choices": [
+       "USD",
+       "EUR",
+       "INR"
+      ]
+     },
+     {
+      "name": "available_balance",
+      "type": "decimal",
+      "min": 0
+     },
+     {
+      "name": "escrow_balance",
+      "type": "decimal",
+      "min": 0
+     }
+    ],
+    "sample_rows": [
+     {
+      "label": "Acme Studio",
+      "currency": "USD",
+      "available_balance": 5200,
+      "escrow_balance": 1800
+     },
+     {
+      "label": "Nova Apps",
+      "currency": "EUR",
+      "available_balance": 2400,
+      "escrow_balance": 600
+     },
+     {
+      "label": "Riya Designs",
+      "currency": "INR",
+      "available_balance": 86000,
+      "escrow_balance": 0
+     },
+     {
+      "label": "Kite Labs",
+      "currency": "USD",
+      "available_balance": 950,
+      "escrow_balance": 3000
+     },
+     {
+      "label": "Sam (freelancer)",
+      "currency": "USD",
+      "available_balance": 1320,
+      "escrow_balance": 0
+     }
+    ]
+   },
+   {
+    "name": "Job",
+    "write_roles": [
+     "client"
+    ],
+    "fields": [
+     {
+      "name": "title",
+      "index": true
+     },
+     {
+      "name": "description",
+      "type": "text"
+     },
+     {
+      "name": "budget",
+      "type": "decimal",
+      "min": 0
+     },
+     {
+      "name": "category",
+      "choices": [
+       "web",
+       "mobile",
+       "design",
+       "data",
+       "writing"
+      ]
+     },
+     {
+      "name": "status",
+      "choices": [
+       "open",
+       "in_progress",
+       "completed",
+       "cancelled"
+      ],
+      "transitions": {
+       "open": [
+        "in_progress",
+        "cancelled"
+       ],
+       "in_progress": [
+        "completed",
+        "cancelled"
+       ]
+      }
+     }
+    ],
+    "sample_rows": [
+     {
+      "title": "Shopify store redesign",
+      "description": "Refresh the theme and checkout.",
+      "budget": 2400,
+      "category": "web",
+      "status": "in_progress"
+     },
+     {
+      "title": "iOS habit tracker MVP",
+      "description": "SwiftUI app with streaks.",
+      "budget": 6000,
+      "category": "mobile",
+      "status": "open"
+     },
+     {
+      "title": "Brand identity for a cafe",
+      "description": "Logo, palette, menu.",
+      "budget": 900,
+      "category": "design",
+      "status": "completed"
+     },
+     {
+      "title": "Sales dashboard in Metabase",
+      "description": "Connect Postgres, 6 charts.",
+      "budget": 1500,
+      "category": "data",
+      "status": "open"
+     },
+     {
+      "title": "Technical blog series",
+      "description": "Four posts on Kubernetes.",
+      "budget": 800,
+      "category": "writing",
+      "status": "cancelled"
+     }
+    ]
+   },
+   {
+    "name": "Bid",
+    "write_roles": [
+     "freelancer"
+    ],
+    "fields": [
+     {
+      "name": "job_id",
+      "references": "Job",
+      "on_delete": "cascade"
+     },
+     {
+      "name": "amount",
+      "type": "decimal",
+      "min": 1
+     },
+     {
+      "name": "days",
+      "type": "int",
+      "min": 1,
+      "max": 365
+     },
+     {
+      "name": "cover_letter",
+      "type": "text"
+     },
+     {
+      "name": "status",
+      "choices": [
+       "pending",
+       "accepted",
+       "rejected",
+       "withdrawn"
+      ],
+      "transitions": {
+       "pending": [
+        "accepted",
+        "rejected",
+        "withdrawn"
+       ]
+      }
+     }
+    ],
+    "sample_rows": [
+     {
+      "job_id": 1,
+      "amount": 2200,
+      "days": 14,
+      "cover_letter": "I have shipped 30+ Shopify stores.",
+      "status": "accepted"
+     },
+     {
+      "job_id": 2,
+      "amount": 5800,
+      "days": 45,
+      "cover_letter": "SwiftUI specialist, see my App Store apps.",
+      "status": "pending"
+     },
+     {
+      "job_id": 2,
+      "amount": 6500,
+      "days": 30,
+      "cover_letter": "Team of two, faster delivery.",
+      "status": "pending"
+     },
+     {
+      "job_id": 4,
+      "amount": 1400,
+      "days": 10,
+      "cover_letter": "Metabase and dbt every day.",
+      "status": "pending"
+     },
+     {
+      "job_id": 3,
+      "amount": 850,
+      "days": 7,
+      "cover_letter": "Branding for 12 cafes so far.",
+      "status": "accepted"
+     }
+    ]
+   },
+   {
+    "name": "Milestone",
+    "write_roles": [
+     "client"
+    ],
+    "fields": [
+     {
+      "name": "job_id",
+      "references": "Job",
+      "on_delete": "cascade"
+     },
+     {
+      "name": "title"
+     },
+     {
+      "name": "amount",
+      "type": "decimal",
+      "min": 0
+     },
+     {
+      "name": "due_on",
+      "type": "date"
+     },
+     {
+      "name": "state",
+      "choices": [
+       "draft",
+       "funded",
+       "submitted",
+       "approved",
+       "disputed",
+       "released"
+      ],
+      "transitions": {
+       "draft": [
+        "funded"
+       ],
+       "funded": [
+        "submitted",
+        "disputed"
+       ],
+       "submitted": [
+        "approved",
+        "disputed"
+       ],
+       "approved": [
+        "released"
+       ],
+       "disputed": [
+        "approved",
+        "funded"
+       ]
+      }
+     }
+    ],
+    "sample_rows": [
+     {
+      "job_id": 1,
+      "title": "Theme and homepage",
+      "amount": 1000,
+      "due_on": "2026-11-05",
+      "state": "submitted"
+     },
+     {
+      "job_id": 1,
+      "title": "Checkout and launch",
+      "amount": 1200,
+      "due_on": "2026-11-20",
+      "state": "funded"
+     },
+     {
+      "job_id": 3,
+      "title": "Logo and palette",
+      "amount": 500,
+      "due_on": "2026-10-10",
+      "state": "released"
+     },
+     {
+      "job_id": 3,
+      "title": "Menu design",
+      "amount": 350,
+      "due_on": "2026-10-20",
+      "state": "approved"
+     },
+     {
+      "job_id": 2,
+      "title": "Clickable prototype",
+      "amount": 1500,
+      "due_on": "2026-12-01",
+      "state": "draft"
+     }
+    ]
+   },
+   {
+    "name": "Dispute",
+    "fields": [
+     {
+      "name": "milestone_id",
+      "references": "Milestone",
+      "on_delete": "cascade"
+     },
+     {
+      "name": "reason",
+      "type": "text"
+     },
+     {
+      "name": "status",
+      "choices": [
+       "open",
+       "under_review",
+       "resolved_client",
+       "resolved_freelancer"
+      ],
+      "transitions": {
+       "open": [
+        "under_review"
+       ],
+       "under_review": [
+        "resolved_client",
+        "resolved_freelancer"
+       ]
+      }
+     }
+    ],
+    "sample_rows": [
+     {
+      "milestone_id": 1,
+      "reason": "Homepage does not match the approved mockup.",
+      "status": "under_review"
+     },
+     {
+      "milestone_id": 2,
+      "reason": "Deadline moved without notice.",
+      "status": "open"
+     },
+     {
+      "milestone_id": 4,
+      "reason": "Two menu items missing.",
+      "status": "resolved_freelancer"
+     }
+    ]
+   }
+  ],
+  "actions": [
+   {
+    "name": "deposit",
+    "entity": "Wallet",
+    "path": "/{item_id}/deposit",
+    "kind": "adjust",
+    "description": "Add money to the wallet.",
+    "rules": [],
+    "roles": [],
+    "inputs": [],
+    "direction": "add",
+    "field": "available_balance"
+   },
+   {
+    "name": "withdraw",
+    "entity": "Wallet",
+    "path": "/{item_id}/withdraw",
+    "kind": "adjust",
+    "description": "Take money out.",
+    "rules": [
+     "409 if the available balance is too low"
+    ],
+    "roles": [],
+    "inputs": [],
+    "direction": "subtract",
+    "field": "available_balance"
+   },
+   {
+    "name": "lock_escrow",
+    "entity": "Wallet",
+    "path": "/{item_id}/lock-escrow",
+    "kind": "move",
+    "description": "Fund a milestone: money moves into escrow.",
+    "rules": [
+     "409 if the available balance is too low"
+    ],
+    "roles": [],
+    "inputs": [],
+    "direction": "add",
+    "field": "available_balance",
+    "target": "escrow_balance"
+   },
+   {
+    "name": "release_escrow",
+    "entity": "Wallet",
+    "path": "/{item_id}/release-escrow",
+    "kind": "move",
+    "description": "Money comes back out of escrow.",
+    "rules": [
+     "409 if escrow holds less than the amount"
+    ],
+    "roles": [],
+    "inputs": [],
+    "direction": "add",
+    "field": "escrow_balance",
+    "target": "available_balance"
+   },
+   {
+    "name": "start",
+    "entity": "Job",
+    "path": "/{item_id}/start",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "client"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "in_progress"
+   },
+   {
+    "name": "complete",
+    "entity": "Job",
+    "path": "/{item_id}/complete",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "client"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "completed"
+   },
+   {
+    "name": "cancel",
+    "entity": "Job",
+    "path": "/{item_id}/cancel",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "client"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "cancelled"
+   },
+   {
+    "name": "accept",
+    "entity": "Bid",
+    "path": "/{item_id}/accept",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "client"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "accepted"
+   },
+   {
+    "name": "reject",
+    "entity": "Bid",
+    "path": "/{item_id}/reject",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "client"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "rejected"
+   },
+   {
+    "name": "withdraw_bid",
+    "entity": "Bid",
+    "path": "/{item_id}/withdraw-bid",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "freelancer"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "withdrawn"
+   },
+   {
+    "name": "fund",
+    "entity": "Milestone",
+    "path": "/{item_id}/fund",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "client"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "state",
+    "target": "funded"
+   },
+   {
+    "name": "submit_work",
+    "entity": "Milestone",
+    "path": "/{item_id}/submit-work",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "freelancer"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "state",
+    "target": "submitted"
+   },
+   {
+    "name": "approve",
+    "entity": "Milestone",
+    "path": "/{item_id}/approve",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "client"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "state",
+    "target": "approved"
+   },
+   {
+    "name": "dispute",
+    "entity": "Milestone",
+    "path": "/{item_id}/dispute",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [],
+    "inputs": [],
+    "direction": "add",
+    "field": "state",
+    "target": "disputed"
+   },
+   {
+    "name": "release",
+    "entity": "Milestone",
+    "path": "/{item_id}/release",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "client"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "state",
+    "target": "released"
+   },
+   {
+    "name": "review",
+    "entity": "Dispute",
+    "path": "/{item_id}/review",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "dispute_admin"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "under_review"
+   },
+   {
+    "name": "resolve_for_client",
+    "entity": "Dispute",
+    "path": "/{item_id}/resolve-for-client",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "dispute_admin"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "resolved_client"
+   },
+   {
+    "name": "resolve_for_freelancer",
+    "entity": "Dispute",
+    "path": "/{item_id}/resolve-for-freelancer",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "dispute_admin"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "resolved_freelancer"
+   }
+  ]
+ }
+}

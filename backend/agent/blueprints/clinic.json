@@ -1,0 +1,447 @@
+{
+ "id": "clinic",
+ "title": "Clinic appointments",
+ "keywords": [
+  "clinic",
+  "doctor",
+  "patient",
+  "appointment",
+  "hospital",
+  "booking",
+  "health"
+ ],
+ "summary": "Doctors, patients, appointments with a check-in workflow, prescriptions and billing.",
+ "prompt": "A clinic system: doctors with specialties and consultation fees, patients, appointments that are booked, checked in, completed or cancelled, prescriptions, and invoices that patients pay.",
+ "spec": {
+  "project_name": "clinic_appointments",
+  "description": "Clinic: doctors, patients, appointments, prescriptions and invoices.",
+  "auth": true,
+  "roles": [
+   {
+    "name": "patient"
+   },
+   {
+    "name": "doctor",
+    "self_signup": false
+   },
+   {
+    "name": "receptionist",
+    "self_signup": false
+   }
+  ],
+  "entities": [
+   {
+    "name": "Doctor",
+    "write_roles": [
+     "receptionist"
+    ],
+    "fields": [
+     {
+      "name": "full_name"
+     },
+     {
+      "name": "specialty",
+      "choices": [
+       "general",
+       "cardiology",
+       "dermatology",
+       "pediatrics",
+       "orthopedics"
+      ]
+     },
+     {
+      "name": "fee",
+      "type": "decimal",
+      "min": 0
+     },
+     {
+      "name": "available",
+      "type": "bool"
+     }
+    ],
+    "sample_rows": [
+     {
+      "full_name": "Dr. Meera Iyer",
+      "specialty": "cardiology",
+      "fee": 120,
+      "available": true
+     },
+     {
+      "full_name": "Dr. Tom Becker",
+      "specialty": "general",
+      "fee": 60,
+      "available": true
+     },
+     {
+      "full_name": "Dr. Aiko Sato",
+      "specialty": "dermatology",
+      "fee": 90,
+      "available": false
+     },
+     {
+      "full_name": "Dr. Kwame Mensah",
+      "specialty": "pediatrics",
+      "fee": 75,
+      "available": true
+     },
+     {
+      "full_name": "Dr. Laura Gomez",
+      "specialty": "orthopedics",
+      "fee": 110,
+      "available": true
+     }
+    ]
+   },
+   {
+    "name": "Patient",
+    "write_roles": [
+     "receptionist"
+    ],
+    "fields": [
+     {
+      "name": "full_name"
+     },
+     {
+      "name": "email",
+      "unique": true
+     },
+     {
+      "name": "birth_date",
+      "type": "date"
+     },
+     {
+      "name": "blood_group",
+      "choices": [
+       "A+",
+       "A-",
+       "B+",
+       "B-",
+       "O+",
+       "O-",
+       "AB+",
+       "AB-"
+      ]
+     }
+    ],
+    "sample_rows": [
+     {
+      "full_name": "Rahul Mehta",
+      "email": "rahul@example.com",
+      "birth_date": "1988-04-12",
+      "blood_group": "B+"
+     },
+     {
+      "full_name": "Emma Wilson",
+      "email": "emma@example.com",
+      "birth_date": "1995-09-30",
+      "blood_group": "O+"
+     },
+     {
+      "full_name": "Yusuf Ali",
+      "email": "yusuf@example.com",
+      "birth_date": "1972-01-05",
+      "blood_group": "A-"
+     },
+     {
+      "full_name": "Sofia Rossi",
+      "email": "sofia@example.com",
+      "birth_date": "2016-06-21",
+      "blood_group": "AB+"
+     },
+     {
+      "full_name": "Chen Wei",
+      "email": "chen@example.com",
+      "birth_date": "1983-11-17",
+      "blood_group": "O-"
+     }
+    ]
+   },
+   {
+    "name": "Appointment",
+    "realtime": true,
+    "fields": [
+     {
+      "name": "doctor_id",
+      "references": "Doctor",
+      "on_delete": "restrict"
+     },
+     {
+      "name": "patient_id",
+      "references": "Patient",
+      "on_delete": "cascade"
+     },
+     {
+      "name": "starts_at",
+      "type": "datetime"
+     },
+     {
+      "name": "reason"
+     },
+     {
+      "name": "status",
+      "choices": [
+       "booked",
+       "checked_in",
+       "completed",
+       "cancelled",
+       "no_show"
+      ],
+      "transitions": {
+       "booked": [
+        "checked_in",
+        "cancelled",
+        "no_show"
+       ],
+       "checked_in": [
+        "completed"
+       ]
+      }
+     }
+    ],
+    "sample_rows": [
+     {
+      "doctor_id": 1,
+      "patient_id": 1,
+      "starts_at": "2026-11-02T09:30:00",
+      "reason": "Chest pain follow-up",
+      "status": "booked"
+     },
+     {
+      "doctor_id": 2,
+      "patient_id": 2,
+      "starts_at": "2026-11-02T10:00:00",
+      "reason": "Flu symptoms",
+      "status": "checked_in"
+     },
+     {
+      "doctor_id": 4,
+      "patient_id": 4,
+      "starts_at": "2026-10-28T15:00:00",
+      "reason": "Vaccination",
+      "status": "completed"
+     },
+     {
+      "doctor_id": 5,
+      "patient_id": 3,
+      "starts_at": "2026-11-03T11:15:00",
+      "reason": "Knee pain",
+      "status": "booked"
+     },
+     {
+      "doctor_id": 2,
+      "patient_id": 5,
+      "starts_at": "2026-10-25T08:45:00",
+      "reason": "Annual check-up",
+      "status": "no_show"
+     }
+    ]
+   },
+   {
+    "name": "Prescription",
+    "write_roles": [
+     "doctor"
+    ],
+    "fields": [
+     {
+      "name": "appointment_id",
+      "references": "Appointment",
+      "on_delete": "cascade"
+     },
+     {
+      "name": "medicine"
+     },
+     {
+      "name": "dosage"
+     },
+     {
+      "name": "days",
+      "type": "int",
+      "min": 1,
+      "max": 180
+     }
+    ],
+    "sample_rows": [
+     {
+      "appointment_id": 3,
+      "medicine": "Paracetamol 250mg",
+      "dosage": "1 tablet twice a day",
+      "days": 3
+     },
+     {
+      "appointment_id": 2,
+      "medicine": "Oseltamivir 75mg",
+      "dosage": "1 capsule twice a day",
+      "days": 5
+     },
+     {
+      "appointment_id": 1,
+      "medicine": "Aspirin 75mg",
+      "dosage": "1 tablet daily",
+      "days": 90
+     }
+    ]
+   },
+   {
+    "name": "Invoice",
+    "write_roles": [
+     "receptionist"
+    ],
+    "fields": [
+     {
+      "name": "appointment_id",
+      "references": "Appointment",
+      "on_delete": "restrict"
+     },
+     {
+      "name": "total",
+      "type": "decimal",
+      "min": 0
+     },
+     {
+      "name": "amount_due",
+      "type": "decimal",
+      "min": 0
+     },
+     {
+      "name": "status",
+      "choices": [
+       "open",
+       "paid",
+       "void"
+      ],
+      "transitions": {
+       "open": [
+        "paid",
+        "void"
+       ]
+      }
+     }
+    ],
+    "sample_rows": [
+     {
+      "appointment_id": 3,
+      "total": 75,
+      "amount_due": 0,
+      "status": "paid"
+     },
+     {
+      "appointment_id": 2,
+      "total": 60,
+      "amount_due": 60,
+      "status": "open"
+     },
+     {
+      "appointment_id": 1,
+      "total": 120,
+      "amount_due": 40,
+      "status": "open"
+     }
+    ]
+   }
+  ],
+  "actions": [
+   {
+    "name": "check_in",
+    "entity": "Appointment",
+    "path": "/{item_id}/check-in",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "receptionist"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "checked_in"
+   },
+   {
+    "name": "complete",
+    "entity": "Appointment",
+    "path": "/{item_id}/complete",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "doctor"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "completed"
+   },
+   {
+    "name": "cancel",
+    "entity": "Appointment",
+    "path": "/{item_id}/cancel",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "cancelled"
+   },
+   {
+    "name": "mark_no_show",
+    "entity": "Appointment",
+    "path": "/{item_id}/mark-no-show",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "receptionist"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "no_show"
+   },
+   {
+    "name": "pay",
+    "entity": "Invoice",
+    "path": "/{item_id}/pay",
+    "kind": "adjust",
+    "description": "Record a payment.",
+    "rules": [
+     "409 if the payment is more than the amount due"
+    ],
+    "roles": [],
+    "inputs": [],
+    "direction": "subtract",
+    "field": "amount_due"
+   },
+   {
+    "name": "mark_paid",
+    "entity": "Invoice",
+    "path": "/{item_id}/mark-paid",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "receptionist"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "paid"
+   },
+   {
+    "name": "void",
+    "entity": "Invoice",
+    "path": "/{item_id}/void",
+    "kind": "transition",
+    "description": "",
+    "rules": [],
+    "roles": [
+     "receptionist"
+    ],
+    "inputs": [],
+    "direction": "add",
+    "field": "status",
+    "target": "void"
+   }
+  ]
+ }
+}

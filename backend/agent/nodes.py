@@ -26,7 +26,7 @@ from typing import Any
 
 from langgraph.types import interrupt
 
-from . import plugins, prompts
+from . import blueprints, plugins, prompts
 from .analysis import check_coverage, requirements_text
 from .bughunt import failing_tests, static_check, update_bugs
 from .codegen import plan_files, render_project
@@ -144,6 +144,9 @@ def _design(llm: Any, state: AgentState) -> tuple[ProjectSpec, list[str], Usage]
         user = prompts.EDIT_USER.format(spec=base.model_dump_json(indent=1, exclude={"stack"}), prompt=state["prompt"])
     else:
         user = prompts.SPEC_USER.format(prompt=state["prompt"])
+        example = blueprints.example_text(state["prompt"])
+        if example:
+            user += prompts.BLUEPRINT_EXAMPLE.format(example=example)
 
     live = LiveText(live_writer(), "architect", "Design (JSON)")
 
@@ -335,7 +338,7 @@ def generate(state: AgentState) -> dict[str, Any]:
 
     # Only the business logic is written by the model: every model, schema and router comes from the
     # verified templates. Entities without custom actions need no model call at all.
-    with_actions = [e for e in spec.entities if any(a.entity == e.name for a in spec.actions)]
+    with_actions = [e for e in spec.entities if spec.custom_actions_for(e)]
 
     # Follow-up edit: entities the Architect did not touch keep their business logic from the version before.
     changes, base_files = state.get("changes"), state.get("base_files") or {}
@@ -382,7 +385,7 @@ def generate(state: AgentState) -> dict[str, Any]:
             progress("generate", f"Wrote {e.name} ({done}/{len(todo)})")
             total.add(usage)
             files.update(new_files)
-            names = ", ".join(a.name for a in spec.actions if a.entity == e.name)
+            names = ", ".join(a.name for a in spec.custom_actions_for(e))
             ledger.append(entry("code_generator",
                                 f"wrote the business logic of {e.name} ({names})" if new_files else f"kept the stubs of {e.name}",
                                 rationale, files=sorted(new_files), tokens=usage.total_tokens, model=model_names(usage)))

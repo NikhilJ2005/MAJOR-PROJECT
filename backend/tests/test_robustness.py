@@ -121,3 +121,22 @@ def test_streamed_usage_is_counted_once():
     msg = ProviderLLM._stream(Chat(), "system", "user", lambda piece: None)
     usage = _usage("gemini-3.8-flash", msg)
     assert (usage.prompt_tokens, usage.completion_tokens) == (1000, 100)
+
+
+def test_stop_kills_a_running_sandbox_process(tmp_path):
+    """A test run in the sandbox ends within a second or two of Stop (the process is killed)."""
+    import sys
+
+    import pytest
+
+    from agent.llm import RunStopped, stop_check
+    from agent.sandbox import LocalSandbox
+
+    started = time.monotonic()
+    token = stop_check.set(lambda: "stopped by you" if time.monotonic() - started > 1 else None)
+    try:
+        with pytest.raises(RunStopped):
+            LocalSandbox(timeout_s=60)._run([sys.executable, "-c", "import time; time.sleep(60)"], tmp_path)
+    finally:
+        stop_check.reset(token)
+    assert time.monotonic() - started < 5
