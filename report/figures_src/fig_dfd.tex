@@ -1,0 +1,41 @@
+\documentclass[border=10pt]{standalone}
+\input{common}
+\begin{document}
+\begin{tikzpicture}[node distance=1.0cm and 1.3cm]
+\tikzset{
+  proc/.style={draw, circle, minimum size=2.3cm, align=center, font=\small, fill=lay3, inner sep=1pt},
+  ext/.style={draw, thick, minimum width=2.6cm, minimum height=1.1cm, align=center, font=\small\bfseries, fill=lay1},
+  store/.style={draw=none, minimum width=3.2cm, minimum height=0.75cm, align=center, font=\small, fill=lay2,
+    append after command={\pgfextra{\draw[thick] (\tikzlastnode.north west) -- (\tikzlastnode.north east) (\tikzlastnode.south west) -- (\tikzlastnode.south east) (\tikzlastnode.north west) -- (\tikzlastnode.south west);}}},
+  f/.style={-{Stealth[length=2.2mm]}, thick}, fl/.style={font=\scriptsize, fill=white, inner sep=1pt}
+}
+\node[ext] (user) at (0,0) {User};
+\node[proc] (p1) at (4,0) {1.0\\Design\\(Architect)};
+\node[proc] (p2) at (8.5,0) {2.0\\Plan \&\\review};
+\node[proc] (p3) at (13,0) {3.0\\Generate\\code};
+\node[proc] (p4) at (13,-4.6) {4.0\\Validate\\(sandbox)};
+\node[proc] (p5) at (8.5,-4.6) {5.0\\Heal\\(classify, repair)};
+\node[proc] (p6) at (4,-4.6) {6.0\\Package \&\\preview};
+\node[ext] (llm) at (8.5,3.4) {LLM provider};
+\node[store] (d4) at (0.3,-8.0) {D4 \;Artifacts (zip)};
+\node[store] (d1) at (4.6,-8.0) {D1 \;Projects / versions};
+\node[store] (d3) at (9.0,-8.0) {D3 \;Change ledger};
+\node[store] (d2) at (13.4,-8.0) {D2 \;Checkpoints};
+\draw[f] (user) -- node[fl, above]{description} (p1);
+\draw[f] (p1) -- node[fl, above]{ProjectSpec} (p2);
+\draw[f] (p2) -- node[fl, above, pos=0.3]{file plan} (p3);
+\draw[f] (p2.south) -- (8.5,-1.9) -| node[fl, pos=0.25, below]{design for approval} ($(user.south)+(0.5,0)$);
+\draw[f] (p3) -- node[fl, right]{generated files} (p4);
+\draw[f] ($(p4.west)+(0,0.3)$) -- node[fl, above]{failure log} ($(p5.east)+(0,0.3)$);
+\draw[f] ($(p5.east)+(0,-0.3)$) -- node[fl, below]{patched files} ($(p4.west)+(0,-0.3)$);
+\draw[f] (p4.south) to[out=-120, in=-60, looseness=0.35] node[fl, pos=0.5]{all gates passed} (p6.south);
+\draw[f] (p6.west) -| node[fl, pos=0.75, left]{zip, live app link} ($(user.south)+(-0.5,0)$);
+\draw[f, <->] (llm) -- node[fl, left, pos=0.4]{prompts / replies} (p1.north east);
+\draw[f, <->] ($(llm.east)+(0,0.22)$) -| (p3.north);
+\draw[f, <->] ($(llm.east)+(0,-0.22)$) -- (10.8,3.18) -- (10.8,-3.0) -- (p5.north east);
+\draw[f] (p6) -- (d4);
+\draw[f] (p6) -- node[fl, right]{spec, files} (d1);
+\draw[f] (p5) -- node[fl, right, pos=0.78]{fixes, diffs} (d3);
+\draw[f] (p4) -- node[fl, right]{state} (d2);
+\end{tikzpicture}
+\end{document}

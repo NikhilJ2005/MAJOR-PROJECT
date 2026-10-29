@@ -1,0 +1,33 @@
+\documentclass[border=10pt]{standalone}
+\input{common}
+\begin{document}
+\begin{tikzpicture}[x=3.5cm, y=-0.66cm]
+\tikzset{head/.style={draw, fill=lay1, rounded corners=2pt, minimum width=2.3cm, minimum height=0.8cm, font=\small\bfseries, align=center},
+         msg/.style={-{Stealth[length=2mm]}, thick}, ret/.style={-{Stealth[length=2mm]}, dashed},
+         m/.style={font=\scriptsize, above, fill=white, inner sep=1pt}}
+\foreach \x/\n/\t in {0/b/Browser, 1/api/FastAPI\\platform, 2/g/LangGraph\\worker, 3/llm/LLM\\provider, 4/sb/Sandbox, 5/st/Storage}
+  {\node[head] (\n) at (\x,0) {\t}; \draw[gray, dashed] (\x,0.8) -- (\x,22);}
+\draw[fill=lay3, draw=gray] (1.97,4) rectangle (2.03,20);
+\def\M#1#2#3#4{\draw[msg] (#1,#3) -- node[m]{#4} (#2,#3);}
+\def\R#1#2#3#4{\draw[ret] (#1,#3) -- node[m]{#4} (#2,#3);}
+\M{0}{1}{2}{POST /projects (prompt)}
+\R{1}{0}{3}{run id; open SSE stream}
+\M{1}{2}{4}{start graph (run id)}
+\M{2}{3}{5}{Architect: design}
+\R{3}{2}{6}{ProjectSpec (JSON)}
+\R{2}{0}{7}{SSE: design ready for review}
+\M{0}{1}{8}{approve design}
+\M{1}{2}{9}{resume from checkpoint}
+\M{2}{3}{10}{generate business logic}
+\R{3}{2}{11}{service files}
+\M{2}{4}{12}{run gates: static, import, boot, tests}
+\R{4}{2}{13}{gate failed + log}
+\node[draw, fill=lay4!60, font=\scriptsize, align=left, anchor=west] at (2.05,14.4) {loop while healing makes progress:\\Classifier $\rightarrow$ Reflector (LLM + tools) $\rightarrow$ Validator};
+\M{2}{3}{16}{Reflector: repair}
+\M{2}{4}{17}{re-validate}
+\R{4}{2}{18}{all gates passed}
+\M{2}{5}{19}{Packager: store zip + ledger}
+\R{2}{1}{20}{run succeeded}
+\R{1}{0}{21}{SSE: done, live preview link}
+\end{tikzpicture}
+\end{document}

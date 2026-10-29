@@ -777,33 +777,33 @@ Every generated project has the same layout in all three frameworks, so the same
 
 \section{User Interface}
 
-The interface follows a prompt-first design. The home page (Fig.~\ref{fig:uihome}) takes the description and the framework choice. The design review screen (Fig.~\ref{fig:design}) shows the entities, permissions and actions for approval. The workspace (Fig.~\ref{fig:workspace}) has the chat on the left and, on the right, the live pipeline of agents, the generated files, the tests, the ledger and the running app. The quality view (Fig.~\ref{fig:ledger}) lists the bugs the agents found, the tool calls the Reflector made and the fix diffs.
+The interface follows a prompt-first design. The home page (Fig.~\ref{fig:uihome}) takes the description and the framework choice. The design review screen (Fig.~\ref{fig:design}) shows the entities, permissions and actions for approval. The workspace (Fig.~\ref{fig:workspace}) has the chat on the left and, on the right, the live pipeline of agents, the generated files, the tests, the ledger and the running app. While a build runs, the Live view (Fig.~\ref{fig:ledger}) shows each agent's progress, the activity log that feeds the change ledger, and the files as they are written. After a build, the Quality view lists the bugs the agents found, the tool calls the Reflector made and the fix diffs. The screenshots in this section were captured with the deterministic offline demo model (\texttt{FAKE\_LLM=1}), which is why the header shows ``Offline demo model''.
 
 \begin{figure}[!ht]
 	\centering
 		\includegraphics[width=0.85\textwidth]{fig_ui_home.png}
-	\caption{Home page with the guided prompt builder}
+	\caption{Home page with the guided prompt builder (offline demo mode)}
 	\label{fig:uihome}
 \end{figure}
 
 \begin{figure}[!ht]
 	\centering
 		\includegraphics[width=0.85\textwidth]{fig_design_review.png}
-	\caption{Design review before code generation}
+	\caption{Design review before code generation (offline demo mode)}
 	\label{fig:design}
 \end{figure}
 
 \begin{figure}[!ht]
 	\centering
 		\includegraphics[width=0.85\textwidth]{fig_ui_workspace.png}
-	\caption{Project workspace with the live agent pipeline and app preview}
+	\caption{Project workspace with the agent pipeline and the live app preview (offline demo mode)}
 	\label{fig:workspace}
 \end{figure}
 
 \begin{figure}[!ht]
 	\centering
 		\includegraphics[width=0.85\textwidth]{fig_ledger.png}
-	\caption{Quality view showing the change ledger and a fix diff}
+	\caption{Live view during a build: agent progress, activity log and the code being written (offline demo mode)}
 	\label{fig:ledger}
 \end{figure}
 

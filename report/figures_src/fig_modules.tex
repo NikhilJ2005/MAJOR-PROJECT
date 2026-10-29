@@ -1,0 +1,25 @@
+\documentclass[border=10pt]{standalone}
+\input{common}
+\begin{document}
+\begin{tikzpicture}[node distance=0.75cm]
+\tikzset{mbox/.style={box, minimum width=5.4cm, minimum height=1.15cm}}
+\node[mbox, fill=lay1] (ui) {\textbf{Web UI \& API}\\accounts, projects, SSE, MCP};
+\node[mbox, fill=lay3, below=of ui] (arch) {\textbf{Architect}\\prompt $\rightarrow$ ProjectSpec, rule tests};
+\node[mbox, fill=lay3, below=of arch] (plan) {\textbf{Planner \& Design Review}\\file order, user approval};
+\node[mbox, fill=lay3, below=of plan] (gen) {\textbf{Code Generator}\\verified templates + business logic};
+\node[mbox, fill=lay2, below=of gen] (val) {\textbf{Sandbox Validator}\\static $\rightarrow$ import $\rightarrow$ boot $\rightarrow$ tests};
+\node[mbox, fill=lay1, below=of val] (pack) {\textbf{Packager \& Live Preview}\\zip, Dockerfile, ledger};
+\node[box, fill=lay4, right=2.2cm of val, minimum width=4.6cm, align=left, text width=4.3cm] (heal) {\textbf{Self-Healing Engine}\\[2pt]
+\textbullet\ Error Classifier\\ \textbullet\ Fault localisation\\ \textbullet\ Reflector (tool loop)\\ \textbullet\ Progress-based stopping};
+\node[box, fill=red!8, below=1.0cm of heal, minimum width=4.6cm] (cb) {\textbf{Circuit Breaker}\\diagnostic report};
+\node[box, fill=gray!8, left=1.6cm of plan, minimum width=3cm] (ledger) {\textbf{Change Ledger}\\every agent action\\+ exact diff};
+\foreach \a/\b in {ui/arch, arch/plan, plan/gen, gen/val} \draw[arrow] (\a) -- (\b);
+\draw[arrow] (val) -- node[lbl, right]{all gates pass} (pack);
+\draw[arrow] (val.east) ++(0,0.25) -- node[lbl, above]{failure log} ($(heal.west)+(0,0.25)$);
+\draw[arrow] ($(heal.west)+(0,-0.25)$) -- node[lbl, below]{patched files} ($(val.east)+(0,-0.25)$);
+\draw[arrow] (heal) -- node[lbl, right]{no progress} (cb);
+\draw[arrow] (plan.east) -- ++(0.6,0) |- node[lbl, pos=0.25, right]{change in words} (arch.east);
+\foreach \n in {arch, plan, gen, val, pack} \draw[darrow, gray] (\n.west) -- (ledger.east |- \n.west);
+\draw[gray, thick, dashed] (ledger.east |- arch.west) -- (ledger.east |- pack.west);
+\end{tikzpicture}
+\end{document}

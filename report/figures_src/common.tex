@@ -1,0 +1,21 @@
+% Shared preamble for the VibeStack report diagrams.
+% Build one diagram: pdflatex fig_x.tex && pdftoppm -r 220 -png -singlefile fig_x.pdf ../images/fig_x
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\renewcommand{\familydefault}{\sfdefault}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,shapes.misc,fit,backgrounds,calc}
+\definecolor{vsred}{RGB}{204,0,0}
+\definecolor{lay1}{RGB}{232,240,254}
+\definecolor{lay2}{RGB}{230,246,236}
+\definecolor{lay3}{RGB}{255,243,224}
+\definecolor{lay4}{RGB}{243,232,253}
+\tikzset{
+  box/.style={draw, rounded corners=3pt, align=center, minimum height=0.95cm, inner sep=5pt, fill=white, font=\small},
+  sbox/.style={box, minimum width=2.6cm},
+  arrow/.style={-{Stealth[length=2.4mm]}, thick},
+  darrow/.style={arrow, dashed},
+  lbl/.style={font=\scriptsize, fill=white, inner sep=1.5pt},
+  decision/.style={draw, diamond, aspect=2.1, align=center, inner sep=1pt, font=\small, fill=white},
+  term/.style={draw, rounded rectangle, minimum width=2.4cm, minimum height=0.9cm, font=\small\bfseries, fill=white},
+}

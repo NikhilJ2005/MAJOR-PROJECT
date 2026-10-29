@@ -1,0 +1,31 @@
+\documentclass[border=10pt]{standalone}
+\input{common}
+\begin{document}
+\begin{tikzpicture}
+\tikzset{
+  uc/.style={draw, ellipse, minimum width=4.4cm, minimum height=0.85cm, align=center, font=\small, fill=white, inner sep=1pt},
+  actor/.pic={\draw[thick] (0,0.75) circle (0.2) (0,0.55) -- (0,0.05) (-0.35,0.4) -- (0.35,0.4) (0,0.05) -- (-0.28,-0.4) (0,0.05) -- (0.28,-0.4);}
+}
+% System boundary with use cases
+\foreach \i/\t in {0/Sign up and log in, 1/Create project and describe app, 2/Review and approve design, 3/Watch the agents build, 4/Use the live preview, 5/Send a follow-up change, 6/Restore an earlier version, 7/Download the zip, 8/Deploy to Kubernetes}
+  \node[uc] (u\i) at (0,-\i*1.15) {\t};
+\foreach \i/\t in {0/Manage accounts and quotas, 1/Build and edit via MCP, 2/Generate code (LLM calls), 3/Validate and self-heal}
+  \node[uc] (v\i) at (5.8,-\i*1.15-1.7) {\t};
+\begin{scope}[on background layer]
+\node[draw, thick, rounded corners=6pt, fill=lay1!50, fit=(u0)(u8)(v0)(v3), inner sep=14pt, label={[font=\bfseries]above:VibeStack platform}] (sys) {};
+\end{scope}
+% Actors
+\pic at (-4.8,-4.0) {actor}; \node[font=\small\bfseries] (dev) at (-4.8,-4.75) {Developer};
+\pic at (10.4,-0.6) {actor}; \node[font=\small\bfseries] at (10.4,-1.35) {Administrator};
+\pic at (10.4,-3.0) {actor}; \node[font=\small\bfseries, align=center] at (10.4,-3.9) {External AI\\client (MCP)};
+\pic at (10.4,-5.6) {actor}; \node[font=\small\bfseries] at (10.4,-6.35) {LLM provider};
+\pic at (10.4,-8.4) {actor}; \node[font=\small\bfseries, align=center] at (10.4,-9.25) {Kubernetes\\cluster};
+\foreach \i in {0,...,8} \draw (-4.4,-3.9) -- (u\i.west);
+\draw (10.0,-0.4) -- (v0.east);
+\draw (10.0,-2.8) -- (v1.east);
+\draw (10.0,-5.4) -- (v2.east);
+\draw (10.0,-8.2) -- (u8.east);
+\draw[darrow, gray] (u3.east) -- node[lbl, above, sloped]{\guillemotleft include\guillemotright} (v3.west);
+\draw[darrow, gray] (v3) -- node[lbl, right]{\guillemotleft include\guillemotright} (v2);
+\end{tikzpicture}
+\end{document}

@@ -1,0 +1,38 @@
+\documentclass[border=10pt]{standalone}
+\input{common}
+\begin{document}
+\begin{tikzpicture}[node distance=0.6cm]
+\tikzset{fbox/.style={box, minimum width=4.6cm}}
+\node[term] (start) {Start};
+\node[fbox, below=of start] (desc) {User describes the app};
+\node[fbox, below=of desc] (arch) {Architect: design (ProjectSpec)\\+ rule tests before code};
+\node[decision, below=of arch] (ok) {Design\\approved?};
+\node[fbox, below=of ok] (gen) {Generate code\\(templates + business logic)};
+\node[fbox, below=of gen, fill=lay2] (val) {Validate in sandbox\\static $\rightarrow$ import $\rightarrow$ boot $\rightarrow$ tests};
+\node[decision, below=of val] (pass) {All gates\\pass?};
+\node[fbox, below=of pass, fill=lay1] (pack) {Package + live preview};
+\node[term, below=of pack] (end) {End};
+% healing branch
+\node[decision, right=2.4cm of pass] (prog) {Continue?\\(progress, budget)};
+\node[fbox, above=1.0cm of prog, fill=lay4, minimum width=4.2cm] (rung) {Pick repair rung\\cheap $\rightarrow$ strong $\rightarrow$ template};
+\node[fbox, above=of rung, fill=lay4, minimum width=4.2cm] (fix) {Classify error, locate files,\\Reflector patches (tools)};
+\node[fbox, below=1.0cm of prog, fill=red!8, minimum width=4.2cm] (cb) {Circuit breaker report\\ship best version};
+\node[fbox, left=2.4cm of ok, minimum width=3.2cm] (edit) {Edit design /\\change in words};
+\draw[arrow] (start) -- (desc);
+\draw[arrow] (desc) -- (arch);
+\draw[arrow] (arch) -- (ok);
+\draw[arrow] (ok) -- node[lbl, right]{yes} (gen);
+\draw[arrow] (ok) -- node[lbl, above]{no} (edit);
+\draw[arrow] (edit) |- (arch);
+\draw[arrow] (gen) -- (val);
+\draw[arrow] (val) -- (pass);
+\draw[arrow] (pass) -- node[lbl, right]{yes} (pack);
+\draw[arrow] (pack) -- (end);
+\draw[arrow] (pass) -- node[lbl, above]{no} (prog);
+\draw[arrow] (prog) -- node[lbl, right]{yes} (rung);
+\draw[arrow] (rung) -- (fix);
+\draw[arrow] (fix.west) -- ++(-1.0,0) |- node[lbl, pos=0.25, left]{re-validate} (val.east);
+\draw[arrow] (prog) -- node[lbl, right]{no} (cb);
+\draw[arrow] (cb) |- (end);
+\end{tikzpicture}
+\end{document}
