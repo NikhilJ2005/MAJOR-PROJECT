@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Architecture } from "@/components/Architecture";
 import { AgentSteps, BuildMeter, deriveSteps, explainStop } from "@/components/AgentSteps";
+import { HealingPanel } from "@/components/HealingPanel";
 import { DeployButton } from "@/components/DeployPanel";
 import { DesignReview } from "@/components/DesignReview";
 import { Files } from "@/components/Files";
@@ -46,6 +47,9 @@ export function Workspace({ projectId, onHome }: { projectId: string; onHome: ()
   const shown = useRun(selected === running?.run_id ? null : selected);
   const snap = selected === running?.run_id ? live.snap : shown.snap;
   const reviewing = live.snap?.status === "awaiting_approval" && selected === running?.run_id;
+  const [stopRequested, setStopRequested] = useState<string | null>(null);
+  const stopping = !!running && (stopRequested === running.run_id ||
+    live.events.some((e) => e.type === "status" && e.status === "stopping"));
   // While the build waits for the user's approval, open the design, unless they picked another tab since.
   const tab = reviewing && leftReview !== running?.run_id ? "Design" : chosenTab;
   const setTab = (t: Tab) => {
@@ -95,10 +99,15 @@ export function Workspace({ projectId, onHome }: { projectId: string; onHome: ()
           <div className="ml-auto flex items-center gap-2">
             {running && (
               <button
-                onClick={() => confirm("Stop this build? The last finished step is kept.") && api.cancel(running.run_id).then(live.refresh, () => {})}
-                className="rounded-lg border border-ink-700 px-3 py-1.5 text-sm text-ink-300 hover:border-rose-400 hover:text-rose-200"
+                disabled={stopping}
+                onClick={() => {
+                  if (!confirm("Stop this build? The last finished step is kept.")) return;
+                  setStopRequested(running.run_id);
+                  api.cancel(running.run_id).then(live.refresh, () => setStopRequested(null));
+                }}
+                className="rounded-lg border border-ink-700 px-3 py-1.5 text-sm text-ink-300 hover:border-rose-400 hover:text-rose-200 disabled:cursor-wait disabled:opacity-70"
               >
-                Stop
+                {stopping ? "Stopping…" : "Stop"}
               </button>
             )}
             <DeployButton
@@ -116,11 +125,20 @@ export function Workspace({ projectId, onHome }: { projectId: string; onHome: ()
         <div className="min-h-0 flex-1 overflow-auto">
           {tab === "Preview" && <PreviewPane runId={selected} snap={snap} />}
           {tab === "Live" && (
-            <LiveCode
-              live={selected === running?.run_id ? live.live : {}}
-              events={selected === running?.run_id ? live.events : []}
-              running={selected === running?.run_id}
-            />
+            <div className="flex h-full min-h-0 flex-col">
+              {selected === running?.run_id && (
+                <div className="max-h-[45%] shrink-0 overflow-y-auto border-b border-ink-800 p-3 empty:hidden">
+                  <HealingPanel events={live.events} snap={live.snap} running stopping={stopping} compact />
+                </div>
+              )}
+              <div className="min-h-0 flex-1">
+                <LiveCode
+                  live={selected === running?.run_id ? live.live : {}}
+                  events={selected === running?.run_id ? live.events : []}
+                  running={selected === running?.run_id}
+                />
+              </div>
+            </div>
           )}
           <div className={tab === "Preview" || tab === "Live" ? "hidden" : "p-5"}>
             {tab === "Code" && selected && <Files runId={selected} files={snap?.files ?? []} version={snap?.ledger?.length ?? 0} />}
@@ -132,7 +150,17 @@ export function Workspace({ projectId, onHome }: { projectId: string; onHome: ()
               ) : (
                 <Empty text="The Architect's design appears here." />
               ))}
-            {tab === "Tests" && <Tests validation={snap?.validation} report={snap?.report} files={snap?.files ?? []} />}
+            {tab === "Tests" && (
+              <div className="space-y-4">
+                <HealingPanel
+                  events={selected === running?.run_id ? live.events : []}
+                  snap={snap}
+                  running={selected === running?.run_id}
+                  stopping={stopping}
+                />
+                <Tests validation={snap?.validation} report={snap?.report} files={snap?.files ?? []} />
+              </div>
+            )}
             {tab === "Quality" && (
               <BugsAndHealing entries={snap?.ledger ?? []} bugs={snap?.bugs ?? []} notes={snap?.review ?? []} done={snap?.status !== "running"} stopReason={snap?.stop_reason} />
             )}

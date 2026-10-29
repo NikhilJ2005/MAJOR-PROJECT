@@ -22,10 +22,12 @@ from langgraph.types import Command
 
 from agent.config import settings
 from agent.graph import build_graph, checkpointer, initial_state
+from agent.llm import RunStopped, stop_check
 
 from .queue import RunQueue
 from .store import Store
 
+STOP_GRACE_S = 20  # after Stop, a run ends for the user within this many seconds whatever the worker does
 log = logging.getLogger(__name__)
 
 TERMINAL = {"succeeded", "failed", "error"}
@@ -42,6 +44,7 @@ class Run:
     lock: threading.Lock = field(default_factory=threading.Lock)
     worker: threading.Thread | None = None
     cancel: threading.Event = field(default_factory=threading.Event)
+    finished_by_watchdog: bool = False
     queue: RunQueue | None = None  # set: events and status live in Redis, shared by every process
 
     @property
@@ -110,8 +113,29 @@ class RunManager:
             return
         if run is not None:
             run.cancel.set()
+            run.emit({"type": "status", "status": "stopping"})
+            threading.Thread(target=self._stop_watchdog, args=(run,), daemon=True).start()
         if self.queue is not None:
             self.queue.request_cancel(run_id)
+
+    def _stop_watchdog(self, run: Run) -> None:
+        """Agents notice Stop within a second or two. If the worker is stuck in something that cannot be
+        interrupted (a long test run), the run still ends for the user after STOP_GRACE_S."""
+        worker = run.worker
+        if worker is None:
+            return
+        worker.join(STOP_GRACE_S)
+        if worker.is_alive() and run.status == "running":
+            log.warning("run %s did not stop within %ss; marking it stopped", run.id, STOP_GRACE_S)
+            run.finished_by_watchdog = True
+            run.status = "failed"
+            try:
+                values = self.graph.get_state(self._config(run.id)).values
+            except Exception:  # noqa: BLE001 - the run is still recorded as stopped
+                values = {}
+            self.store.finish_run(run.id, "failed", values or {})
+            run.emit({"type": "error", "message": "Stopped: stopped by you. The last finished step is kept."})
+            run.emit({"type": "status", "status": "failed"})
 
     def _stop_reason(self, run: Run, started: float) -> str | None:
         if run.cancel.is_set() or (self.queue is not None and self.queue.cancel_requested(run.id)):
@@ -284,36 +308,14 @@ class RunManager:
     def _execute(self, run: Run, graph_input: Any) -> None:
         config = self._config(run.id)
         started, values, stopped = time.monotonic(), None, None
+        # Model calls, tool loops and parallel jobs check this every second (agent.llm.raise_if_stopped), so
+        # Stop and the run deadline end a run even while an agent is stuck waiting on a model.
+        stop_token = stop_check.set(lambda: self._stop_reason(run, started))
         try:
-            for mode, update in self.graph.stream(graph_input, config, stream_mode=["updates", "custom"]):
-                stopped = self._stop_reason(run, started)
-                if stopped:
-                    break
-                if mode == "custom":
-                    if update.get("kind") == "stream":  # text a model is writing right now (agent.ledger.LiveText)
-                        run.emit({"type": "stream", "agent": update.get("agent"), "label": update.get("label"),
-                                  "delta": update.get("delta", ""), "done": bool(update.get("done"))})
-                    else:  # what an agent is doing right now (agent.ledger.progress)
-                        run.emit({"type": "progress", "node": update.get("node"), "text": update.get("text")})
-                    continue
-                for node, delta in update.items():
-                    if node.startswith("__"):  # "__interrupt__": the run paused (see waiting_for_approval)
-                        continue
-                    delta = delta or {}
-                    run.emit(
-                        {
-                            "type": "node",
-                            "node": node,
-                            "status": delta.get("status"),
-                            "ledger": delta.get("ledger", []),
-                            "files": sorted(delta.get("files", {}) or {}),
-                            "validation": _trim_validation(delta.get("validation")),
-                            "error_class": delta.get("error_class"),
-                            "iteration": delta.get("iteration"),
-                            "bugs": delta.get("bugs"),
-                            "stop_reason": delta.get("stop_reason"),
-                        }
-                    )
+            try:
+                stopped = self._stream(run, graph_input, config, started)
+            except RunStopped as exc:
+                stopped = str(exc) or "stopped by you"
             values = self.graph.get_state(config).values
             if stopped:
                 run.status = "failed"
@@ -334,8 +336,46 @@ class RunManager:
                 values = self.graph.get_state(config).values
             except Exception:  # noqa: BLE001 - the run is still recorded as finished below
                 values = None
+        finally:
+            stop_check.reset(stop_token)
+        if run.finished_by_watchdog:  # Stop already ended it in the UI; just record the final state
+            self.store.finish_run(run.id, "failed", values or {})
+            return
         self.store.finish_run(run.id, run.status, values or {})
         run.emit({"type": "status", "status": run.status})
+
+    def _stream(self, run: Run, graph_input: Any, config: dict[str, Any], started: float) -> str | None:
+        """Run the graph and forward its events to the UI; returns why it stopped early, if it did."""
+        for mode, update in self.graph.stream(graph_input, config, stream_mode=["updates", "custom"]):
+            stopped = self._stop_reason(run, started)
+            if stopped:
+                return stopped
+            if mode == "custom":
+                if update.get("kind") == "stream":  # text a model is writing right now (agent.ledger.LiveText)
+                    run.emit({"type": "stream", "agent": update.get("agent"), "label": update.get("label"),
+                              "delta": update.get("delta", ""), "done": bool(update.get("done"))})
+                else:  # what an agent is doing right now (agent.ledger.progress)
+                    run.emit({"type": "progress", "node": update.get("node"), "text": update.get("text")})
+                continue
+            for node, delta in update.items():
+                if node.startswith("__"):  # "__interrupt__": the run paused (see waiting_for_approval)
+                    continue
+                delta = delta or {}
+                run.emit(
+                    {
+                        "type": "node",
+                        "node": node,
+                        "status": delta.get("status"),
+                        "ledger": delta.get("ledger", []),
+                        "files": sorted(delta.get("files", {}) or {}),
+                        "validation": _trim_validation(delta.get("validation")),
+                        "error_class": delta.get("error_class"),
+                        "iteration": delta.get("iteration"),
+                        "bugs": delta.get("bugs"),
+                        "stop_reason": delta.get("stop_reason"),
+                    }
+                )
+        return None
 
     def snapshot(self, run_id: str) -> dict[str, Any] | None:
         values = self.graph.get_state(self._config(run_id)).values

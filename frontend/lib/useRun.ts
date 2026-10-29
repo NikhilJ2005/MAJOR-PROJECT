@@ -56,6 +56,7 @@ export function useRun(runId: string | null, onFinished?: (status: string) => vo
         }
         setEvents((prev) => [...prev, ev]);
         if (ev.type === "node" || ev.type === "error") refresh();
+        if (ev.type === "status" && ev.status === "stopping") return; // Stop was pressed: the final status follows
         if (ev.type === "status" && ev.status === "awaiting_approval") {
           refresh();
           return;

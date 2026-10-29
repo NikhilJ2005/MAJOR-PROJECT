@@ -10,6 +10,7 @@ Responsibilities:
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import inspect
 import json
@@ -49,6 +50,36 @@ _PRICE_TABLE: dict[str, tuple[float, float]] = {
 
 class LLMError(RuntimeError):
     pass
+
+
+class RunStopped(BaseException):  # a BaseException, so `except Exception` fallbacks never swallow it
+    """The run was stopped (the user pressed Stop, or it hit its deadline): abandon the work in progress."""
+
+
+# Set by the run manager for the duration of a run: returns why the run must stop, or None. Worker threads
+# get it through their copied context, so a model call can notice Stop within a second.
+stop_check: contextvars.ContextVar[Callable[[], str | None] | None] = contextvars.ContextVar("stop_check", default=None)
+
+
+def raise_if_stopped() -> None:
+    check = stop_check.get()
+    reason = check() if check else None
+    if reason:
+        raise RunStopped(reason)
+
+
+def wait_for(future: Any, seconds: float) -> Any:
+    """future.result(timeout=seconds), but noticing Stop every second (TimeoutError when it is late)."""
+    from concurrent.futures import TimeoutError as Late
+
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            return future.result(timeout=max(0.0, min(1.0, deadline - time.monotonic())))
+        except Late:
+            raise_if_stopped()
+            if time.monotonic() >= deadline:
+                raise
 
 
 class BudgetExceeded(LLMError):
@@ -184,18 +215,23 @@ def with_deadline(fn: Callable[[], Any], seconds: float, what: str) -> Any:
 
     from .ledger import progress
 
+    raise_if_stopped()
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="llm")
     future = pool.submit(contextvars.copy_context().run, fn)
     pool.shutdown(wait=False)
     started = time.monotonic()
+    said = 0
     while True:
-        left = seconds - (time.monotonic() - started)
-        if left <= 0:
+        waited = time.monotonic() - started
+        if waited >= seconds:
             raise TimeoutError(f"{what} took longer than {seconds:.0f}s")
         try:
-            return future.result(timeout=min(30.0, left))
+            return future.result(timeout=min(1.0, seconds - waited))  # wake every second to notice Stop
         except Late:
-            progress("llm", f"Still waiting for {what} ({time.monotonic() - started:.0f}s)…")
+            raise_if_stopped()
+            if int(time.monotonic() - started) // 30 > said:
+                said = int(time.monotonic() - started) // 30
+                progress("llm", f"Still waiting for {what} ({said * 30}s of {seconds:.0f}s)…")
 
 
 class ProviderLLM:
@@ -219,13 +255,27 @@ class ProviderLLM:
         self._fallback = (settings.fallback_model, make(settings.fallback_model, "medium"))
         self._slots = threading.BoundedSemaphore(max(1, settings.llm_max_parallel))
 
+    @contextlib.contextmanager
+    def _slot(self) -> Any:
+        """One of the LLM_MAX_PARALLEL call slots; waiting for it still notices Stop."""
+        while not self._slots.acquire(timeout=1.0):
+            raise_if_stopped()
+        try:
+            yield
+        finally:
+            self._slots.release()
+
     def chat(self, role: Role) -> Any:
         """The LangChain chat model for a role (used by the tool-using Reflector)."""
         return self._models[role][1]
 
     def complete(self, role: Role, system: str, user: str, effort: str | None = None,
                  stream: Stream | None = None) -> tuple[str, Usage]:
-        attempts = [self._models[role], self._fallback]
+        attempts = [self._models[role]]
+        if self._fallback[0] != self._models[role][0]:  # retrying the model that just failed only wastes time
+            attempts.append(self._fallback)
+        elif role == "cheap":
+            attempts.append(self._models["strong"])  # the cheap model failed: let the strong one try once
         last: Exception | None = None
         for name, chat in attempts:
             if effort and "reasoning_effort" in model_options(name, effort):
@@ -233,13 +283,13 @@ class ProviderLLM:
             t0 = time.monotonic()
 
             def call(chat: Any = chat) -> Any:
-                with self._slots:  # at most LLM_MAX_PARALLEL calls at once
-                    return self._stream(chat, system, user, stream) if stream else chat.invoke(
-                        [("system", system), ("user", user)])
+                return self._stream(chat, system, user, stream) if stream else chat.invoke(
+                    [("system", system), ("user", user)])
 
             try:
-                msg = with_deadline(call, settings.llm_call_deadline_s, f"the {role} model ({name})")
-            except Exception as exc:  # noqa: BLE001 - any provider failure triggers fallback
+                with self._slot():  # waiting for a free slot does not count against the call's deadline
+                    msg = with_deadline(call, settings.call_deadline(name), f"the {role} model ({name})")
+            except Exception as exc:  # noqa: BLE001 - any provider failure triggers fallback (RunStopped is not one)
                 log.warning("model %s failed after %.1fs: %s", name, time.monotonic() - t0, exc)
                 last = exc
                 continue
@@ -250,13 +300,21 @@ class ProviderLLM:
     def _stream(chat: Any, system: str, user: str, stream: Stream) -> Any:
         """Ask for the reply in pieces, hand each new piece of text to `stream`, return the whole message."""
         whole = None
+        usage: dict[str, int] = {}
         for chunk in chat.stream([("system", system), ("user", user)]):
+            # Some providers (Gemini) send the running total in every chunk, others only once at the end:
+            # the largest value of each counter is right for both. Adding chunks up would count it many times.
+            for key, value in (getattr(chunk, "usage_metadata", None) or {}).items():
+                if isinstance(value, int):
+                    usage[key] = max(usage.get(key, 0), value)
             whole = chunk if whole is None else whole + chunk
             piece = _content(chunk)
             if piece:
                 stream(piece)
         if whole is None:
             raise LLMError("the model returned nothing")
+        if usage:
+            whole.usage_metadata = {**(whole.usage_metadata or {}), **usage}
         return whole
 
     def complete_with_tools(self, role: Role, system: str, user: str, toolbox: Any) -> tuple[str, Usage]:
@@ -273,7 +331,7 @@ class ProviderLLM:
         answer_now = chat.bind_tools(schemas, tool_choice="none")
         messages: list[Any] = [SystemMessage(system), HumanMessage(user)]
         usage = Usage()
-        deadline = time.monotonic() + 2 * settings.llm_call_deadline_s  # the whole repair, tools included
+        deadline = time.monotonic() + settings.call_deadline(name) + 60  # the whole repair, tools included
         for _ in range(toolbox.max_calls + 2):  # a safety net in case a provider ignores tool_choice
             model = answer_now if len(toolbox.calls) >= toolbox.max_calls else with_tools
             left = deadline - time.monotonic()
@@ -281,10 +339,10 @@ class ProviderLLM:
                 raise TimeoutError("the tool-using repair took too long")
 
             def call(model: Any = model) -> Any:
-                with self._slots:
-                    return model.invoke(messages)
+                return model.invoke(messages)
 
-            msg = with_deadline(call, min(left, settings.llm_call_deadline_s), f"the {role} model ({name})")
+            with self._slot():
+                msg = with_deadline(call, min(left, settings.call_deadline(name)), f"the {role} model ({name})")
             usage.add(_usage(name, msg))
             messages.append(msg)
             if not msg.tool_calls:
