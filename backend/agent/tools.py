@@ -64,6 +64,21 @@ def tool_from_function(fn: Callable[..., Any], name: str | None = None) -> Tool:
     return Tool(name or fn.__name__, doc.split("\n\n")[0], {"type": "object", "properties": props, "required": required}, fn)
 
 
+_SAY = {
+    "read_file": "Reading {}", "search_code": "Searching the code for “{}”", "list_files": "Looking through the files",
+    "list_routes": "Checking which endpoints exist", "write_file": "Staging a fix to {}",
+    "run_tests": "Re-running the failing tests", "check_frontend": "Checking the screens against the API",
+}
+
+
+def _say(tool: str, arg: str) -> str:
+    """What the Reflector is doing, in words (shown live in the UI)."""
+    text = _SAY.get(tool)
+    if text is None:
+        return f"{tool.replace('_', ' ').capitalize()} {arg}".strip()
+    return text.format(arg) if "{}" in text else text
+
+
 def routes(spec: ProjectSpec) -> list[str]:
     """Every HTTP route of the generated backend, as 'METHOD /path'."""
     out = ["GET /health"]
@@ -159,7 +174,7 @@ class Toolbox:
             return "tool budget used up: give your final answer now"
         tool = next((t for t in self.tools if t.name == name), None)
         first = next(iter((args or {}).values()), "")
-        progress("reflect", f"{name} {first if isinstance(first, str) and len(first) < 80 else ''}".strip())
+        progress("reflect", _say(name, first if isinstance(first, str) and len(first) < 80 else ""))
         try:
             result = "unknown tool" if tool is None else str(tool.fn(**(args or {})))
         except Exception as exc:  # noqa: BLE001 - a bad call is reported to the model, not raised

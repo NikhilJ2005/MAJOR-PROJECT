@@ -66,6 +66,7 @@ from .llm import (
     get_llm,
     parse_file_blocks,
     structured,
+    wait_for,
 )
 from .mcp_tools import load_tools as load_mcp_tools
 from .sandbox import GateResult, get_sandbox
@@ -429,7 +430,7 @@ def _result(job: Any, default: Any) -> Any:
     from concurrent.futures import TimeoutError as Late
 
     try:
-        return job.result(timeout=3 * settings.llm_call_deadline_s)
+        return wait_for(job, 3 * settings.llm_call_deadline_s)
     except Late:
         log.warning("a code generation job missed its deadline; continuing without it")
         return default
@@ -783,7 +784,7 @@ def _repair_files(llm: Any, rung: str, state: AgentState, targets: list[str], at
         results = []
         for path, job in zip(targets, jobs, strict=True):
             try:
-                results.append((path, job.result(timeout=3 * settings.llm_call_deadline_s)))
+                results.append((path, wait_for(job, 3 * settings.llm_call_deadline_s)))
             except LLMError:
                 raise
             except Exception as exc:  # noqa: BLE001 - one target failing must not lose the others' repairs

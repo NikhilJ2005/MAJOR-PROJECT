@@ -79,7 +79,9 @@ class Settings:
     llm_max_retries: int = field(default_factory=lambda: _env_int("LLM_MAX_RETRIES", 2))
     # A whole model call (all its retries and every streamed piece) may take this long, then the fallback
     # model is tried. Stops one slow or stuck call from freezing a build.
-    llm_call_deadline_s: int = field(default_factory=lambda: _env_int("LLM_CALL_DEADLINE_S", 420))
+    llm_call_deadline_s: int = field(default_factory=lambda: _env_int("LLM_CALL_DEADLINE_S", 300))
+    # The fast model answers quickly or not at all: give up on it sooner, then the strong model tries.
+    cheap_call_deadline_s: int = field(default_factory=lambda: _env_int("CHEAP_CALL_DEADLINE_S", 150))
     max_active_runs_per_user: int = field(default_factory=lambda: _env_int("MAX_ACTIVE_RUNS_PER_USER", 2))
     queue_max: int = field(default_factory=lambda: _env_int("QUEUE_MAX", 100))  # waiting builds before 503
     retention_days: int = field(default_factory=lambda: _env_int("RETENTION_DAYS", 0))  # 0 = keep everything
@@ -134,6 +136,11 @@ class Settings:
     data_dir: Path = field(
         default_factory=lambda: Path(os.environ.get("DATA_DIR", Path(__file__).resolve().parents[1] / "data"))
     )
+
+    def call_deadline(self, model: str) -> int:
+        """How long one call to `model` may take (all its retries included) before it is abandoned."""
+        strong = self.llm_call_deadline_s
+        return strong if model == self.strong_model else min(self.cheap_call_deadline_s, strong)
 
     @property
     def llm_enabled(self) -> bool:

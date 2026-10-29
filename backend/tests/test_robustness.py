@@ -75,3 +75,49 @@ def test_retention_keeps_the_current_version(fake_llm):
         assert store.run(old)["status"] == "pruned"
         assert store.run(r["run_id"])["status"] != "pruned"  # the project's current version stays
         assert client.get(f"/api/runs/{old}", headers=me).json()["status"] == "pruned"
+
+
+def test_stop_ends_a_build_stuck_waiting_on_a_model():
+    """Stop works even while an agent waits on a model call that would take minutes."""
+    from agent import llm as llm_mod
+    from agent.llm import with_deadline
+    from app.main import app
+
+    class Stuck:
+        def complete(self, role, system, user, effort=None, stream=None):
+            return with_deadline(lambda: time.sleep(120), 300, "a stuck model")
+
+    llm_mod.set_llm(Stuck())
+    try:
+        with TestClient(app) as client:
+            me = _login(client)
+            run_id = client.post("/api/runs", json={"prompt": "A blog with posts and comments"}, headers=me).json()["run_id"]
+            time.sleep(1.5)  # the Architect is now waiting on the model
+            assert client.post(f"/api/runs/{run_id}/cancel", headers=me).json() == {"status": "stopping"}
+            started = time.time()
+            while time.time() - started < 15:
+                snap = client.get(f"/api/runs/{run_id}", headers=me).json()
+                if snap["status"] != "running":
+                    break
+                time.sleep(0.2)
+            assert snap["status"] == "failed", snap["status"]
+            assert time.time() - started < 6
+    finally:
+        llm_mod.set_llm(None)
+
+
+def test_streamed_usage_is_counted_once():
+    """Gemini sends the running total in every streamed chunk: the reply's usage is the last total, not the sum."""
+    from langchain_core.messages import AIMessageChunk
+
+    from agent.llm import ProviderLLM, _usage
+
+    class Chat:
+        def stream(self, messages):
+            for i in range(1, 11):
+                yield AIMessageChunk(content="x", usage_metadata={"input_tokens": 1000, "output_tokens": 10 * i,
+                                                                  "total_tokens": 1000 + 10 * i})
+
+    msg = ProviderLLM._stream(Chat(), "system", "user", lambda piece: None)
+    usage = _usage("gemini-3.8-flash", msg)
+    assert (usage.prompt_tokens, usage.completion_tokens) == (1000, 100)
