@@ -170,9 +170,9 @@ Nikhil Jimmy Thomas\\
 \end{center}
 \vspace{0.6cm}
 \begin{onehalfspace}
-A single call to a large language model (LLM) can answer a question, but most useful work takes several steps. The program has to decide what to do next, try again when something fails, and remember what it has already done. Fixed prompt chains cannot loop, and fully autonomous agents are hard to predict or debug. LangGraph, an open-source library from LangChain, offers a middle route. The developer describes the application as a graph: each node is a step, each edge is a move to the next step, and all nodes share one state object. The model does its thinking inside the nodes, while the graph decides the order.
+You can ask a large language model (LLM) a question and get a decent answer. Ask it to do a real job and it usually needs several steps. It has to decide what to do next, try again when something breaks, and remember what it did earlier. A fixed chain of prompts cannot loop back. A fully autonomous agent can, but it is hard to predict and harder to debug. LangGraph, an open-source library from LangChain, takes a middle path. The developer draws the application as a graph. Nodes are steps, edges are the moves between them, and every node shares one state. The model thinks inside the nodes, and the graph decides the order.
 
-This seminar studies LangGraph through the paper by Duan and Wang, \emph{Exploration of LLM Multi-Agent Application Implementation Based on LangGraph+CrewAI} (arXiv:2411.18241). The authors pair LangGraph, which controls the flow, with CrewAI, which groups role-based agents into a team. They illustrate the pairing with three cases: an email assistant, a code generation and review loop, and a system that audits and forwards work orders. The report explains LangGraph's core ideas, reviews six related papers, walks through the paper's architecture and workflow, and discusses its strengths, weaknesses and uses. One point stands out. The paper's results are case studies rather than measurements, so its claims of better efficiency still need to be tested.
+This seminar looks at LangGraph through a paper by Duan and Wang, \emph{Exploration of LLM Multi-Agent Application Implementation Based on LangGraph+CrewAI} (arXiv:2411.18241). They let LangGraph control the flow and CrewAI organise agents into role-based teams, and they show the idea on an email assistant, a loop that writes and reviews code, and a system that checks and forwards work orders. The report covers LangGraph's core ideas, six related papers, the paper's architecture and workflow, and its strengths, weaknesses and uses. One thing stood out to me. The paper's results are case studies, not measurements, so its claims about efficiency are still untested.
 \end{onehalfspace}
 
 \vspace{0.5cm}
@@ -209,64 +209,65 @@ SOP & Standard Operating Procedure \\
 
 % ------------------------------------------------------------------ Main text: arabic page numbers
 \newpage
-\pagenumbering{arabic}
-\setcounter{page}{1}
+% Roman numbering continues through the whole report, as in the department template
 \onehalfspacing
 
 % ================================================================== Chapter 1
 \chapter{Introduction}
 
-Large language models have changed quickly. A few years ago they mostly answered questions. Today they can plan, write code, look things up and call other programs. The trouble starts when you try to build something real with one. Take a support bot. It has to work out what the customer wants, send the request to the right place, fetch details from a database and check the reply before sending it. A code assistant has to write code, run it, read the error and try again, sometimes many times over.
+Ask a large language model a question and you get an answer. Ask it to do a job, and things get harder. Real jobs come in steps.
 
-Work like this does not run in a straight line. It \textbf{branches}: a billing question goes one way and a technical one goes another. It \textbf{loops}: try again until the tests pass. And it needs \textbf{memory}, because later steps depend on earlier results. The two usual ways of building LLM applications both struggle here. A \emph{chain} runs a fixed list of steps in order. It is predictable, but it cannot go back and it keeps no shared state. A \emph{free-running agent} lets the model decide everything, including which tool to call and when to stop. It is flexible, but hard to test, and one bad decision can throw the whole run off course.
+Think about a support bot for a college website. A student types ``my fee receipt is wrong''. The bot has to work out that this is a billing problem, not a login problem, and send it to the right place. It then pulls the student's record, writes a reply and checks the reply before it goes out. A coding assistant has it worse. It writes some code, runs it, reads the error, and tries again. Sometimes that takes five rounds.
 
-LangGraph is built for the space between these two. It is an open-source library from LangChain, released in 2024 under the MIT licence, with versions for Python and JavaScript/TypeScript \cite{langgraphdocs}. Its design borrows from graph-processing systems such as Google's Pregel \cite{malewicz2010pregel}. The developer draws the application as a graph. Nodes are steps of work, edges are the moves between them, and every node reads from and writes to one shared state. The developer fixes which paths are allowed, and the model does the work inside each step. LangGraph works with many model providers and is used for single agents, teams of agents, retrieval pipelines and workflows that pause for a human to approve.
+So the work branches, it loops, and it needs to remember what happened two steps ago. The two common ways of building LLM apps both struggle with this. A \emph{chain} runs a fixed list of steps from top to bottom. That is predictable, but a chain cannot go back, and it has no shared memory. A \emph{free-running agent} goes the other way and lets the model decide everything, including when to stop. That makes it flexible, but also hard to test, and one bad guess early on can ruin the whole run.
 
-The base paper for this seminar, by Duan and Wang \cite{duan2024langgraphcrewai}, asks what happens when LangGraph is combined with CrewAI \cite{crewaidocs}, a framework that organises agents into role-based teams. In their design LangGraph handles the flow: which step runs next, when to branch, when to loop, and what goes into the state. CrewAI handles the teamwork: which agent takes which task and how the agents cooperate. The authors show the combination on an email assistant, a code generation and review loop, and a ticket-handling system.
+LangGraph sits between these two. It is an open-source library from LangChain, released in 2024 under the MIT licence, with Python and JavaScript/TypeScript versions \cite{langgraphdocs}. Its design borrows ideas from graph-processing systems such as Google's Pregel \cite{malewicz2010pregel}. You draw your application as a graph. Each node is a step. Each edge says where to go next. Every node reads from, and writes to, one shared state. The developer decides which paths exist, and the model does the thinking inside each step. It works with many model providers, and people use it for single agents, agent teams, retrieval pipelines and flows that wait for a human to say ``yes''.
+
+The base paper for this seminar is by Duan and Wang \cite{duan2024langgraphcrewai}. Their question is simple: what happens if you put LangGraph together with CrewAI \cite{crewaidocs}, a framework for building teams of agents with roles? In their design, LangGraph runs the flow. It picks the next step, decides when to branch or loop, and keeps the state. CrewAI runs the team. It decides which agent does which task. The authors try this on three problems: an email assistant, a loop that writes and reviews code, and a ticket-handling system.
 
 \section*{Objectives of the Seminar}
 \begin{itemize}
-    \item To explain why multi-step LLM applications need explicit control, and where chains and free-running agents fall short.
-    \item To describe LangGraph's main building blocks: state, nodes, edges, conditional edges and checkpoints.
-    \item To review earlier work on LLM agents and multi-agent systems.
-    \item To study the LangGraph+CrewAI architecture, workflow and case studies in the base paper.
-    \item To weigh up the advantages, limitations and uses of graph-based agent orchestration.
+    \item To explain why multi-step LLM apps need explicit control, and where chains and free agents fall short.
+    \item To describe the parts of LangGraph: state, nodes, edges, conditional edges and checkpoints.
+    \item To review earlier work on LLM agents and agent teams.
+    \item To study the LangGraph+CrewAI design, workflow and cases in the base paper.
+    \item To weigh up where graph-based orchestration helps, where it hurts, and where it is used.
 \end{itemize}
 
-The report is organised as follows. Chapter~2 reviews the literature and Chapter~3 introduces the tools. Chapter~4 explains the method used in the base paper and Chapter~5 discusses its results. Chapters~6 to 8 cover advantages, disadvantages and applications, and Chapter~9 concludes.
+Chapter~2 covers the literature and Chapter~3 the tools. Chapter~4 explains the method in the base paper, and Chapter~5 its results. Chapters~6 to 8 deal with advantages, disadvantages and applications. Chapter~9 wraps up.
 
 % ================================================================== Chapter 2
 \chapter{Literature Survey}
 
-This chapter looks at six papers that shaped thinking about LLM agents. For each one I describe the method, what it showed, and the limitation that matters most when you want a multi-agent system you can actually control.
+I picked six papers for this survey. Each one changed how people build LLM agents, and together they explain why a tool like LangGraph was needed. For each paper I note what it does, what it showed, and where it falls short if you want a team of agents you can actually control.
 
 \section{ReAct: Synergizing Reasoning and Acting in Language Models (Yao et al., 2023)}
 
-ReAct \cite{yao2023react} lets the model switch back and forth between three kinds of output. A \emph{thought} is the model reasoning about what to do. An \emph{action} is a tool call, such as a Wikipedia search. An \emph{observation} is what the tool returned. Because the model can look things up mid-way, it relies less on guesswork, and ReAct did better than reasoning-only or acting-only baselines on HotpotQA, ALFWorld and WebShop. Most tool-using agents today follow this pattern. Its weakness is structural. The whole run is one linear loop with no saved state, so an early mistake carries forward and can spoil everything after it.
+ReAct \cite{yao2023react} has the model take turns between three kinds of output. First a \emph{thought}, where it reasons about what to do. Then an \emph{action}, such as a Wikipedia search. Then an \emph{observation}, which is whatever the tool sent back. Being able to look things up halfway through means less guessing. ReAct beat reasoning-only and acting-only baselines on HotpotQA, ALFWorld and WebShop, and most tool-using agents today follow the same pattern. The weak spot is the structure. The whole run is one straight loop with no saved state. If the model makes a mistake early, that mistake rides along to the end.
 
 \section{Reflexion: Language Agents with Verbal Reinforcement Learning (Shinn et al., 2023)}
 
-Reflexion \cite{shinn2023reflexion} lets an agent learn from failure without retraining the model. After a failed attempt the agent writes a short note in plain language about what went wrong. The note is kept in memory and given to the agent on its next try. This simple idea brought large gains on coding and decision-making tasks. The catch is that the agent needs a clear signal of whether it succeeded, which many real tasks do not provide. Every retry also costs more model calls and more time.
+Reflexion \cite{shinn2023reflexion} lets an agent learn from failure without retraining the model. When an attempt fails, the agent writes itself a short note, in plain English, about what went wrong. On the next try it reads the note first. That small trick gave large gains on coding and decision tasks. The catch is the success signal. Reflexion only works when the agent can tell clearly whether it succeeded, and many real tasks never give you that. Every retry also costs extra model calls.
 
 \section{AutoGen: Enabling Next-Gen LLM Applications via Multi-Agent Conversation (Wu et al., 2023)}
 
-AutoGen \cite{wu2023autogen}, an open-source framework from Microsoft, builds an application out of several agents that solve a problem by talking to each other. An agent can be backed by a model, by tools, by a person, or by a mix of these, so the framework is very flexible. The cost of that flexibility is control. The order of work comes out of the conversation itself, so it is hard to say in advance what the system will do, and agents can go in circles or wander off the task.
+AutoGen \cite{wu2023autogen} comes from Microsoft. You build an app out of several agents that solve the problem by chatting with each other. An agent can be a model, a tool, a person, or a mix. That makes AutoGen very flexible. But the order of work comes out of the conversation itself, so you cannot say in advance what the system will do. In practice agents can go round in circles or drift away from the task.
 
 \section{MetaGPT: Meta Programming for a Multi-Agent Collaborative Framework (Hong et al., 2024)}
 
-MetaGPT \cite{hong2024metagpt} copies how a software company works. Standard operating procedures (SOPs) are written into the prompts. Agents take roles such as product manager, architect and engineer, and pass structured documents along an assembly line, checking each other's work. The paper showed that this structure cuts down the inconsistencies seen when agents simply chat. The pipeline is fixed, though, and built mainly for software projects, and running many agents uses a lot of tokens.
+MetaGPT \cite{hong2024metagpt} copies a software company. The authors write standard operating procedures (SOPs) into the prompts. Agents play a product manager, an architect and an engineer, and pass structured documents down an assembly line, checking each other's work as they go. It showed that structure cuts down the mess you get when agents just chat. Still, the pipeline is fixed and built mainly for software projects. Running that many agents also burns a lot of tokens.
 
 \section{A Survey on Large Language Model based Autonomous Agents (Wang et al., 2023)}
 
-Wang et al.\ \cite{wang2023survey} surveyed the rapidly growing work on LLM-based agents. They proposed a common framework of four modules: \emph{profile} (the agent's role), \emph{memory}, \emph{planning} and \emph{action}. They also reviewed applications and evaluation methods. The survey is a useful map of the field. As a survey, however, it offers no implementation or orchestration tool, and the field moves faster than any survey can keep up with.
+Wang et al.\ \cite{wang2023survey} tried to map the whole area. They suggest that any LLM agent can be described with four parts: a \emph{profile} (its role), \emph{memory}, \emph{planning} and \emph{action}. They also review where agents are used and how they are tested. I found it the most useful paper for getting the big picture. Being a survey, though, it gives you no tool to build with, and new agent papers appear faster than any survey can keep up.
 
 \section{Agent AI with LangGraph: A Modular Framework for Enhancing Machine Translation Using LLMs (Wang and Duan, 2024)}
 
-In an earlier paper by the same two authors \cite{wang2024translation}, LangGraph reads the input text and passes it to a specialised translation agent, with separate agents for English, French and Japanese built on models such as GPT-4o. It is a clear, concrete example of LangGraph's routing. The evaluation is small, though: it covers only a few languages and depends on a paid model.
+This earlier paper by the same two authors \cite{wang2024translation} uses LangGraph as a router. It reads the input and hands it to a translation agent for English, French or Japanese, each built on a model such as GPT-4o. As an example of routing in LangGraph, it is neat and concrete. The testing is thin, though. Only a few languages are covered, and the system depends on a paid model.
 
 \section*{Summary}
 
-Put together, these papers show steady progress. ReAct gave agents the ability to act, Reflexion the ability to learn from mistakes, AutoGen the ability to converse, and MetaGPT the ability to follow procedures. They also show a gap that keeps coming back. Either the flow is rigid and cannot branch or loop, or it is left to the model and becomes hard to control. What is missing is a way for the developer to lay out the allowed paths, with shared state, loops and recovery, while the model still does the clever work at each step. LangGraph, and the LangGraph+CrewAI pairing in the base paper, aim at that gap.
+Read in order, the papers tell a story. ReAct taught agents to act. Reflexion taught them to learn from mistakes. AutoGen let them talk, and MetaGPT made them follow procedures. But the same problem keeps coming back. Either the flow is rigid and cannot branch or loop, or it is handed to the model and becomes hard to control. What was missing was a way for the developer to lay out the allowed paths, with shared state and room to retry, while the model still does the clever part of each step. That is the gap LangGraph, and the LangGraph+CrewAI pairing, set out to fill.
 
 \begin{table}[H]
 \centering
@@ -289,19 +290,19 @@ LangGraph for MT \cite{wang2024translation} & LangGraph routes text to translati
 % ================================================================== Chapter 3
 \chapter{Materials and Methods}
 
-The base paper does not train a model or use a dataset. Its materials are the frameworks and tools the system is built from. This chapter introduces them, along with the criteria the paper uses to judge the result.
+There is no dataset here and no model training. The base paper's ``materials'' are the frameworks the system is made from. Below I introduce them, then the criteria the paper uses to judge its own results.
 
 \section{LangGraph: Core Concepts}
 
-LangGraph builds stateful, multi-step LLM applications as graphs \cite{langgraphdocs}. The base paper highlights three things it adds over other LLM frameworks: loops, fine-grained control over the flow, and memory that persists between steps \cite{duan2024langgraphcrewai}. It supports several shapes of workflow, including single-agent, multi-agent, hierarchical and sequential. Its building blocks are listed below and drawn in Fig.~\ref{fig:graph}.
+LangGraph builds LLM apps as graphs that keep state between steps \cite{langgraphdocs}. The base paper points to three things it adds over other LLM frameworks: loops, close control over the flow, and memory that survives from one step to the next \cite{duan2024langgraphcrewai}. It can run one agent or many, in a hierarchy or in sequence. Its pieces are listed below and drawn in Fig.~\ref{fig:graph}.
 
 \begin{itemize}
-    \item \textbf{State:} the shared data, usually a typed dictionary, that every node reads and updates. A reducer can say how an update is merged; for example, a new message can be appended to a list instead of replacing it.
-    \item \textbf{Node:} an ordinary Python function that does one step of work, such as calling the model or a tool, and returns the part of the state it changed.
-    \item \textbf{Edge:} a fixed move: after node A, run node B.
-    \item \textbf{Conditional edge:} a small router function that looks at the state and picks the next node. Branches and loops are built from these.
-    \item \textbf{START and END:} the graph's entry and exit points.
-    \item \textbf{Checkpointer:} saves the state after every step. A run can then be paused, inspected, resumed after a crash, or continued once a person has approved it.
+    \item \textbf{State} is the shared data, usually a typed dictionary. Every node reads it and updates it. A reducer can say how an update is merged, for example adding a new message to a list instead of replacing the list.
+    \item \textbf{Node} is just a Python function. It does one step, such as calling the model or a tool, and returns the part of the state it changed.
+    \item \textbf{Edge} is a fixed move: after node A, run node B.
+    \item \textbf{Conditional edge} is a small router function that looks at the state and picks the next node. Branches and loops are made from these.
+    \item \textbf{START and END} mark where the graph begins and finishes.
+    \item \textbf{Checkpointer} saves the state after every step. That means a run can be paused, inspected, picked up again after a crash, or held until a person approves it.
 \end{itemize}
 
 \begin{figure}[H]
@@ -322,7 +323,7 @@ LangGraph builds stateful, multi-step LLM applications as graphs \cite{langgraph
 \label{fig:graph}
 \end{figure}
 
-A LangGraph application is built in five steps: define the state, add nodes as functions, connect them with edges, compile the graph, and run it. The short example below answers a question with a single model call.
+Building a LangGraph app takes five steps. Define the state. Add nodes. Connect them with edges. Compile. Run. The tiny example below answers one question with one model call.
 
 \begin{lstlisting}
 from typing import TypedDict
@@ -345,20 +346,20 @@ app.invoke({"question": "What is LangGraph?"})   # 5. run
 
 \section{CrewAI Framework}
 
-CrewAI \cite{crewaidocs} is an open-source framework for coordinating role-playing agents that work on a problem together. Each agent is given a role, a goal and a set of tools. The framework has four building blocks:
+CrewAI \cite{crewaidocs} is an open-source framework for agents that play roles and work on a problem together. You give each agent a role, a goal and some tools. There are four pieces:
 
 \begin{itemize}
-    \item \textbf{Agent:} a unit that can carry out tasks, make decisions and talk to other agents. It is described by a role, a goal and a short backstory.
-    \item \textbf{Task:} a piece of work for an agent, with a description, the agent responsible and the tools it may use.
-    \item \textbf{Tool:} something an agent can use, such as reading email or searching documents.
-    \item \textbf{Crew:} a team of agents, plus the process that decides the order in which their tasks run.
+    \item An \textbf{agent} carries out tasks, makes decisions and talks to other agents. It is described by a role, a goal and a short backstory.
+    \item A \textbf{task} is a piece of work, with a description, the agent in charge and the tools it may use.
+    \item A \textbf{tool} is anything an agent can use, such as reading email or searching documents.
+    \item A \textbf{crew} is the team of agents plus the process that decides the order of their tasks.
 \end{itemize}
 
-CrewAI can use model APIs such as OpenAI's as well as locally run models through Ollama \cite{ollamadocs}. It supports agents with custom roles, automatic hand-off of tasks between agents, and flexible task management \cite{crewaidocs}. It is designed for multi-step work, decision-making and problem-solving.
+CrewAI can call hosted models such as OpenAI's, or local ones through Ollama \cite{ollamadocs}. It lets you give agents custom roles, hand tasks from one agent to another automatically, and manage tasks flexibly \cite{crewaidocs}. The framework is meant for multi-step work and for problems that need a few decisions along the way.
 
 \section{Development Environment}
 
-Table~\ref{tab:env} lists the components the base paper uses to build its cases \cite{duan2024langgraphcrewai}.
+Table~\ref{tab:env} shows what the base paper used to build its cases \cite{duan2024langgraphcrewai}.
 
 \begin{table}[H]
 \centering
@@ -378,13 +379,13 @@ Vector database & FAISS \cite{johnson2019faiss} & Stores the vectors and finds s
 
 \section{Evaluation Criteria}
 
-The base paper is an exploratory case study. It reports no accuracy, speed or cost figures. Instead it judges the LangGraph+CrewAI pairing qualitatively, on four points that I also use in this report:
+The base paper is an exploratory case study. You will not find accuracy, speed or cost figures in it. Instead it judges the LangGraph+CrewAI pairing by four qualities. I use the same four in this report:
 
 \begin{itemize}
-    \item \textbf{Control:} can the developer define and restrict the flow of the application?
-    \item \textbf{Information flow:} how easily do state and results pass between steps and agents?
-    \item \textbf{Collaboration:} how well is the work split among agents with different roles?
-    \item \textbf{Extensibility:} how easily can existing tools and agents, such as those built with LangChain, be plugged in?
+    \item \textbf{Control}: can the developer define and restrict the flow?
+    \item \textbf{Information flow}: how easily do results pass between steps and agents?
+    \item \textbf{Collaboration}: how well is the work split among agents with different roles?
+    \item \textbf{Extensibility}: how easily can existing tools and agents, such as LangChain ones, be plugged in?
 \end{itemize}
 
 % ================================================================== Chapter 4
@@ -392,15 +393,15 @@ The base paper is an exploratory case study. It reports no accuracy, speed or co
 
 \section{Design Rationale}
 
-The base paper starts from a simple observation. A single LLM agent cannot handle complex tasks well, and a team of agents only works if two things are in place: tight control of the flow and good teamwork \cite{duan2024langgraphcrewai}. Instead of asking one framework to do both, the authors give each job to the tool that suits it. LangGraph's graph structure provides the control and moves information between agents. CrewAI's role-based crews decide who does what. The paper asks two questions: how to design agents on LangGraph so that the flow is precisely controlled, and how CrewAI can make those agents capable of a wider range of tasks.
+The paper starts from a plain observation. One LLM agent cannot cope with a complex task on its own. A team of agents can, but only with two things in place: tight control of the flow, and good teamwork \cite{duan2024langgraphcrewai}. So the authors split the job. LangGraph's graph handles the control and carries information between agents. CrewAI's crews handle who does what. The paper then asks two questions. How should agents be designed on LangGraph so the flow is precisely controlled? And how can CrewAI make those agents good at more kinds of task?
 
 \section{System Architecture}
 
-The architecture has two layers that meet at the shared state (Fig.~\ref{fig:arch}).
+There are two layers, and they meet at the shared state (Fig.~\ref{fig:arch}).
 
 \begin{itemize}
-    \item \textbf{LangGraph, the control layer.} The user's task enters the graph. Nodes stand for agent steps, and edges with conditional routing decide which step runs next. The shared state carries data between steps.
-    \item \textbf{CrewAI, the team layer.} Inside a node, a crew of agents does the actual work. Each agent has a role and a goal, tasks are assigned to agents, and the agents work together to produce the node's result.
+    \item \textbf{LangGraph is the control layer.} The user's task enters the graph. Nodes stand for agent steps. Edges, some of them conditional, decide which step runs next, and the state carries data along.
+    \item \textbf{CrewAI is the team layer.} Inside a node, a crew does the real work. Each agent has a role and a goal, tasks are handed out, and the agents combine their results into the node's output.
 \end{itemize}
 
 \begin{figure}[H]
@@ -431,17 +432,17 @@ The architecture has two layers that meet at the shared state (Fig.~\ref{fig:arc
 
 \section{Integrating LangGraph with CrewAI}
 
-According to the authors, the combined framework makes complex tasks easier to manage. Flexible workflows, cooperation between agents and graph-structured management together improve how tasks are carried out, and the framework can be connected to existing tools. CrewAI keeps the work organised by assigning tasks clearly and defining roles. Because CrewAI also works with LangChain, developers who already have LangChain agents can bring them in without rewriting them \cite{duan2024langgraphcrewai}.
+The authors argue that putting the two together makes complex tasks easier to manage. Flexible workflows, cooperation between agents and graph-based management all help, and the result can be hooked up to tools you already have. CrewAI keeps things tidy by giving every task a clear owner. It also works with LangChain, so a developer with existing LangChain agents can bring them along without rewriting them \cite{duan2024langgraphcrewai}.
 
-In practice the split is easy to state:
+Put simply:
 \begin{itemize}
-    \item \textbf{LangGraph decides the flow:} the order of steps, the branches, the loops and the state.
-    \item \textbf{CrewAI decides the teamwork:} which role-based agent takes which task, and how the agents cooperate.
+    \item \textbf{LangGraph owns the flow}: the order of steps, the branches, the loops and the state.
+    \item \textbf{CrewAI owns the teamwork}: which agent takes which task, and how they cooperate.
 \end{itemize}
 
 \section{Workflow}
 
-Fig.~\ref{fig:workflow} follows a task through the combined system. LangGraph receives the task and routes it to the next node. The CrewAI crew in that node carries out the work, and the result is written back to the shared state. A conditional edge then checks whether the job is finished. If not, the flow moves to the next step; if it is, the graph ends.
+Fig.~\ref{fig:workflow} follows one task through the system. LangGraph takes the task and sends it to a node. The crew in that node does the work and writes the result back to the state. Then a conditional edge asks one question: are we done? If not, the flow moves on to the next step. If yes, the graph ends.
 
 \begin{figure}[H]
 \centering
@@ -466,9 +467,9 @@ Fig.~\ref{fig:workflow} follows a task through the combined system. LangGraph re
 
 \section{Worked Example: Automatic Email Handling}
 
-To make the method concrete, the authors take the email example from CrewAI's documentation and rebuild it on LangGraph+CrewAI \cite{duan2024langgraphcrewai}. The job is split into small steps and run automatically.
+The authors borrow the email example from CrewAI's documentation and rebuild it on LangGraph+CrewAI \cite{duan2024langgraphcrewai}. The job is cut into small steps that run on their own.
 
-Fig.~\ref{fig:email} shows the graph. It starts at \texttt{check\_new\_emails}. A conditional edge then either continues to \texttt{draft\_responses}, if new mail has arrived, or goes straight to \texttt{wait\_next\_run}. After waiting, the graph returns to check the inbox again. That loop is what turns a one-off script into an assistant that keeps running, and it is something a plain chain cannot express.
+Fig.~\ref{fig:email} shows the graph. It starts at \texttt{check\_new\_emails}. If new mail has arrived, a conditional edge sends it to \texttt{draft\_responses}. If not, it goes straight to \texttt{wait\_next\_run}. After the wait, the graph goes back and checks the inbox again. That last loop is the interesting bit. It turns a script that runs once into an assistant that keeps going, and a plain chain simply cannot express it.
 
 \begin{figure}[H]
 \centering
@@ -487,7 +488,7 @@ Fig.~\ref{fig:email} shows the graph. It starts at \texttt{check\_new\_emails}. 
 \label{fig:email}
 \end{figure}
 
-The code that builds this graph (Fig.~\ref{fig:code}) follows the five steps from Chapter~3. The most interesting line is the \texttt{draft\_responses} node. Its function is \texttt{EmailFilterCrew().kickoff}, so a whole CrewAI crew runs as one LangGraph node.
+The code behind the graph (Fig.~\ref{fig:code}) follows the same five steps as Chapter~3. Look at the \texttt{draft\_responses} node. Its function is \texttt{EmailFilterCrew().kickoff}. In other words, a whole CrewAI crew runs as a single LangGraph node. When I first read the code, this one line made the whole design click for me.
 
 \begin{figure}[H]
 \begin{lstlisting}
@@ -518,7 +519,7 @@ class WorkFlow():
 \label{fig:code}
 \end{figure}
 
-Inside the crew, each agent is defined by a role, a goal and a backstory (Fig.~\ref{fig:agent}). The ``Senior Email Analyst'', for example, filters out newsletters and promotions. A task (Fig.~\ref{fig:task}) then spells out what the agent has to do, what its answer should look like, and which agent is responsible.
+Inside the crew, every agent gets a role, a goal and a backstory (Fig.~\ref{fig:agent}). Here the ``Senior Email Analyst'' throws out newsletters and promotions. A task (Fig.~\ref{fig:task}) then says exactly what the agent must do, what the answer should look like, and who is responsible.
 
 \begin{figure}[H]
 \begin{lstlisting}
@@ -573,11 +574,11 @@ class EmailFilterTasks:
 % ================================================================== Chapter 5
 \chapter{Results and Performance}
 
-The base paper presents its results as worked cases. It shows that the LangGraph+CrewAI design can be used to build working multi-agent applications and describes what the pairing improves. This chapter goes through those cases, lists the main findings, and then looks at what the results do and do not prove.
+The base paper reports its results as worked cases, not as experiments. It shows that the LangGraph+CrewAI design can be used to build working multi-agent apps, and it describes what the pairing improves. I go through both cases, list the main findings, and then look at what the results do and do not prove.
 
 \section{Application Case 1: Code Generation with Code Review}
 
-The authors used LangGraph+CrewAI to build an application that writes code and then reviews it (Fig.~\ref{fig:codegen}). A question goes to a \emph{code generation} node, which writes the code. A \emph{code check} node then tests it. If the check fails, the flow goes back to generation along with the feedback. If it passes, the code is returned as the answer. Because the status of each attempt and the feedback are shared through the graph state as they happen, the authors report that code generation became more efficient \cite{duan2024langgraphcrewai}. This is the same write, test and fix cycle that Reflexion and ReAct argue for. The difference is that here the loop is a visible edge in the graph rather than something left to the model.
+The first case writes code and then reviews it (Fig.~\ref{fig:codegen}). A question goes into a \emph{code generation} node, which writes the code. A \emph{code check} node tests it. If the test fails, the flow goes back to generation, this time with the error attached. If it passes, the code is the answer. Each attempt's status and feedback travel through the shared state as they happen, and the authors say this made code generation more efficient \cite{duan2024langgraphcrewai}. Reflexion and ReAct argue for exactly this write, test and fix cycle. The difference is that here the loop is a real edge in the graph that you can see and inspect, not something left to the model's judgement.
 
 \begin{figure}[H]
 \centering
@@ -601,7 +602,7 @@ The authors used LangGraph+CrewAI to build an application that writes code and t
 
 \section{Application Case 2: Automatic Work-Order Processing}
 
-The second case checks incoming work orders (tickets) and forwards them (Fig.~\ref{fig:tickets}). The text of each ticket is turned into a vector with an Ollama embedding model and stored in FAISS, so that similar past tickets can be found. Several CrewAI agents, each with its own task, then study the ticket in detail. By sharing what they find, the agents understand tickets more accurately, and the authors report faster ticket handling as a result \cite{duan2024langgraphcrewai}.
+The second case deals with work orders, the kind of tickets an IT or maintenance team gets every day (Fig.~\ref{fig:tickets}). Each ticket's text is turned into a vector by an Ollama embedding model and stored in FAISS, so similar old tickets can be found quickly. Several CrewAI agents, each with its own task, then go through the ticket in detail and share what they find. According to the authors, this let the agents read tickets more accurately and handle them faster \cite{duan2024langgraphcrewai}.
 
 \begin{figure}[H]
 \centering
@@ -631,17 +632,17 @@ The second case checks incoming work orders (tickets) and forwards them (Fig.~\r
 
 \section{Key Findings}
 
-From these cases the authors draw four conclusions:
+The authors draw four conclusions from these cases:
 \begin{itemize}
-    \item \textbf{Efficient information flow:} LangGraph's graph structure makes it easier to pass information between agents.
-    \item \textbf{Precise control:} building agents on LangGraph gives the developer close control over the multi-agent workflow.
-    \item \textbf{Better collaboration:} CrewAI's task allocation and resource management improve teamwork and overall performance.
-    \item \textbf{Complex tasks:} by splitting the work and cooperating, the agents handle tasks that a single agent finds hard.
+    \item \textbf{Information flows better.} The graph structure makes it easy to pass results between agents.
+    \item \textbf{The flow is under control.} Building agents on LangGraph gives the developer a firm grip on the multi-agent workflow.
+    \item \textbf{Teamwork improves.} CrewAI's task allocation and resource management make the agents work together better.
+    \item \textbf{Harder tasks become possible.} By splitting the work, the agents manage tasks a single agent finds too hard.
 \end{itemize}
 
 \section{Comparison with Other Approaches}
 
-Table~\ref{tab:compare} compares the approaches discussed in this report on the properties that matter when you want a multi-agent system you can control. The comparison is qualitative and based on the papers reviewed in Chapter~2.
+How does this compare with the other approaches in Chapter~2? Table~\ref{tab:compare} puts them side by side on the things that matter if you want a multi-agent system you can control. The comparison is qualitative and based on my own reading of the papers.
 
 \begin{table}[H]
 \centering
@@ -663,60 +664,60 @@ LangGraph alone & Developer (graph) & Yes & Yes (checkpoints) & Yes & Manual & H
 
 \section{Discussion}
 
-The base paper does a good job of showing \emph{how} LangGraph and CrewAI fit together. Its three cases make the division of work easy to grasp: the graph decides what happens next, and the crew decides who does it. The examples are practical, too. Sorting email, reviewing code and handling tickets are everyday jobs in many organisations.
+I think the paper's real strength is that it makes the fit between LangGraph and CrewAI easy to see. The graph decides what happens next. The crew decides who does it. The three cases help, because they are ordinary jobs: sorting email, checking code, handling tickets. Most offices have all three.
 
-The results need to be read carefully, though. The paper reports no measurements at all: no success rates, no response times, no costs, and no comparison with a single agent or with another framework. When the authors say efficiency ``improved'', they are describing what they saw in their cases, not the outcome of an experiment. A useful next step would be to test the pairing on a benchmark, measuring task success, the number of model calls and the cost against a single agent and against LangGraph on its own. Even with that gap, the paper is a clear and readable guide to building multi-agent applications in which control and teamwork sit in separate, well-defined layers.
+But the results need careful reading. The paper has no numbers at all. There are no success rates, no response times, no costs, and no comparison with a single agent or with another framework. So when the authors say efficiency ``improved'', they mean that is what they saw in their cases. No test was run to show it. I would like to see the pairing run on a benchmark, measuring task success, model calls and cost against a single agent and against LangGraph alone. Even without that, the paper is a clear, readable guide to building multi-agent apps where control and teamwork live in separate layers.
 
 % ================================================================== Chapter 6
 \chapter{Advantages}
 
 \begin{itemize}
-    \item \textbf{Explicit control:} the developer decides which paths the application can take. The model fills in each step but cannot invent a new route, so the behaviour is easier to predict and to audit.
-    \item \textbf{Shared state:} every step sees the same, up-to-date data, so nothing has to be copied between agents or squeezed into prompts.
-    \item \textbf{Loops and retries:} a step can repeat until a condition is met, for example regenerating code until the tests pass. A plain chain cannot do this.
-    \item \textbf{Persistence:} because the state is saved after every step, an application can pause, resume and recover from a failure without starting again \cite{langgraphdocs}.
-    \item \textbf{Human-in-the-loop:} the graph can stop at any node and wait for a person to check or edit the state, which matters for actions such as sending an email.
-    \item \textbf{Easy to debug:} each node is a normal function that can be tested on its own, and tracing tools such as LangSmith \cite{langsmith} show exactly which path a run took.
-    \item \textbf{Works with many models:} both LangGraph and CrewAI can use several providers, including local models through Ollama.
-    \item \textbf{Clear teamwork with CrewAI:} roles, goals and tasks give each agent a defined job, and existing LangChain agents can join a crew with little extra work.
+    \item \textbf{Explicit control.} The developer decides which paths exist. The model can fill in a step but cannot invent a new route, so behaviour is easier to predict and to audit.
+    \item \textbf{Shared state.} Every step sees the same, current data. Nothing has to be copied between agents or crammed into a prompt.
+    \item \textbf{Loops and retries.} A step can repeat until something is true, say until the tests pass. A plain chain cannot do that.
+    \item \textbf{Persistence.} The state is saved after each step, so a run can stop, resume and recover from a crash without starting over \cite{langgraphdocs}.
+    \item \textbf{Human-in-the-loop.} The graph can pause at any node and wait for a person. That matters before something like sending an email.
+    \item \textbf{Easier debugging.} Each node is an ordinary function you can test alone, and LangSmith \cite{langsmith} shows which path a run took.
+    \item \textbf{Not tied to one model.} LangGraph and CrewAI both work with several providers, including local models through Ollama.
+    \item \textbf{Clear teamwork.} With CrewAI, roles and tasks give every agent a defined job, and existing LangChain agents can join a crew with little extra work.
 \end{itemize}
 
 % ================================================================== Chapter 7
 \chapter{Disadvantages}
 
 \begin{itemize}
-    \item \textbf{Learning curve:} graphs, typed state, reducers and checkpointers take time to learn, and using two frameworks means learning two sets of ideas.
-    \item \textbf{More code for simple jobs:} a task that a basic chain handles in a few lines needs more setup as a graph.
-    \item \textbf{Large graphs get messy:} with many nodes and conditional routes, the flow becomes hard to picture and reason about.
-    \item \textbf{Cost and delay:} loops and multiple agents mean more model calls, which raises both the cost and the response time.
-    \item \textbf{Still depends on the model:} the graph limits the routes, but a poor model output can still pick the wrong route or produce a weak result inside a node.
-    \item \textbf{Fast-changing tools:} both frameworks change their APIs between versions, so code and tutorials go out of date quickly.
-    \item \textbf{No numbers in the base paper:} the benefits are shown through cases only, so they are not yet backed by measured results.
+    \item \textbf{Learning curve.} Graphs, typed state, reducers and checkpointers take time to learn. Using two frameworks means learning two sets of ideas.
+    \item \textbf{More code for small jobs.} Something a chain does in five lines needs noticeably more setup as a graph.
+    \item \textbf{Big graphs get messy.} Once there are many nodes and conditional routes, the flow is hard to picture.
+    \item \textbf{Cost and delay.} Loops and several agents mean more model calls. That costs money and makes replies slower.
+    \item \textbf{Still depends on the model.} The graph limits the routes, but a bad model output can still choose the wrong one, or do a poor job inside a node.
+    \item \textbf{Fast-changing APIs.} Both frameworks change between versions, so code and tutorials go stale quickly.
+    \item \textbf{No numbers in the base paper.} The benefits are shown only through cases, so they are not yet backed by measurements.
 \end{itemize}
 
 % ================================================================== Chapter 8
 \chapter{Applications}
 
 \begin{itemize}
-    \item \textbf{Customer support:} a router node classifies each query and sends it to a billing agent, a technical agent or a person, keeping the conversation in the shared state.
-    \item \textbf{RAG question answering:} the graph fetches documents, scores how relevant they are and, if they are poor, rewrites the query and searches again before answering.
-    \item \textbf{Code generation and bug fixing:} write, test and fix in a loop, as in the base paper's code review case and in the authors' later study of automated bug fixing with LangGraph \cite{wang2025bugfix}.
-    \item \textbf{Machine translation:} text is routed to language-specific translation agents \cite{wang2024translation}.
-    \item \textbf{Data analysis:} separate agents build and run machine learning pipelines on Apache Spark \cite{wang2024spark}.
-    \item \textbf{Multi-agent teams:} crews for research, writing and review, with one role per agent, as proposed in the base paper \cite{duan2024langgraphcrewai}.
-    \item \textbf{Ticket and workflow automation:} checking, classifying and forwarding work orders, with similar past cases found in a vector database.
+    \item \textbf{Customer support.} A router node works out what a query is about and sends it to a billing agent, a technical agent or a person. The conversation stays in the shared state.
+    \item \textbf{RAG question answering.} The graph fetches documents and scores how relevant they are. If they are poor, it rewrites the query and searches again before answering.
+    \item \textbf{Code generation and bug fixing.} Write, test and fix in a loop, as in the base paper's code-review case and the authors' later work on automated bug fixing with LangGraph \cite{wang2025bugfix}.
+    \item \textbf{Machine translation.} Text is routed to an agent for the right language \cite{wang2024translation}.
+    \item \textbf{Data analysis.} Separate agents build and run machine learning pipelines on Apache Spark \cite{wang2024spark}.
+    \item \textbf{Multi-agent teams.} Crews for research, writing and review, one role per agent, as the base paper proposes \cite{duan2024langgraphcrewai}.
+    \item \textbf{Ticket automation.} Checking, sorting and forwarding work orders, with similar past cases pulled from a vector database.
 \end{itemize}
 
 % ================================================================== Chapter 9
 \chapter{Conclusion}
 
-LangGraph turns an LLM application into a clear graph of steps that share one state. It adds what simple chains lack, namely branches, loops, memory and human control, while avoiding the unpredictability of fully autonomous agents. The developer decides which paths are allowed, and the model does the thinking within each step.
+LangGraph turns an LLM app into a graph of steps that share one state. It gives you what chains are missing, namely branches, loops, memory and a place for a human to step in. It also avoids the guesswork of a fully autonomous agent. You decide the routes, and the model does the thinking along them.
 
-The base paper by Duan and Wang shows what happens when this idea is combined with CrewAI. LangGraph manages the flow and the state, CrewAI organises role-based agents into teams, and together they take on tasks that a single agent struggles with. The email assistant, the code review loop and the ticket system make the approach concrete and show that it fits ordinary, everyday problems.
+Duan and Wang show how far this goes when you add CrewAI. LangGraph manages the flow and the state. CrewAI organises agents into teams with roles. Between them they handle jobs that one agent struggles with. Their email assistant, code-review loop and ticket system make the idea concrete, and none of them is exotic.
 
-The paper's main weakness is its evaluation. Its benefits are shown through cases rather than experiments, so the efficiency gains it describes still need to be confirmed with proper benchmarks of success rate, cost and response time. Future work could also look at how such systems behave as the number of agents grows, and how to keep large graphs easy to understand.
+The weak point is the evaluation. Everything rests on cases, not measurements, so the claimed efficiency gains still need proper benchmarks of success rate, cost and response time. It would also be worth testing how these systems behave as the number of agents grows, and how to keep large graphs readable.
 
-Overall, graph-based orchestration is fast becoming a common way to build dependable agentic AI. Studying it closely for this seminar showed me why: when the structure is explicit, the model's mistakes become much easier to find, contain and fix.
+Graph-based orchestration is quickly becoming a standard way to build agentic AI that people can trust. Working on this seminar showed me why. When the structure is written down, a model's mistakes stop being mysterious. You can see where they happen, contain them, and fix them.
 
 % ================================================================== Appendices
 \appendix
@@ -766,34 +767,34 @@ The seminar was presented with the 20 slides shown on the next page.
 \subsection*{Common Viva Questions}
 \begin{enumerate}[leftmargin=*, itemsep=6pt]
     \item \textbf{What is LangGraph?}\\
-    \textit{Answer:} An open-source library from LangChain for building stateful, multi-step LLM applications as a graph. Nodes are steps, edges are the moves between them, and all nodes share one state object.
+    \textit{Answer:} An open-source library from LangChain for building LLM apps as a graph. Nodes are steps, edges are the moves between them, and all nodes share one state.
 
-    \item \textbf{How is LangGraph different from a LangChain chain?}\\
-    \textit{Answer:} A chain runs a fixed sequence of steps in one direction. A LangGraph graph can branch with conditional edges, loop back to earlier steps, keep shared state and save checkpoints, so it can retry, pause and resume.
+    \item \textbf{How is it different from a LangChain chain?}\\
+    \textit{Answer:} A chain runs its steps once, top to bottom. A LangGraph graph can branch, loop back, keep shared state and save checkpoints, so it can retry, pause and resume.
 
     \item \textbf{What are state, nodes and edges?}\\
-    \textit{Answer:} The state is shared data, usually a typed dictionary, that every node reads and updates. A node is a function that does one step. An edge is a move between nodes; a conditional edge uses a router function to pick the next node from the current state.
+    \textit{Answer:} The state is the shared data every node reads and updates. A node is a function that does one step. An edge is a move between nodes, and a conditional edge uses a small router to pick the next node from the state.
 
-    \item \textbf{What is a checkpointer and why is it useful?}\\
-    \textit{Answer:} It saves the graph state after every step. A run can then resume after a crash, be inspected for debugging, or wait for a person's approval before continuing.
+    \item \textbf{What does a checkpointer do?}\\
+    \textit{Answer:} It saves the state after every step. So a run can resume after a crash, be inspected while debugging, or wait for a person's approval.
 
-    \item \textbf{What does CrewAI add to LangGraph in the base paper?}\\
-    \textit{Answer:} Role-based teamwork. Agents are given roles, goals and tools, and tasks are shared among them. LangGraph controls the order of steps and the state, while a CrewAI crew does the work inside a node.
+    \item \textbf{What does CrewAI add in the base paper?}\\
+    \textit{Answer:} Teamwork. Agents get roles, goals and tools, and tasks are shared out among them. LangGraph controls the order and the state; a CrewAI crew does the work inside a node.
 
-    \item \textbf{Explain the email example from the base paper.}\\
-    \textit{Answer:} The graph starts at \texttt{check\_new\_emails}. If there is new mail it continues to \texttt{draft\_responses}, which runs a CrewAI crew; otherwise it goes to \texttt{wait\_next\_run}. After waiting, it loops back to check again.
+    \item \textbf{Explain the email example.}\\
+    \textit{Answer:} The graph starts at \texttt{check\_new\_emails}. With new mail it goes to \texttt{draft\_responses}, which runs a CrewAI crew; otherwise it goes to \texttt{wait\_next\_run}. After waiting it loops back and checks again.
 
-    \item \textbf{What tools did the authors use besides LangGraph and CrewAI?}\\
-    \textit{Answer:} LangSmith to track and audit workflows, an Ollama embedding model to turn work-order text into vectors, and FAISS as the vector database for fast retrieval.
+    \item \textbf{Which other tools did the authors use?}\\
+    \textit{Answer:} LangSmith to track runs, an Ollama embedding model to turn ticket text into vectors, and FAISS to store those vectors and find similar ones.
 
     \item \textbf{How does LangGraph compare with AutoGen?}\\
-    \textit{Answer:} In AutoGen the order of work comes out of the agents' conversation, which is flexible but hard to predict. In LangGraph the developer lays out the allowed paths, so the behaviour is easier to control and debug.
+    \textit{Answer:} In AutoGen the order of work comes out of the agents' conversation, which is flexible but unpredictable. In LangGraph the developer lays out the paths, so it is easier to control and debug.
 
-    \item \textbf{What are the limitations of the base paper?}\\
-    \textit{Answer:} Its results are case studies. It gives no measurements of accuracy, cost or speed and no comparison with a baseline, so the reported efficiency gains are not yet backed by experiments.
+    \item \textbf{What is the main weakness of the base paper?}\\
+    \textit{Answer:} It has no measurements. There are no accuracy, cost or speed figures and no baseline, so the efficiency claims are not yet backed by experiments.
 
-    \item \textbf{Where can LangGraph be applied?}\\
-    \textit{Answer:} Customer support routing, RAG question answering, code generation and bug fixing, machine translation, data analysis pipelines, multi-agent research and writing teams, and ticket automation.
+    \item \textbf{Where is LangGraph used?}\\
+    \textit{Answer:} Customer-support routing, RAG question answering, code generation and bug fixing, translation, data-analysis pipelines, research and writing teams, and ticket automation.
 \end{enumerate}
 
 \chapter{Similarity Index Report}
