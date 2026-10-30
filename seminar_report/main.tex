@@ -107,14 +107,11 @@
     \end{center}
 \end{titlepage}
 
-% ------------------------------------------------------------------ Front matter: roman page numbers
-\pagenumbering{roman}
-\setcounter{page}{1}
+% ------------------------------------------------------------------ Front matter: unnumbered until Contents
+\pagenumbering{gobble}
 
-% Certificate (page i)
+% Certificate (no page number)
 \thispagestyle{plain}
-\phantomsection
-\addcontentsline{toc}{chapter}{Certificate}
 \begin{center}
     \includegraphics[width=0.45\textwidth]{MITS_LOGO.pdf}\\[1cm]
     DEPARTMENT OF ARTIFICIAL INTELLIGENCE \& DATA SCIENCE\\[1.5cm]
@@ -133,11 +130,9 @@ Asst. Professor & Asst. Professors & Associate Professor \\[2pt]
 Dept. of AI \& DS & Dept. of AI \& DS & Dept. of AI \& DS \\
 \end{tabular}
 
-% Acknowledgements (page ii)
+% Acknowledgements (no page number)
 \newpage
 \thispagestyle{plain}
-\phantomsection
-\addcontentsline{toc}{chapter}{Acknowledgements}
 \begin{center}
     {\Large ACKNOWLEDGEMENTS}
 \end{center}
@@ -160,11 +155,9 @@ Nikhil Jimmy Thomas\\
 (Reg.\ No: MUT23CA055)
 \end{flushright}
 
-% Abstract (page iii)
+% Abstract (no page number)
 \newpage
 \thispagestyle{plain}
-\phantomsection
-\addcontentsline{toc}{chapter}{Abstract}
 \begin{center}
     {\Large Abstract}
 \end{center}
@@ -178,8 +171,10 @@ This seminar looks at LangGraph through a paper by Duan and Wang, \emph{Explorat
 \vspace{0.5cm}
 \noindent\textbf{Keywords:} LangGraph, CrewAI, Large Language Models, Multi-Agent Systems, Agent Orchestration.
 
-% Contents and lists (pages iv onwards)
+% Contents and lists: roman numbering starts here (Contents = i)
 \newpage
+\pagenumbering{roman}
+\setcounter{page}{1}
 \tableofcontents
 \newpage
 \listoffigures
