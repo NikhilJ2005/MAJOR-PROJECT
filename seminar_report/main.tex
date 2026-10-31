@@ -12,7 +12,6 @@
 \usepackage{array}
 \usepackage{float}
 \usepackage{enumitem}
-\usepackage{pdflscape}
 \usepackage{xcolor}
 \usepackage{listings}
 \usepackage{tikz}
@@ -76,12 +75,10 @@
   term/.style={box, rounded corners=12pt, minimum width=2.4cm}
 }
 
-% One slide in the appendix grid
+% One slide in the appendix (three slides per page)
 \newcommand{\slidecell}[1]{%
-  \begin{minipage}[t]{0.19\linewidth}\centering
-  \fcolorbox{gray!60}{white}{\includegraphics[width=0.93\linewidth]{slides/slide-#1.png}}\\[-1pt]
-  {\scriptsize Slide #1}
-  \end{minipage}}
+  \fcolorbox{gray!60}{white}{\includegraphics[height=0.18\textheight]{slides/slide-#1.png}}\\[1pt]
+  {\small Slide \number\numexpr#1\relax}\par\vspace{4pt}}
 
 \begin{document}
 
@@ -138,15 +135,17 @@ Dept. of AI \& DS & Dept. of AI \& DS & Dept. of AI \& DS \\
 \end{center}
 \vspace{0.6cm}
 \begin{onehalfspace}
-Writing this report took a lot of reading and rewriting, and I had help at every step. I would like to thank the people who made it possible.
+This report would not exist without the help of a number of people, and I want to thank them here.
 
-My first thanks go to my seminar guide, Asst.\ Prof.\ \textit{Ms.\ Nimmi M K}. Her steady encouragement and patient feedback helped me turn a loose interest in AI agents into a focused study of LangGraph. I am also grateful to my seminar coordinators, Asst.\ Prof.\ \textit{Ms.\ Thasni K N} and Asst.\ Prof.\ \textit{Ms.\ Vishnupriya Vijay}, for reviewing my drafts carefully and pointing out what needed to change.
+I thank Dr.\ Neelakantan P.\ C., Principal, Muthoot Institute of Technology \& Science, for the facilities and the academic setting in which this seminar was prepared.
 
-I thank Dr.\ Cerene Mariam Abraham, Head of the Department of Artificial Intelligence and Data Science, for her support and for keeping the department a good place to learn. I also thank Dr.\ Neelakantan P.\ C., Principal, for the academic framework that made this seminar possible.
+I am grateful to Dr.\ Cerene Mariam Abraham, Head of the Department of Artificial Intelligence and Data Science, for her support and for giving me the chance to take up this topic.
 
-I am grateful to the management of Muthoot Institute of Technology \& Science for the facilities and resources provided, and to the faculty and staff of the Artificial Intelligence and Data Science Department.
+My seminar guide, Asst.\ Prof.\ \textit{Ms.\ Nimmi M K}, deserves special thanks. She read my early drafts, asked what the base paper really showed, and kept me from wandering off topic. Much of the shape of this report comes from those conversations.
 
-Finally, I thank my classmates in S7 CSAI. Their questions during practice runs made the presentation better, and their company made the long evenings shorter. To everyone else who helped in ways big or small, thank you.
+I also thank my seminar coordinators, Asst.\ Prof.\ \textit{Ms.\ Thasni K N} and Asst.\ Prof.\ \textit{Ms.\ Vishnupriya Vijay}, who reviewed the work at each stage and told me plainly what had to be fixed.
+
+My thanks go as well to the management of the college and to the teaching and non-teaching staff of the department for their help during the semester. Last, I thank my classmates in S7 AI\&DS, whose questions during the practice runs improved the presentation, and my family, who put up with the late nights.
 \end{onehalfspace}
 
 \vspace{1.5cm}
@@ -214,7 +213,7 @@ Ask a large language model a question and you get an answer. Ask it to do a job,
 
 Think about a support bot for a college website. A student types ``my fee receipt is wrong''. The bot has to work out that this is a billing problem, not a login problem, and send it to the right place. It then pulls the student's record, writes a reply and checks the reply before it goes out. A coding assistant has it worse. It writes some code, runs it, reads the error, and tries again. Sometimes that takes five rounds.
 
-So the work branches, it loops, and it needs to remember what happened two steps ago. The two common ways of building LLM apps both struggle with this. A \emph{chain} runs a fixed list of steps from top to bottom. That is predictable, but a chain cannot go back, and it has no shared memory. A \emph{free-running agent} goes the other way and lets the model decide everything, including when to stop. That makes it flexible, but also hard to test, and one bad guess early on can ruin the whole run.
+In other words, real work branches and loops, and the program has to remember what happened two steps back. Neither of the usual ways of building LLM apps copes well with that. A \emph{chain} runs its steps in a fixed order, top to bottom. You always know what it will do next, which is nice, but it can never go back, and its steps keep no common memory. A \emph{free-running agent} is the opposite: the model decides everything, even when to stop. You get flexibility. You also get something that is hard to test, where one wrong guess in the first minute can spoil the whole run.
 
 LangGraph sits between these two. It is an open-source library from LangChain, released in 2024 under the MIT licence, with Python and JavaScript/TypeScript versions \cite{langgraphdocs}. Its design borrows ideas from graph-processing systems such as Google's Pregel \cite{malewicz2010pregel}. You draw your application as a graph. Each node is a step. Each edge says where to go next. Every node reads from, and writes to, one shared state. The developer decides which paths exist, and the model does the thinking inside each step. It works with many model providers, and people use it for single agents, agent teams, retrieval pipelines and flows that wait for a human to say ``yes''.
 
@@ -222,14 +221,14 @@ The base paper for this seminar is by Duan and Wang \cite{duan2024langgraphcrewa
 
 \section*{Objectives of the Seminar}
 \begin{itemize}
-    \item To explain why multi-step LLM apps need explicit control, and where chains and free agents fall short.
-    \item To describe the parts of LangGraph: state, nodes, edges, conditional edges and checkpoints.
-    \item To review earlier work on LLM agents and agent teams.
-    \item To study the LangGraph+CrewAI design, workflow and cases in the base paper.
-    \item To weigh up where graph-based orchestration helps, where it hurts, and where it is used.
+    \item Explain why an LLM app with many steps needs explicit control, and why chains and free agents are not enough on their own.
+    \item Describe the building blocks of LangGraph (state, nodes, edges, conditional edges, checkpoints).
+    \item Review earlier work on LLM agents and agent teams.
+    \item Study the design in the base paper, how its workflow runs, and the cases it was tried on.
+    \item Judge where graph-based orchestration pays off and where it gets in the way, and list where it is used today.
 \end{itemize}
 
-Chapter~2 covers the literature and Chapter~3 the tools. Chapter~4 explains the method in the base paper, and Chapter~5 its results. Chapters~6 to 8 deal with advantages, disadvantages and applications. Chapter~9 wraps up.
+Here is how the rest of the report is laid out. Related papers come first, in Chapter~2, then the tools in Chapter~3. Chapter~4 walks through the base paper's method; its results are in Chapter~5. After that come three short chapters, on advantages, on disadvantages and on applications (Chapters~6--8), before Chapter~9 closes the report.
 
 % ================================================================== Chapter 2
 \chapter{Literature Survey}
@@ -285,7 +284,7 @@ LangGraph for MT \cite{wang2024translation} & LangGraph routes text to translati
 % ================================================================== Chapter 3
 \chapter{Materials and Methods}
 
-There is no dataset here and no model training. The base paper's ``materials'' are the frameworks the system is made from. Below I introduce them, then the criteria the paper uses to judge its own results.
+Nothing in this work is trained, and no dataset is involved. So ``materials'', for this chapter, simply means the software the system is put together from. I go through those pieces one by one and finish with the yardsticks the paper applies to its own results.
 
 \section{LangGraph: Core Concepts}
 
@@ -344,13 +343,13 @@ app.invoke({"question": "What is LangGraph?"})   # 5. run
 CrewAI \cite{crewaidocs} is an open-source framework for agents that play roles and work on a problem together. You give each agent a role, a goal and some tools. There are four pieces:
 
 \begin{itemize}
-    \item An \textbf{agent} carries out tasks, makes decisions and talks to other agents. It is described by a role, a goal and a short backstory.
-    \item A \textbf{task} is a piece of work, with a description, the agent in charge and the tools it may use.
+    \item An \textbf{agent} does the work. It decides things and can talk to the other agents. You define one by writing its role and goal, plus a short backstory.
+    \item A \textbf{task} is one job. It comes with a description, names the agent responsible, and lists the tools that agent may use.
     \item A \textbf{tool} is anything an agent can use, such as reading email or searching documents.
     \item A \textbf{crew} is the team of agents plus the process that decides the order of their tasks.
 \end{itemize}
 
-CrewAI can call hosted models such as OpenAI's, or local ones through Ollama \cite{ollamadocs}. It lets you give agents custom roles, hand tasks from one agent to another automatically, and manage tasks flexibly \cite{crewaidocs}. The framework is meant for multi-step work and for problems that need a few decisions along the way.
+The models behind CrewAI can be hosted ones, OpenAI's for instance, or local ones served through Ollama \cite{ollamadocs}. Roles are written by the developer. When one agent finishes, CrewAI passes the work on to the next without extra code \cite{crewaidocs}. It was built for jobs that take several steps and need a decision or two on the way.
 
 \section{Development Environment}
 
@@ -374,7 +373,7 @@ Vector database & FAISS \cite{johnson2019faiss} & Stores the vectors and finds s
 
 \section{Evaluation Criteria}
 
-The base paper is an exploratory case study. You will not find accuracy, speed or cost figures in it. Instead it judges the LangGraph+CrewAI pairing by four qualities. I use the same four in this report:
+The base paper is exploratory. It has no accuracy figures, and nothing on speed or cost either. What it does instead is judge LangGraph+CrewAI on four qualities, and since there is nothing better to go on, I borrow the same four for this report:
 
 \begin{itemize}
     \item \textbf{Control}: can the developer define and restrict the flow?
@@ -427,7 +426,7 @@ There are two layers, and they meet at the shared state (Fig.~\ref{fig:arch}).
 
 \section{Integrating LangGraph with CrewAI}
 
-The authors argue that putting the two together makes complex tasks easier to manage. Flexible workflows, cooperation between agents and graph-based management all help, and the result can be hooked up to tools you already have. CrewAI keeps things tidy by giving every task a clear owner. It also works with LangChain, so a developer with existing LangChain agents can bring them along without rewriting them \cite{duan2024langgraphcrewai}.
+Why combine them at all? The authors' answer is that a hard task becomes easier to manage once the graph handles the flow and a crew handles the people, so to speak. The combined system can also be wired to tools a team already uses. Because CrewAI gives each task one owner, it is always clear who did what. And since CrewAI talks to LangChain, agents someone has already written in LangChain can be reused as they are \cite{duan2024langgraphcrewai}.
 
 Put simply:
 \begin{itemize}
@@ -514,7 +513,7 @@ class WorkFlow():
 \label{fig:code}
 \end{figure}
 
-Inside the crew, every agent gets a role, a goal and a backstory (Fig.~\ref{fig:agent}). Here the ``Senior Email Analyst'' throws out newsletters and promotions. A task (Fig.~\ref{fig:task}) then says exactly what the agent must do, what the answer should look like, and who is responsible.
+Each agent in the crew is written up with a role and a goal, and with a backstory too (Fig.~\ref{fig:agent}). In this case the ``Senior Email Analyst'' is the one who bins newsletters and promotions. The matching task (Fig.~\ref{fig:task}) spells out the job itself. It also fixes the shape of the answer and names the agent who owns it.
 
 \begin{figure}[H]
 \begin{lstlisting}
@@ -569,7 +568,7 @@ class EmailFilterTasks:
 % ================================================================== Chapter 5
 \chapter{Results and Performance}
 
-The base paper reports its results as worked cases, not as experiments. It shows that the LangGraph+CrewAI design can be used to build working multi-agent apps, and it describes what the pairing improves. I go through both cases, list the main findings, and then look at what the results do and do not prove.
+Do not expect tables of numbers here. The base paper reports worked cases rather than experiments: it builds two multi-agent apps with LangGraph+CrewAI, shows that they run, and says what the pairing made better. I take the two cases in turn. After that I pull out the main findings, and I end the chapter by asking how much these results actually prove.
 
 \section{Application Case 1: Code Generation with Code Review}
 
@@ -597,7 +596,7 @@ The first case writes code and then reviews it (Fig.~\ref{fig:codegen}). A quest
 
 \section{Application Case 2: Automatic Work-Order Processing}
 
-The second case deals with work orders, the kind of tickets an IT or maintenance team gets every day (Fig.~\ref{fig:tickets}). Each ticket's text is turned into a vector by an Ollama embedding model and stored in FAISS, so similar old tickets can be found quickly. Several CrewAI agents, each with its own task, then go through the ticket in detail and share what they find. According to the authors, this let the agents read tickets more accurately and handle them faster \cite{duan2024langgraphcrewai}.
+Case two is about work orders. These are the tickets an IT or maintenance desk sees all day (Fig.~\ref{fig:tickets}). First an Ollama embedding model turns the ticket text into a vector. The vector goes into FAISS, which makes it quick to pull up old tickets that look similar. Then a few CrewAI agents, one per task, read the ticket closely and pass their notes to each other. The authors say the agents understood tickets better this way, and got through them faster \cite{duan2024langgraphcrewai}.
 
 \begin{figure}[H]
 \centering
@@ -637,7 +636,7 @@ The authors draw four conclusions from these cases:
 
 \section{Comparison with Other Approaches}
 
-How does this compare with the other approaches in Chapter~2? Table~\ref{tab:compare} puts them side by side on the things that matter if you want a multi-agent system you can control. The comparison is qualitative and based on my own reading of the papers.
+So how does this stack up against the work in Chapter~2? Table~\ref{tab:compare} lines the approaches up against what you would care about if you needed a multi-agent system you can keep under control. Treat it as my own reading of the papers. None of the rows comes from a measurement.
 
 \begin{table}[H]
 \centering
@@ -706,13 +705,13 @@ But the results need careful reading. The paper has no numbers at all. There are
 % ================================================================== Chapter 9
 \chapter{Conclusion}
 
-LangGraph turns an LLM app into a graph of steps that share one state. It gives you what chains are missing, namely branches, loops, memory and a place for a human to step in. It also avoids the guesswork of a fully autonomous agent. You decide the routes, and the model does the thinking along them.
+LangGraph treats an LLM app as a graph whose steps all share one state. Branching, looping, memory, a point where a person can step in: a chain has none of these, and a graph has all of them. Nor does the developer have to gamble on a fully autonomous agent and hope it behaves. You decide the routes; the model does the thinking along them.
 
 Duan and Wang show how far this goes when you add CrewAI. LangGraph manages the flow and the state. CrewAI organises agents into teams with roles. Between them they handle jobs that one agent struggles with. Their email assistant, code-review loop and ticket system make the idea concrete, and none of them is exotic.
 
 The weak point is the evaluation. Everything rests on cases, not measurements, so the claimed efficiency gains still need proper benchmarks of success rate, cost and response time. It would also be worth testing how these systems behave as the number of agents grows, and how to keep large graphs readable.
 
-Graph-based orchestration is quickly becoming a standard way to build agentic AI that people can trust. Working on this seminar showed me why. When the structure is written down, a model's mistakes stop being mysterious. You can see where they happen, contain them, and fix them.
+More and more teams now build agentic AI this way, as graphs, when they need it to be trusted. After working on this seminar I understand why. Once the structure is written down, a model's mistakes stop being a mystery. You can point to the node where one happened. You can stop it spreading. Then you fix it.
 
 % ================================================================== Appendices
 \appendix
@@ -727,26 +726,71 @@ Graph-based orchestration is quickly becoming a standard way to build agentic AI
 
 \chapter{Presentation Slides}
 
-The seminar was presented with the 20 slides shown on the next page.
+\begingroup\singlespacing
 
-\newgeometry{margin=1.2cm, headheight=15pt}
-\begin{landscape}
-\thispagestyle{plain}
-\begin{figure}[p]
+\begin{figure}[H]
 \centering
-\setlength{\tabcolsep}{2pt}
-\renewcommand{\arraystretch}{1.0}
-\begin{tabular}{ccccc}
-\slidecell{01} & \slidecell{02} & \slidecell{03} & \slidecell{04} & \slidecell{05} \\[6pt]
-\slidecell{06} & \slidecell{07} & \slidecell{08} & \slidecell{09} & \slidecell{10} \\[6pt]
-\slidecell{11} & \slidecell{12} & \slidecell{13} & \slidecell{14} & \slidecell{15} \\[6pt]
-\slidecell{16} & \slidecell{17} & \slidecell{18} & \slidecell{19} & \slidecell{20} \\
-\end{tabular}
-\caption{Seminar presentation slides (1--20)}
+\slidecell{01}
+\slidecell{02}
+\slidecell{03}
+\caption{Seminar presentation slides (1--3)}
 \label{fig:slides}
 \end{figure}
-\end{landscape}
-\restoregeometry
+
+\newpage
+\begin{figure}[H]
+\centering
+\slidecell{04}
+\slidecell{05}
+\slidecell{06}
+\caption{Seminar presentation slides (4--6)}
+\end{figure}
+
+\newpage
+\begin{figure}[H]
+\centering
+\slidecell{07}
+\slidecell{08}
+\slidecell{09}
+\caption{Seminar presentation slides (7--9)}
+\end{figure}
+
+\newpage
+\begin{figure}[H]
+\centering
+\slidecell{10}
+\slidecell{11}
+\slidecell{12}
+\caption{Seminar presentation slides (10--12)}
+\end{figure}
+
+\newpage
+\begin{figure}[H]
+\centering
+\slidecell{13}
+\slidecell{14}
+\slidecell{15}
+\caption{Seminar presentation slides (13--15)}
+\end{figure}
+
+\newpage
+\begin{figure}[H]
+\centering
+\slidecell{16}
+\slidecell{17}
+\slidecell{18}
+\caption{Seminar presentation slides (16--18)}
+\end{figure}
+
+\newpage
+\begin{figure}[H]
+\centering
+\slidecell{19}
+\slidecell{20}
+\caption{Seminar presentation slides (19--20)}
+\end{figure}
+\endgroup
+
 
 \chapter{Sample Reference Papers}
 
